@@ -3635,6 +3635,29 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "providerKey",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "string"
+              ]
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "providers",
+                "custom_providers"
+              ]
+            }
           }
         ]
       }
