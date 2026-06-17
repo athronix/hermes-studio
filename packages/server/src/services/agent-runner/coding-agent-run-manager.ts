@@ -211,6 +211,16 @@ function childIsRunning(child?: ChildProcess): boolean {
   return Boolean(child && child.exitCode == null && child.signalCode == null && !child.killed)
 }
 
+function normalizeCliPromptArgument(prompt: string): string {
+  const text = String(prompt || '').trim()
+  if (!text || process.platform !== 'win32') return text
+  return text
+    .split(/\r\n|\n|\r/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join(' / ')
+}
+
 function decodeChildChunk(chunk: Buffer): string {
   const utf8 = chunk.toString('utf8')
   if (process.platform !== 'win32' || !utf8.includes('\uFFFD')) return utf8
@@ -731,10 +741,11 @@ export class CodingAgentRunManager {
           ? ['--resume', run.launch.agentNativeSessionId]
           : ['--session-id', run.launch.agentNativeSessionId])
       : []
+    const promptArgument = normalizeCliPromptArgument(systemPrompt)
     const args = [
       ...run.launch.args,
       ...nativeSessionArgs,
-      ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []),
+      ...(promptArgument ? ['--append-system-prompt', promptArgument] : []),
       '-p',
       '--output-format',
       'stream-json',
@@ -1167,10 +1178,11 @@ export class CodingAgentRunManager {
       },
     })
 
+    const promptArgument = normalizeCliPromptArgument(systemPrompt)
     const commonArgs = [
       '--json',
       ...CODEX_REASONING_SUMMARY_ARGS,
-      ...(systemPrompt ? ['-c', `developer_instructions=${JSON.stringify(systemPrompt)}`] : []),
+      ...(promptArgument ? ['-c', `developer_instructions=${JSON.stringify(promptArgument)}`] : []),
       ...run.launch.args,
       '--skip-git-repo-check',
       '--dangerously-bypass-approvals-and-sandbox',
