@@ -1680,13 +1680,15 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
               </svg>
             </template>
           </NButton>
-          <span class="header-workflow-title">{{ workflowName }}</span>
-          <button class="workspace-badge" type="button" :title="workflowWorkspace || t('workflow.workspace.select')" @click="openWorkspacePicker('active')">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            </svg>
-            <span>{{ workflowWorkspace ? (workflowWorkspace.split('/').pop() || workflowWorkspace) : t('workflow.workspace.select') }}</span>
-          </button>
+          <div class="header-workflow-meta">
+            <span class="header-workflow-title">{{ workflowName }}</span>
+            <button class="workspace-badge" type="button" :title="workflowWorkspace || t('workflow.workspace.select')" @click="openWorkspacePicker('active')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+              <span>{{ workflowWorkspace ? (workflowWorkspace.split('/').pop() || workflowWorkspace) : t('workflow.workspace.select') }}</span>
+            </button>
+          </div>
         </div>
         <div class="header-actions">
           <NTooltip trigger="hover">
@@ -2212,19 +2214,36 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   flex: 0 0 auto;
 }
 
-.header-workflow-title {
+.header-workflow-meta {
   min-width: 0;
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.header-workflow-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 10px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   line-height: 22px;
   color: $text-primary;
 }
 
 .workspace-badge {
+  flex: 0 1 auto;
   max-width: 160px;
+  min-width: 0;
   border: 0;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.05);
@@ -2528,17 +2547,44 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   }
 
   .page-header {
-    align-items: flex-start;
-    gap: 10px;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 12px !important;
   }
 
   .header-actions {
-    width: 100%;
+    flex: 0 0 auto;
     justify-content: flex-end;
+    gap: 4px;
   }
 
   .header-left {
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 8px;
+    align-items: center;
+    overflow: hidden;
+  }
+
+  .header-workflow-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .header-workflow-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 52%;
+    line-height: 20px;
+  }
+
+  .workspace-badge {
+    flex: 0 1 auto;
+    max-width: 42%;
+    padding: 2px 6px;
   }
 
   .workflow-body {
