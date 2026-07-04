@@ -1,7 +1,7 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { archiveSession as archiveSessionApi, deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, fetchWorkspaceRunChangeFile, fetchWorkspaceRunChangesForSession, setSessionModel, type HermesMessage, type SessionSummary, type WorkspaceRunChangeFileDetail, type WorkspaceRunChangeSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName } from '@/api/client'
-import { inferCodingAgentApiMode, normalizeCodingAgentApiMode } from '@/api/coding-agents'
+import { inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId } from '@/api/coding-agents'
 import { getDownloadUrl } from '@/api/hermes/download'
 import type { ProviderApiMode } from '@/api/hermes/system'
 import { defineStore } from 'pinia'
@@ -21,6 +21,21 @@ export type ContentBlock = ContentBlockImport
 export const LIVE_CHAT_MESSAGE_PAGE_SIZE = 150
 export const LIVE_CHAT_MAX_LOADED_MESSAGES = 300
 const WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX = 'workspace-run-change:'
+type ChatAgentId = 'hermes' | 'claude' | 'codex' | 'ekko-agent'
+
+function agentToCodingAgentId(agent?: string): ChatCodingAgentId | undefined {
+  if (agent === 'codex') return 'codex'
+  if (agent === 'claude') return 'claude-code'
+  if (agent === 'ekko-agent') return 'ekko-agent'
+  return undefined
+}
+
+function codingAgentIdToAgent(id?: ChatCodingAgentId): ChatAgentId | undefined {
+  if (id === 'codex') return 'codex'
+  if (id === 'claude-code') return 'claude'
+  if (id === 'ekko-agent') return 'ekko-agent'
+  return undefined
+}
 
 function moaReferenceLabel(evt: RunEvent): string {
   const label = typeof evt.label === 'string' && evt.label.trim()
@@ -98,7 +113,7 @@ export interface Session {
   agent?: string
   agentSessionId?: string
   agentNativeSessionId?: string
-  codingAgentId?: 'claude-code' | 'codex'
+  codingAgentId?: ChatCodingAgentId
   codingAgentMode?: 'global' | 'scoped'
   messages: Message[]
   createdAt: number
@@ -516,8 +531,8 @@ function lastVisibleMessageRole(messages?: Message[] | null): string | null {
 }
 
 function mapHermesSession(s: SessionSummary): Session {
-  const isCodingAgentSession = s.source === 'coding_agent' || s.agent === 'claude' || s.agent === 'codex'
-  const codingAgentId = s.agent === 'codex' ? 'codex' : s.agent === 'claude' ? 'claude-code' : undefined
+  const codingAgentId = agentToCodingAgentId(s.agent)
+  const isCodingAgentSession = s.source === 'coding_agent' || Boolean(codingAgentId)
   const codingAgentMode = isCodingAgentSession
     ? (s.agent_mode === 'global' || s.agent_mode === 'scoped'
         ? s.agent_mode
@@ -582,10 +597,8 @@ function legacyStorageKey(): string | null { return activeRuntimeMode === 'defau
 
 function isCodingAgentLikeSession(session?: Pick<Session, 'source' | 'agent' | 'codingAgentId'> | null): boolean {
   return session?.source === 'coding_agent' ||
-    session?.codingAgentId === 'claude-code' ||
-    session?.codingAgentId === 'codex' ||
-    session?.agent === 'claude' ||
-    session?.agent === 'codex'
+    Boolean(session?.codingAgentId) ||
+    Boolean(agentToCodingAgentId(session?.agent))
 }
 
 function clearCodingAgentRuntimeCredentials(session?: Session | null) {
@@ -1128,8 +1141,8 @@ export const useChatStore = defineStore('chat', () => {
     model?: string
     provider?: string
     source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
-    agent?: 'hermes' | 'claude' | 'codex'
-    codingAgentId?: 'claude-code' | 'codex'
+    agent?: ChatAgentId
+    codingAgentId?: ChatCodingAgentId
     codingAgentMode?: 'global' | 'scoped'
     workspace?: string | null
     baseUrl?: string
@@ -1137,14 +1150,14 @@ export const useChatStore = defineStore('chat', () => {
     apiMode?: ProviderApiMode
   } = {}): Session {
     const source = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
-    const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
+    const codingAgentId = options.codingAgentId || agentToCodingAgentId(options.agent)
     const codingAgentMode = codingAgentId ? (options.codingAgentMode || 'scoped') : undefined
     const session: Session = {
       id: uid(),
       profile: options.profile || useProfilesStore().activeProfileName || 'default',
       title: '',
       source,
-      agent: options.agent || (codingAgentId ? (codingAgentId === 'codex' ? 'codex' : 'claude') : 'hermes'),
+      agent: options.agent || codingAgentIdToAgent(codingAgentId) || 'hermes',
       codingAgentId,
       codingAgentMode,
       messages: [],
@@ -1408,8 +1421,8 @@ export const useChatStore = defineStore('chat', () => {
     model?: string
     provider?: string
     source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
-    agent?: 'hermes' | 'claude' | 'codex'
-    codingAgentId?: 'claude-code' | 'codex'
+    agent?: ChatAgentId
+    codingAgentId?: ChatCodingAgentId
     codingAgentMode?: 'global' | 'scoped'
     workspace?: string | null
     baseUrl?: string
@@ -1418,7 +1431,7 @@ export const useChatStore = defineStore('chat', () => {
   } = {}): Session {
     const appStore = useAppStore()
     const storageSource = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
-    const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
+    const codingAgentId = options.codingAgentId || agentToCodingAgentId(options.agent)
     const isGlobalCodingAgent = Boolean(codingAgentId) && options.codingAgentMode === 'global'
     const session = createSession({
       profile: options.profile,
@@ -2180,12 +2193,15 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function completionNotificationAgent(session: Session): { icon: string } {
-    const codingAgentId = session.codingAgentId || (session.agent === 'codex' ? 'codex' : session.agent === 'claude' ? 'claude-code' : undefined)
+    const codingAgentId = session.codingAgentId || agentToCodingAgentId(session.agent)
     if (codingAgentId === 'codex') {
       return { icon: '/coding-agents/codex-openai.png' }
     }
     if (codingAgentId === 'claude-code') {
       return { icon: '/coding-agents/claude-code.svg' }
+    }
+    if (codingAgentId === 'ekko-agent') {
+      return { icon: '/coding-agents/ekko-agent.png' }
     }
     return { icon: '/coding-agents/hermes.png' }
   }
@@ -2331,9 +2347,10 @@ export const useChatStore = defineStore('chat', () => {
             ? 'api_server'
             : 'cli'
       const isCodingAgentExecution = sessionSource === 'coding_agent' || (sessionSource === 'workflow' && isCodingAgentSession)
-      const codingAgentId: 'claude-code' | 'codex' =
+      const codingAgentId: ChatCodingAgentId =
         activeSession.value?.codingAgentId ||
-        (activeSession.value?.agent === 'codex' ? 'codex' : 'claude-code')
+        agentToCodingAgentId(activeSession.value?.agent) ||
+        'claude-code'
       const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
       const codingAgentApiMode = isCodingAgentExecution && codingAgentMode !== 'global'
         ? normalizeCodingAgentApiMode(

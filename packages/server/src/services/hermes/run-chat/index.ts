@@ -17,12 +17,13 @@ import { getAgentBridgeManager } from '../agent-bridge/manager'
 import { redactAgentBridgeError } from '../agent-bridge/redact'
 import { handleBridgeRun, resumeBridgeRun } from './handle-bridge-run'
 import { handleCodingAgentRun } from './handle-coding-agent-run'
+import { handleEkkoAgentRun } from './handle-ekko-agent-run'
 import { handleAbort } from './abort'
 import { getOrCreateSession } from './compression'
 import { loadSessionStateFromDb, resolveRunSource } from './load-state'
 import { handleSessionCommand, isSessionCommand, parseSessionCommand } from './session-command'
 import { contentBlocksToString } from './content-blocks'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import type { ChatCodingAgentId, ContentBlock, QueuedRun, SessionState } from './types'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
 import { observeRunChatPetEvent } from '../pet-state-socket'
@@ -53,11 +54,11 @@ function isHermesWorkerBackedSession(session?: { source?: string | null; agent?:
   if (!source || source === 'cli' || source === 'api_server') return true
   if (source === 'workflow') {
     const agent = String(session?.agent || '').trim()
-    return agent !== 'claude' && agent !== 'codex' && !session?.agent_session_id
+    return agent !== 'claude' && agent !== 'codex' && agent !== 'ekko-agent' && !session?.agent_session_id
   }
   if (source !== 'global_agent') return false
   const agent = String(session?.agent || '').trim()
-  return agent !== 'claude' && agent !== 'codex' && !session?.agent_session_id
+  return agent !== 'claude' && agent !== 'codex' && agent !== 'ekko-agent' && !session?.agent_session_id
 }
 
 function isBridgeRunSource(source?: string): boolean {
@@ -84,6 +85,10 @@ export async function ensureBridgeReadyForChatRun(): Promise<{ ok: true } | { ok
 
 function isCodingAgentExecution(source: string | undefined, data?: { coding_agent_id?: string; agent_id?: string }): boolean {
   return source === 'coding_agent' || (source === 'workflow' && Boolean(data?.coding_agent_id || data?.agent_id))
+}
+
+function isEkkoAgentExecution(data?: { coding_agent_id?: string; agent_id?: string }): boolean {
+  return data?.coding_agent_id === 'ekko-agent' || data?.agent_id === 'ekko-agent'
 }
 
 export interface ChatRunAndWaitResult {
@@ -185,8 +190,8 @@ export class ChatRunSocket {
       workspace?: string | null
       source?: string
       session_source?: 'global_agent' | 'workflow'
-      coding_agent_id?: 'claude-code' | 'codex'
-      agent_id?: 'claude-code' | 'codex'
+      coding_agent_id?: ChatCodingAgentId
+      agent_id?: ChatCodingAgentId
       mode?: 'scoped' | 'global'
       baseUrl?: string
       base_url?: string
@@ -390,8 +395,8 @@ export class ChatRunSocket {
       session_source?: 'global_agent' | 'workflow'
       queue_id?: string
       peerExcludeSocketId?: string
-      coding_agent_id?: 'claude-code' | 'codex'
-      agent_id?: 'claude-code' | 'codex'
+      coding_agent_id?: ChatCodingAgentId
+      agent_id?: ChatCodingAgentId
       mode?: 'scoped' | 'global'
       baseUrl?: string
       base_url?: string
@@ -459,6 +464,19 @@ export class ChatRunSocket {
         skipUserMessage,
         loadSessionStateFromDb,
         this.dequeueNextQueuedRun.bind(this),
+      )
+      return
+    }
+
+    if (isEkkoAgentExecution(data)) {
+      await handleEkkoAgentRun(
+        this.nsp,
+        socket,
+        data,
+        profile,
+        this.sessionMap,
+        this.dequeueNextQueuedRun.bind(this),
+        skipUserMessage,
       )
       return
     }
@@ -655,8 +673,8 @@ export class ChatRunSocket {
       source?: string
       session_source?: 'global_agent' | 'workflow'
       queue_id?: string
-      coding_agent_id?: 'claude-code' | 'codex'
-      agent_id?: 'claude-code' | 'codex'
+      coding_agent_id?: ChatCodingAgentId
+      agent_id?: ChatCodingAgentId
       mode?: 'scoped' | 'global'
       baseUrl?: string
       base_url?: string

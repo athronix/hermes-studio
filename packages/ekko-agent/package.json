@@ -2,7 +2,7 @@
   "name": "ekko-agent",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "description": "Ekko Agent package scaffold for Hermes Web UI.",
   "main": "src/index.ts",
   "exports": {
