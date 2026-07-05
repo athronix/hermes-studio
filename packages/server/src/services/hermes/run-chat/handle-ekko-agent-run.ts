@@ -1,4 +1,5 @@
 import type { Server, Socket } from 'socket.io'
+import { createHash } from 'crypto'
 import { inspect } from 'util'
 import {
   AgentRuntime,
@@ -76,14 +77,27 @@ function appendStateEvent(state: SessionState, event: string, payload: any): voi
 function redactProviderConfig(config: ModelProviderConfig): ModelProviderConfig {
   return {
     ...config,
-    apiKey: config.apiKey ? '[redacted]' : undefined,
+    apiKey: config.apiKey ? apiKeyDebugInfo(config.apiKey) : undefined,
     headers: config.headers
       ? Object.fromEntries(Object.entries(config.headers).map(([key, value]) => [
           key,
-          /authorization|api[-_]?key|token/i.test(key) ? '[redacted]' : value,
+          /authorization|api[-_]?key|token/i.test(key) ? headerSecretDebugInfo(value) : value,
         ]))
       : undefined,
   }
+}
+
+function apiKeyDebugInfo(apiKey: string): string {
+  return `[present length=${apiKey.length} last4=${apiKey.slice(-4)} sha256=${createHash('sha256').update(apiKey).digest('hex').slice(0, 12)}]`
+}
+
+function headerSecretDebugInfo(value: unknown): string {
+  const raw = String(value ?? '')
+  if (!raw) return '[empty]'
+  const token = raw.replace(/^Bearer\s+/i, '')
+  return raw.startsWith('Bearer ')
+    ? `Bearer ${apiKeyDebugInfo(token)}`
+    : apiKeyDebugInfo(raw)
 }
 
 function consolePayload(value: unknown): string {
@@ -401,6 +415,8 @@ export async function handleEkkoAgentRun(
     toolContext: {
       cwd: workspace,
       workspaceRoot: workspace,
+      sessionId,
+      browserSessionId: sessionId,
       timeoutMs: 120_000,
     },
     modelDefaults: {
@@ -496,6 +512,8 @@ export async function handleEkkoAgentRun(
       toolContext: {
         cwd: workspace,
         workspaceRoot: workspace,
+        sessionId,
+        browserSessionId: sessionId,
         timeoutMs: 120_000,
         signal: abortController.signal,
       },
@@ -559,6 +577,22 @@ export async function handleEkkoAgentRun(
       }
     }
     assistantReasoning = result.output.reasoning || assistantReasoning
+    const hadToolActivity = result.steps.some(step => step.type === 'tool')
+    if (!assistantText.trim() && !assistantReasoning.trim() && !hadToolActivity) {
+      const error = 'Model provider returned an empty response after streaming and non-streaming attempts.'
+      logger.warn({
+        session_id: sessionId,
+        provider_config: redactProviderConfig(providerConfig),
+        response: result.output,
+      }, '[chat-run-socket] ekko-agent model returned empty output')
+      emit('run.failed', {
+        event: 'run.failed',
+        run_id: runId || result.runId,
+        error,
+        queue_remaining: state.queue.length,
+      })
+      return
+    }
     if (assistantText.trim() || assistantReasoning.trim()) {
       const assistantId = addMessage({
         session_id: sessionId,

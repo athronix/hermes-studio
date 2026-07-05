@@ -50,6 +50,24 @@ function streamingModelClient(events: ModelEvent[]): ModelClient {
   }
 }
 
+function emptyStreamingWithCreateFallback(response: ModelResponse): ModelClient {
+  return {
+    provider: 'test',
+    requestStyle: 'custom-runtime',
+    capabilities: {
+      streaming: true,
+      tools: true,
+      vision: false,
+      jsonMode: false,
+      systemPrompt: true,
+    },
+    create: vi.fn(async () => response),
+    stream: vi.fn(async function *stream() {
+      yield { type: 'done', response: { finishReason: 'stop' } }
+    }),
+  }
+}
+
 describe('ekko-agent runtime', () => {
   it('runs a model request without tools', async () => {
     const client = modelClient(() => ({
@@ -118,6 +136,18 @@ describe('ekko-agent runtime', () => {
     expect(result.output.content).toBe('Hello')
     expect(deltas).toEqual(['Hel', 'lo'])
     expect(events).toEqual(['run.started', 'model.started', 'model.delta', 'model.delta', 'model.message', 'run.completed'])
+  })
+
+  it('falls back to non-streaming create when a provider stream returns no output', async () => {
+    const client = emptyStreamingWithCreateFallback({ content: 'fallback answer', finishReason: 'stop' })
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+
+    const result = await runtime.run({ messages: ['hi'] })
+
+    expect(result.output.content).toBe('fallback answer')
+    expect(client.stream).toHaveBeenCalledTimes(1)
+    expect(client.create).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(client.create).mock.calls[0]?.[0]).toMatchObject({ stream: false })
   })
 
   it('executes tool calls and continues the model loop', async () => {

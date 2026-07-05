@@ -222,6 +222,12 @@ export class AgentRuntime {
         yield event
       }
     })())
+    if (isEmptyModelResponse(output.message)) {
+      return {
+        response: await this.modelClient.create({ ...request, stream: false }),
+        emittedReasoning: false,
+      }
+    }
     return {
       response: output.message,
       emittedReasoning,
@@ -354,4 +360,12 @@ function abortError(): Error {
   const error = new Error('Run aborted.')
   error.name = 'AbortError'
   return error
+}
+
+function isEmptyModelResponse(response: ModelResponse): boolean {
+  return (
+    !response.content?.trim() &&
+    !response.reasoning?.trim() &&
+    !(response.toolCalls?.length)
+  )
 }
