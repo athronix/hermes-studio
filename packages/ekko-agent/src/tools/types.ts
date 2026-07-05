@@ -5,6 +5,7 @@ export interface AgentToolContext {
   workspaceRoot?: string
   sessionId?: string
   browserSessionId?: string
+  mcpServers?: Record<string, unknown>
   timeoutMs?: number
   signal?: AbortSignal
 }

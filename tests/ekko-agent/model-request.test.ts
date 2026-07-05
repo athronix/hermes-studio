@@ -212,6 +212,7 @@ describe('ekko-agent model requests', () => {
       ],
       tools: [{ name: 'search', parameters: { type: 'object' } }],
       maxTokens: 500,
+      context: { responseId: 'resp_previous' },
     })
 
     expect(payload).toMatchObject({
@@ -219,6 +220,7 @@ describe('ekko-agent model requests', () => {
       instructions: 'Be direct.',
       input: [{ role: 'user', content: 'Search docs.' }],
       max_output_tokens: 500,
+      previous_response_id: 'resp_previous',
       tools: [{ type: 'function', name: 'search' }],
     })
   })

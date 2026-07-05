@@ -88,7 +88,7 @@ describe('ekko-agent runtime', () => {
       model: 'test-model',
     })
     expect(result.messages.map(message => message.role)).toEqual(['system', 'user', 'assistant'])
-    expect(events).toEqual(['run.started', 'model.started', 'model.message', 'run.completed'])
+    expect(events).toEqual(['run.started', 'model.started', 'context.estimated', 'model.message', 'run.completed'])
   })
 
   it('emits model reasoning before the assistant message', async () => {
@@ -110,7 +110,7 @@ describe('ekko-agent runtime', () => {
 
     expect(result.output.reasoning).toBe('thinking path')
     expect(reasoning).toEqual(['thinking path'])
-    expect(events).toEqual(['run.started', 'model.started', 'model.reasoning', 'model.message', 'run.completed'])
+    expect(events).toEqual(['run.started', 'model.started', 'context.estimated', 'model.reasoning', 'model.message', 'run.completed'])
   })
 
   it('streams model text deltas before the final assistant message', async () => {
@@ -135,7 +135,7 @@ describe('ekko-agent runtime', () => {
     expect(client.stream).toHaveBeenCalledTimes(1)
     expect(result.output.content).toBe('Hello')
     expect(deltas).toEqual(['Hel', 'lo'])
-    expect(events).toEqual(['run.started', 'model.started', 'model.delta', 'model.delta', 'model.message', 'run.completed'])
+    expect(events).toEqual(['run.started', 'model.started', 'context.estimated', 'model.delta', 'model.delta', 'model.message', 'run.completed'])
   })
 
   it('falls back to non-streaming create when a provider stream returns no output', async () => {
@@ -363,6 +363,37 @@ describe('ekko-agent runtime', () => {
     })
 
     await new AgentRuntime({ modelClient: client, tools }).run({ messages: ['hi'] })
+  })
+
+  it('stores model context by session and sends it on follow-up runs', async () => {
+    const requests: ModelRequest[] = []
+    const client = modelClient((request, call) => {
+      requests.push(request)
+      return {
+        content: `ok-${call}`,
+        context: { responseId: `resp-${call}` },
+      }
+    })
+    const runtime = new AgentRuntime({ modelClient: client })
+
+    const first = await runtime.run({
+      messages: ['first'],
+      metadata: { session_id: 'session-a' },
+    })
+    const second = await runtime.run({
+      messages: ['second'],
+      metadata: { session_id: 'session-a' },
+    })
+    await runtime.run({
+      messages: ['other'],
+      metadata: { session_id: 'session-b' },
+    })
+
+    expect(first.context).toEqual({ responseId: 'resp-1' })
+    expect(second.context).toEqual({ responseId: 'resp-2' })
+    expect(requests[0].context).toBeUndefined()
+    expect(requests[1].context).toEqual({ responseId: 'resp-1' })
+    expect(requests[2].context).toBeUndefined()
   })
 
   it('buildSystemPrompt omits structured tool descriptions', () => {
