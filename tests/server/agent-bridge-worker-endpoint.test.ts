@@ -63,4 +63,48 @@ print(json.dumps({"endpoint": endpoint, "port": port}))
     expect(result.port).toBeGreaterThanOrEqual(18780)
     expect(result.port).toBeLessThan(19780)
   })
+
+  it('avoids worker ports that enter the Windows dynamic range after hash offset', () => {
+    const result = runPython(String.raw`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+bridge_runtime = types.ModuleType("bridge_runtime")
+bridge_runtime._hidden_subprocess_kwargs = lambda: {}
+bridge_runtime._json_line_bytes = lambda req: (json.dumps(req) + "\n").encode("utf-8")
+bridge_runtime._platform_text_encoding = lambda: "utf-8"
+sys.modules["bridge_runtime"] = bridge_runtime
+
+spec = importlib.util.spec_from_file_location(
+    "bridge_transport",
+    "packages/server/src/services/hermes/agent-bridge/python/bridge_transport.py",
+)
+bridge_transport = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(bridge_transport)
+
+original_name = bridge_transport.os.name
+original_env = os.environ.get("HERMES_AGENT_BRIDGE_WORKER_PORT_BASE")
+try:
+    bridge_transport.os.name = "nt"
+    os.environ["HERMES_AGENT_BRIDGE_WORKER_PORT_BASE"] = "49000"
+    endpoint = bridge_transport._worker_endpoint("default", "tcp://127.0.0.1:56618")
+finally:
+    bridge_transport.os.name = original_name
+    if original_env is None:
+        os.environ.pop("HERMES_AGENT_BRIDGE_WORKER_PORT_BASE", None)
+    else:
+        os.environ["HERMES_AGENT_BRIDGE_WORKER_PORT_BASE"] = original_env
+
+port = int(endpoint.rsplit(":", 1)[1])
+print(json.dumps({"endpoint": endpoint, "port": port}))
+`)
+
+    expect(result.endpoint).toMatch(/^tcp:\/\/127\.0\.0\.1:\d+$/)
+    expect(result.port).toBeGreaterThanOrEqual(18780)
+    expect(result.port).toBeLessThan(19780)
+  })
 })
