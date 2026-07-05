@@ -1,4 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolProvider, AgentToolResult } from './types'
+import { createBrowserTools } from './browser'
 import { createFileTools } from './files'
 import { createTerminalTools } from './terminal'
 
@@ -57,7 +58,7 @@ export class AgentToolRegistry {
 
 export function createDefaultToolRegistry(): AgentToolRegistry {
   const registry = new AgentToolRegistry()
-  for (const tool of [...createFileTools(), ...createTerminalTools()]) {
+  for (const tool of [...createFileTools(), ...createTerminalTools(), ...createBrowserTools()]) {
     registry.register(tool)
   }
   return registry

@@ -3,6 +3,8 @@ import type { AgentToolDefinition } from '../model/types'
 export interface AgentToolContext {
   cwd?: string
   workspaceRoot?: string
+  sessionId?: string
+  browserSessionId?: string
   timeoutMs?: number
   signal?: AbortSignal
 }
