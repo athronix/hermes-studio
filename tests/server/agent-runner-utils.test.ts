@@ -1388,6 +1388,73 @@ describe('response stream tool detail events', () => {
       }),
     }))
   })
+
+  it('emits completed tool events with duration', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+        response: { id: 'resp-1', status: 'in_progress' },
+      })
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+        item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+      })
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.230Z'))
+      const completed = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+        item: { type: 'function_call_output', call_id: 'call-1', output: 'ok' },
+      })
+
+      expect(completed).toEqual(expect.objectContaining({
+        event: 'tool.completed',
+        payload: expect.objectContaining({
+          event: 'tool.completed',
+          tool_call_id: 'call-1',
+          duration: 1.23,
+          output: 'ok',
+        }),
+      }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('emits failed tool events with duration and persisted error state', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+        response: { id: 'resp-1', status: 'in_progress' },
+      })
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+        item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+      })
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.500Z'))
+      const failed = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+        item: { type: 'function_call_output', call_id: 'call-1', output: { ok: false, error: 'permission denied' } },
+      })
+
+      expect(failed).toEqual(expect.objectContaining({
+        event: 'tool.failed',
+        payload: expect.objectContaining({
+          event: 'tool.failed',
+          tool_call_id: 'call-1',
+          duration: 2.5,
+          error: 'permission denied',
+          output: '{"ok":false,"error":"permission denied"}',
+        }),
+      }))
+      expect(state.messages.find((message: any) => message.role === 'tool')).toEqual(expect.objectContaining({
+        finish_reason: 'error',
+        tool_call_id: 'call-1',
+      }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Claude Code stream-json mapping', () => {
