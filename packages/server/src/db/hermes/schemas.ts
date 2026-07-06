@@ -430,6 +430,8 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
   totalTokens: 'INTEGER NOT NULL DEFAULT 0',
   sessionSeed: "TEXT NOT NULL DEFAULT '0'",
+  workspace: "TEXT NOT NULL DEFAULT ''",
+  ownerAuthUserId: 'INTEGER',
 }
 
 export const GC_MESSAGES_TABLE = 'gc_messages'

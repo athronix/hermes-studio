@@ -5,6 +5,7 @@ import {
   emitAck,
   once,
 } from './group-chat-test-helpers'
+import { GROUP_CHAT_AGENT_SOCKET_SECRET } from '../../packages/server/src/services/hermes/group-chat/agent-clients'
 import type { GroupChatServer } from '../../packages/server/src/services/hermes/group-chat'
 
 describe('group chat approval and context baseline', () => {
@@ -18,6 +19,7 @@ describe('group chat approval and context baseline', () => {
     groupServer = harness.groupServer
     port = harness.port
     groupServer.getStorage().saveRoom('room-1', 'Room 1', 'ROOM1')
+    groupServer.getStorage().addRoomAgent('room-1', 'agent-1', 'default', 'Agent', '', 0)
   })
 
   afterEach(() => {
@@ -25,12 +27,19 @@ describe('group chat approval and context baseline', () => {
   })
 
   async function joinPair() {
-    const agent = await connectGroupChatClient(port, 'agent-1', 'Agent')
+    const agent = await connectGroupChatClient(port, 'agent-1', 'Agent', {
+      source: 'agent',
+      agentSocketSecret: GROUP_CHAT_AGENT_SOCKET_SECRET,
+    })
     const human = await connectGroupChatClient(port, 'human-1', 'Human')
     harness.sockets.push(agent, human)
     await emitAck(agent, 'join', { roomId: 'room-1' })
-    await emitAck(human, 'join', { roomId: 'room-1' })
+    await emitAck(human, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
     return { agent, human }
+  }
+
+  function wait(ms = 30) {
+    return new Promise(resolve => setTimeout(resolve, ms))
   }
 
   it('relays context status and updates room token count', async () => {
@@ -45,6 +54,19 @@ describe('group chat approval and context baseline', () => {
     expect(groupServer.getStorage().getRoom('room-1')).toMatchObject({ totalTokens: 123 })
   })
 
+  it('ignores context status emitted by human sockets', async () => {
+    const { human } = await joinPair()
+
+    human.emit('context_status', { roomId: 'room-1', agentName: 'Agent', status: 'replying', totalTokens: 999 })
+    await wait()
+
+    expect(groupServer.getStorage().getRoom('room-1')).toMatchObject({ totalTokens: 0 })
+    const lateJoiner = await connectGroupChatClient(port, 'human-2', 'Late')
+    harness.sockets.push(lateJoiner)
+    const joined = await emitAck<any>(lateJoiner, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
+    expect(joined.contextStatuses).toEqual([])
+  })
+
   it('clears ready context status from join recovery', async () => {
     const { agent } = await joinPair()
     agent.emit('context_status', { roomId: 'room-1', agentName: 'Agent', status: 'replying' })
@@ -52,7 +74,7 @@ describe('group chat approval and context baseline', () => {
 
     const lateJoiner = await connectGroupChatClient(port, 'human-2', 'Late')
     harness.sockets.push(lateJoiner)
-    const joined = await emitAck<any>(lateJoiner, 'join', { roomId: 'room-1' })
+    const joined = await emitAck<any>(lateJoiner, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
 
     expect(joined.contextStatuses).toEqual([])
   })
@@ -76,6 +98,45 @@ describe('group chat approval and context baseline', () => {
       approval_id: 'approval-1',
       choices: ['once', 'session', 'deny'],
     })
+  })
+
+  it('does not relay approval payloads to read-only invite members', async () => {
+    const { agent, human } = await joinPair()
+    const readonly = await connectGroupChatClient(port, 'human-readonly', 'ReadOnly')
+    harness.sockets.push(readonly)
+    groupServer.getIO().of('/group-chat').sockets.get(readonly.id!)!.data.authUser = { id: 7, role: 'user', profiles: [] }
+    await emitAck(readonly, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
+
+    let leaked: unknown = null
+    readonly.on('approval.requested', payload => { leaked = payload })
+    const managerRequest = once<any>(human, 'approval.requested')
+
+    agent.emit('approval.requested', {
+      roomId: 'room-1',
+      agentName: 'Agent',
+      approval_id: 'approval-private',
+      command: 'cat /private/workspace/secret',
+      description: 'needs approval',
+    })
+
+    expect(await managerRequest).toMatchObject({ approval_id: 'approval-private' })
+    await wait()
+    expect(leaked).toBeNull()
+  })
+
+  it('ignores approval events emitted by human sockets', async () => {
+    const { human } = await joinPair()
+    let requested = false
+    let resolved = false
+    human.on('approval.requested', () => { requested = true })
+    human.on('approval.resolved', () => { resolved = true })
+
+    human.emit('approval.requested', { roomId: 'room-1', agentName: 'Agent', approval_id: 'approval-human' })
+    human.emit('approval.resolved', { roomId: 'room-1', agentName: 'Agent', approval_id: 'approval-human', choice: 'deny' })
+    await wait()
+
+    expect(requested).toBe(false)
+    expect(resolved).toBe(false)
   })
 
   it('relays approval resolved with normalized choice', async () => {

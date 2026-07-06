@@ -85,7 +85,10 @@ interface RoomInfo {
     tailMessageCount: number
     totalTokens: number
     sessionSeed: string
+    workspace: string
+    ownerAuthUserId: number | null
 }
+
 
 interface Member {
     id: string
@@ -102,6 +105,10 @@ interface Member {
 
 function authenticatedGroupUserId(authUserId: number): string {
     return `auth:${authUserId}`
+}
+
+function authenticatedUserProfiles(user: AuthenticatedUser | undefined): string[] {
+    return Array.isArray(user?.profiles) ? user.profiles.map(String).filter(Boolean) : []
 }
 
 let _tablesEnsured = false
@@ -277,15 +284,15 @@ class ChatStorage {
     // ─── Rooms ────────────────────────────────────────────────
 
     getRoom(roomId: string): RoomInfo | undefined {
-        return this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed FROM gc_rooms WHERE id = ?').get(roomId) as any
+        return this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed, workspace, ownerAuthUserId FROM gc_rooms WHERE id = ?').get(roomId) as any
     }
 
     getRoomByInviteCode(code: string): RoomInfo | undefined {
-        return this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed FROM gc_rooms WHERE inviteCode = ?').get(code) as any
+        return this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed, workspace, ownerAuthUserId FROM gc_rooms WHERE inviteCode = ?').get(code) as any
     }
 
     getAllRooms(): RoomInfo[] {
-        return (this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed FROM gc_rooms ORDER BY id').all() || []) as any[]
+        return (this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed, workspace, ownerAuthUserId FROM gc_rooms ORDER BY id').all() || []) as any[]
     }
 
     getRoomsForProfiles(profiles: string[]): RoomInfo[] {
@@ -293,7 +300,7 @@ class ChatStorage {
         if (!uniqueProfiles.length) return []
         const placeholders = uniqueProfiles.map(() => '?').join(', ')
         return (this.db()?.prepare(
-            `SELECT DISTINCT r.id, r.name, r.inviteCode, r.triggerTokens, r.maxHistoryTokens, r.tailMessageCount, r.totalTokens, r.sessionSeed
+            `SELECT DISTINCT r.id, r.name, r.inviteCode, r.triggerTokens, r.maxHistoryTokens, r.tailMessageCount, r.totalTokens, r.sessionSeed, r.workspace, r.ownerAuthUserId
              FROM gc_rooms r
              INNER JOIN gc_room_agents a ON a.roomId = r.id
              WHERE a.profile IN (${placeholders})
@@ -301,10 +308,38 @@ class ChatStorage {
         ).all(...uniqueProfiles) || []) as any[]
     }
 
-    saveRoom(id: string, name: string, inviteCode?: string, config?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }): void {
+    getRoomsForAuthUser(authUserId: number): RoomInfo[] {
+        if (!Number.isFinite(authUserId) || authUserId <= 0) return []
+        return (this.db()?.prepare(
+            `SELECT DISTINCT r.id, r.name, r.inviteCode, r.triggerTokens, r.maxHistoryTokens, r.tailMessageCount, r.totalTokens, r.sessionSeed, r.workspace, r.ownerAuthUserId
+             FROM gc_rooms r
+             INNER JOIN gc_room_members m ON m.roomId = r.id
+             WHERE m.authUserId = ?
+             ORDER BY r.id`
+        ).all(authUserId) || []) as any[]
+    }
+
+    getOwnedRoomsForAuthUser(authUserId: number): RoomInfo[] {
+        if (!Number.isFinite(authUserId) || authUserId <= 0) return []
+        return (this.db()?.prepare(
+            `SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed, workspace, ownerAuthUserId
+             FROM gc_rooms
+             WHERE ownerAuthUserId = ?
+             ORDER BY id`
+        ).all(authUserId) || []) as any[]
+    }
+
+    saveRoom(id: string, name: string, inviteCode?: string, config?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number; workspace?: string; ownerAuthUserId?: number | null }): void {
+        const rawOwnerAuthUserId = Number(config?.ownerAuthUserId ?? 0)
+        const ownerAuthUserId = Number.isFinite(rawOwnerAuthUserId) && rawOwnerAuthUserId > 0 ? Math.floor(rawOwnerAuthUserId) : null
         this.db()?.prepare(
-            'INSERT OR IGNORE INTO gc_rooms (id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(id, name, inviteCode || null, config?.triggerTokens ?? 100000, config?.maxHistoryTokens ?? 32000, config?.tailMessageCount ?? 10)
+            'INSERT OR IGNORE INTO gc_rooms (id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, workspace, ownerAuthUserId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).run(id, name, inviteCode || null, config?.triggerTokens ?? 100000, config?.maxHistoryTokens ?? 32000, config?.tailMessageCount ?? 10, config?.workspace || '', ownerAuthUserId)
+    }
+
+    setRoomOwnerAuthUserId(roomId: string, authUserId: number): void {
+        if (!Number.isFinite(authUserId) || authUserId <= 0) return
+        this.db()?.prepare('UPDATE gc_rooms SET ownerAuthUserId = ? WHERE id = ?').run(authUserId, roomId)
     }
 
     updateRoomConfig(roomId: string, config: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }): void {
@@ -326,8 +361,26 @@ class ChatStorage {
         this.db()?.prepare('UPDATE gc_rooms SET totalTokens = ? WHERE id = ?').run(tokens, roomId)
     }
 
+    getRoomWorkspace(roomId: string): string {
+        return String(this.getRoom(roomId)?.workspace || '')
+    }
+
+    updateRoomWorkspace(roomId: string, workspace: string): RoomInfo | null {
+        const room = this.getRoom(roomId)
+        if (!room) return null
+        const nextWorkspace = String(workspace || '')
+        if (String(room.workspace || '') === nextWorkspace) return room
+        const seed = this.newRoomSessionSeed()
+        this.db()?.prepare('UPDATE gc_rooms SET workspace = ?, sessionSeed = ? WHERE id = ?').run(nextWorkspace, seed, roomId)
+        return this.getRoom(roomId) || null
+    }
+
+    private newRoomSessionSeed(): string {
+        return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    }
+
     rotateRoomSessionSeed(roomId: string): string {
-        const seed = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+        const seed = this.newRoomSessionSeed()
         this.db()?.prepare('UPDATE gc_rooms SET sessionSeed = ? WHERE id = ?').run(seed, roomId)
         return seed
     }
@@ -900,7 +953,7 @@ export class GroupChatServer {
 
         logger.debug(`[GroupChat] Connected: ${userName} (socket=${socket.id}, user=${userId})`)
 
-        socket.on('join', (data: { roomId?: string; name?: string }, ack?: (response?: unknown) => void) => this.handleJoin(socket, data, ack))
+        socket.on('join', (data: { roomId?: string; name?: string; description?: string; inviteCode?: string }, ack?: (response?: unknown) => void) => this.handleJoin(socket, data, ack))
         socket.on('message', (data: Partial<ChatMessage> & { roomId?: string; content: string | Array<Record<string, unknown>>; id?: string; mentionDepth?: number }, ack?: (response?: unknown) => void) => this.handleMessage(socket, data, ack))
         socket.on('message_stream_start', (data: { roomId?: string; id?: string; senderId?: string; senderName?: string; timestamp?: number }) => this.handleMessageStreamStart(socket, data))
         socket.on('message_stream_delta', (data: { roomId?: string; id?: string; delta?: string }) => this.handleMessageStreamDelta(socket, data))
@@ -918,12 +971,69 @@ export class GroupChatServer {
 
     // ─── Handlers ───────────────────────────────────────────────
 
-    private handleJoin(socket: Socket, data: { roomId?: string; name?: string; description?: string }, ack?: (res: any) => void): void {
+    private canSocketJoinRoom(socket: Socket, roomId: string, room: RoomInfo | undefined, existingMember: Member | null, inviteCode?: string): boolean {
+        if (!room) return typeof this.storage.getRoom !== 'function'
+        const requested = typeof inviteCode === 'string' ? inviteCode.trim() : ''
+        if (requested && room.inviteCode && requested === room.inviteCode) return true
+        const authUser = socket.data?.authUser as AuthenticatedUser | undefined
+        if (!authUser) return Boolean(existingMember || !room.inviteCode)
+        if (authUser.role === 'super_admin') return true
+        if (typeof authUser.id === 'number' && Number(room.ownerAuthUserId || 0) === authUser.id) return true
+        if (existingMember) return true
+        const profiles = authenticatedUserProfiles(authUser)
+        return profiles.length > 0 && typeof this.storage.getRoomsForProfiles === 'function' && this.storage.getRoomsForProfiles(profiles).some(candidate => candidate.id === roomId)
+    }
+
+    private canSocketManageRoom(socket: Socket, roomId: string): boolean {
+        if (this.socketRequestedSourceMap?.get(socket.id) === 'agent') return false
+        const room = typeof this.storage.getRoom === 'function' ? this.storage.getRoom(roomId) : undefined
+        if (!room) return false
+        const authUser = socket.data?.authUser as AuthenticatedUser | undefined
+        if (!authUser) return true
+        if (authUser.role === 'super_admin') return true
+        if (typeof authUser.id === 'number' && Number(room.ownerAuthUserId || 0) === authUser.id) return true
+        const profiles = authenticatedUserProfiles(authUser)
+        return profiles.length > 0 && typeof this.storage.getRoomsForProfiles === 'function' && this.storage.getRoomsForProfiles(profiles).some(candidate => candidate.id === roomId)
+    }
+
+    private getOnlineRoomMember(socket: Socket, roomId: string): { room: ChatRoom; member: Member } | null {
+        const room = this.rooms.get(roomId)
+        const member = room?.getOnlineMemberBySocketId(socket.id)
+        return room && member ? { room, member } : null
+    }
+
+    private isAgentEventSocket(socket: Socket, roomId: string, agentName?: string): boolean {
+        const joined = this.getOnlineRoomMember(socket, roomId)
+        if (!joined || joined.member.source !== 'agent') return false
+        return !agentName || joined.member.name === agentName
+    }
+
+    private emitToRoomManagers(roomId: string, event: string, payload: Record<string, unknown>): void {
+        const room = this.rooms.get(roomId)
+        if (!room) return
+        const emitted = new Set<string>()
+        for (const member of room.members.values()) {
+            if (!member.online || member.source === 'agent') continue
+            const socket = this.nsp.sockets.get(member.socketId)
+            if (!socket || emitted.has(socket.id)) continue
+            if (!this.canSocketManageRoom(socket, roomId)) continue
+            socket.emit(event, payload)
+            emitted.add(socket.id)
+        }
+    }
+
+
+    private handleJoin(socket: Socket, data: { roomId?: string; name?: string; description?: string; inviteCode?: string }, ack?: (res: any) => void): void {
         const socketId = socket.id
         const userId = this.socketUserMap.get(socketId) || socketId
         const requestedSource = this.socketRequestedSourceMap.get(socketId) || 'human'
         const roomId = data.roomId || 'general'
+        const storedRoom = typeof this.storage.getRoom === 'function' ? this.storage.getRoom(roomId) : undefined
         const roomAgent = this.storage.getRoomAgentByAgentId(roomId, userId)
+        if (requestedSource === 'agent' && !roomAgent) {
+            ack?.({ error: 'Access denied' })
+            return
+        }
         const source = requestedSource === 'agent' && roomAgent ? 'agent' : 'human'
         if (source === 'human' && roomAgent) {
             ack?.({ error: 'Reserved member identity' })
@@ -932,6 +1042,10 @@ export class GroupChatServer {
         const socketAuthUserId = this.socketAuthUserIdMap.get(socket.id)
         const existingMember = this.storage.getMemberByUserId(roomId, userId) ||
             (typeof socketAuthUserId === 'number' ? this.storage.getMemberByAuthUserId(roomId, socketAuthUserId) : null)
+        if (source !== 'agent' && !this.canSocketJoinRoom(socket, roomId, storedRoom, existingMember, data.inviteCode)) {
+            ack?.({ error: 'Access denied' })
+            return
+        }
         const userInfo = this.userInfoMap.get(userId) || {
             name: existingMember?.name || `User-${userId.slice(0, 6)}`,
             description: existingMember?.description || '',
@@ -946,9 +1060,13 @@ export class GroupChatServer {
 
         let room = this.rooms.get(roomId)
         if (!room) {
+            if (!storedRoom && typeof this.storage.getRoom === 'function') {
+                ack?.({ error: 'Room not found' })
+                return
+            }
             room = new ChatRoom(roomId)
             this.rooms.set(roomId, room)
-            this.storage.saveRoom(roomId, roomId)
+            if (!storedRoom) this.storage.saveRoom(roomId, roomId)
         }
 
         // Look up the user's avatar via their numeric users.id from the web UI session.
@@ -1024,6 +1142,7 @@ export class GroupChatServer {
         const member = room.getOnlineMemberBySocketId(socketId)
         const userId = member?.userId || socketId
         const userName = member?.name || `User-${socketId.slice(0, 6)}`
+        const role = normalizeMessageRole(data.role)
 
         const msg: ChatMessage = {
             id: this.normalizeClientMessageId(data.id) || this.generateId(),
@@ -1032,7 +1151,7 @@ export class GroupChatServer {
             senderName: userName,
             content: contentToStorageString(data.content),
             timestamp: this.normalizeMessageTimestamp(data.timestamp, data.role),
-            role: normalizeMessageRole(data.role),
+            role,
             tool_call_id: data.tool_call_id ?? null,
             tool_calls: Array.isArray(data.tool_calls) ? data.tool_calls : null,
             tool_name: data.tool_name ?? null,
@@ -1052,7 +1171,7 @@ export class GroupChatServer {
 
         const mentionDepth = normalizeMentionDepth(data.mentionDepth)
         const isAgentReply = savedMsg.role === 'assistant' && member?.source === 'agent'
-        const shouldRouteMentions = savedMsg.role === 'user' ||
+        const shouldRouteMentions = (savedMsg.role === 'user' && this.canSocketManageRoom(socket, roomId)) ||
             (isAgentReply && mentionDepth < maxAgentMentionDepth())
 
         if (shouldRouteMentions) {
@@ -1076,17 +1195,16 @@ export class GroupChatServer {
 
     private handleMessageStreamStart(socket: Socket, data: { roomId?: string; id?: string; senderId?: string; senderName?: string; timestamp?: number }): void {
         const roomId = data.roomId || 'general'
-        const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        const joined = this.getOnlineRoomMember(socket, roomId)
+        if (!joined || joined.member.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id) return
 
-        const member = room.getOnlineMemberBySocketId(socket.id)
         this.nsp.to(roomId).emit('message_stream_start', {
             id,
             roomId,
-            senderId: data.senderId || member?.userId || socket.id,
-            senderName: data.senderName || member?.name || `User-${socket.id.slice(0, 6)}`,
+            senderId: joined.member.userId,
+            senderName: joined.member.name,
             content: '',
             timestamp: data.timestamp || Date.now(),
             role: 'assistant',
@@ -1096,8 +1214,8 @@ export class GroupChatServer {
 
     private handleMessageStreamDelta(socket: Socket, data: { roomId?: string; id?: string; delta?: string }): void {
         const roomId = data.roomId || 'general'
-        const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        const joined = this.getOnlineRoomMember(socket, roomId)
+        if (!joined || joined.member.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id || !data.delta) return
         this.nsp.to(roomId).emit('message_stream_delta', {
@@ -1109,8 +1227,8 @@ export class GroupChatServer {
 
     private handleMessageReasoningDelta(socket: Socket, data: { roomId?: string; id?: string; delta?: string }): void {
         const roomId = data.roomId || 'general'
-        const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        const joined = this.getOnlineRoomMember(socket, roomId)
+        if (!joined || joined.member.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id || !data.delta) return
         this.nsp.to(roomId).emit('message_reasoning_delta', {
@@ -1122,8 +1240,8 @@ export class GroupChatServer {
 
     private handleMessageStreamEnd(socket: Socket, data: { roomId?: string; id?: string }): void {
         const roomId = data.roomId || 'general'
-        const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        const joined = this.getOnlineRoomMember(socket, roomId)
+        if (!joined || joined.member.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id) return
         this.nsp.to(roomId).emit('message_stream_end', { roomId, id })
@@ -1181,7 +1299,7 @@ export class GroupChatServer {
         const agentName = data.agentName || ''
         const status = data.status || ''
 
-        if (!agentName) return
+        if (!agentName || !this.isAgentEventSocket(socket, roomId, agentName)) return
 
         let roomStatuses = this.contextStatusState.get(roomId)
         if (!roomStatuses) {
@@ -1221,6 +1339,10 @@ export class GroupChatServer {
             ack?.({ error: 'Not in room' })
             return
         }
+        if (!this.canSocketManageRoom(socket, roomId)) {
+            ack?.({ error: 'Access denied' })
+            return
+        }
         try {
             await this.agentClients.interruptAgent(roomId, agentName)
             this.nsp.to(roomId).emit('context_status', { roomId, agentName, status: 'ready' })
@@ -1233,11 +1355,12 @@ export class GroupChatServer {
 
     private handleApprovalRequested(socket: Socket, data: { roomId?: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }): void {
         const roomId = data.roomId
-        if (!roomId || !data.approval_id) return
-        this.nsp.to(roomId).emit('approval.requested', {
+        const agentName = data.agentName || ''
+        if (!roomId || !data.approval_id || !this.isAgentEventSocket(socket, roomId, agentName)) return
+        this.emitToRoomManagers(roomId, 'approval.requested', {
             event: 'approval.requested',
             roomId,
-            agentName: data.agentName || '',
+            agentName,
             approval_id: data.approval_id,
             command: data.command || '',
             description: data.description || '',
@@ -1248,11 +1371,12 @@ export class GroupChatServer {
 
     private handleApprovalResolved(socket: Socket, data: { roomId?: string; agentName?: string; approval_id?: string; choice?: string }): void {
         const roomId = data.roomId
-        if (!roomId || !data.approval_id) return
-        this.nsp.to(roomId).emit('approval.resolved', {
+        const agentName = data.agentName || ''
+        if (!roomId || !data.approval_id || !this.isAgentEventSocket(socket, roomId, agentName)) return
+        this.emitToRoomManagers(roomId, 'approval.resolved', {
             event: 'approval.resolved',
             roomId,
-            agentName: data.agentName || '',
+            agentName,
             approval_id: data.approval_id,
             choice: data.choice || '',
         })
@@ -1267,6 +1391,10 @@ export class GroupChatServer {
         const room = this.rooms.get(roomId)
         if (!room?.hasOnlineMember(socket.id)) {
             ack?.({ error: 'Not in room' })
+            return
+        }
+        if (!this.canSocketManageRoom(socket, roomId)) {
+            ack?.({ error: 'Access denied' })
             return
         }
         try {

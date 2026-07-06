@@ -532,6 +532,7 @@ class AgentClient {
                 : input
             const flushedAssistantParts = new Set<string>()
             let lastChunk: AgentBridgeOutput | null = null
+            const roomWorkspace = String(this.storage?.getRoom?.(roomId)?.workspace || '').trim()
             const started = await bridge.chat(
                 sessionId,
                 bridgeInput,
@@ -542,6 +543,7 @@ class AgentClient {
                     ...(modelContext.model ? { model: modelContext.model } : {}),
                     ...(modelContext.provider ? { provider: modelContext.provider } : {}),
                     source: 'api_server',
+                    ...(roomWorkspace ? { workspace: roomWorkspace } : {}),
                 },
             )
 

@@ -5,6 +5,7 @@ import {
   emitAck,
 } from './group-chat-test-helpers'
 import { GROUP_CHAT_AGENT_SOCKET_SECRET } from '../../packages/server/src/services/hermes/group-chat/agent-clients'
+import { authenticateUserToken, isAuthEnabled } from '../../packages/server/src/middleware/user-auth'
 import type { GroupChatServer } from '../../packages/server/src/services/hermes/group-chat'
 
 describe('group chat agent routing baseline', () => {
@@ -14,6 +15,8 @@ describe('group chat agent routing baseline', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    vi.mocked(isAuthEnabled).mockResolvedValue(false)
+    vi.mocked(authenticateUserToken).mockResolvedValue(null as any)
     harness = await createTestGroupChatServer()
     groupServer = harness.groupServer
     port = harness.port
@@ -32,8 +35,8 @@ describe('group chat agent routing baseline', () => {
       agentSocketSecret: GROUP_CHAT_AGENT_SOCKET_SECRET,
     })
     harness.sockets.push(human, agent)
-    await emitAck(human, 'join', { roomId: 'room-1' })
-    await emitAck(agent, 'join', { roomId: 'room-1' })
+    await emitAck(human, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
+    await emitAck(agent, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
     return { human, agent }
   }
 
@@ -48,6 +51,27 @@ describe('group chat agent routing baseline', () => {
       role: 'user',
       mentionDepth: 0,
     }))
+  })
+
+  it('does not route read-only invite member messages through agents', async () => {
+    vi.mocked(isAuthEnabled).mockResolvedValue(true)
+    vi.mocked(authenticateUserToken).mockImplementation(async (token: string) => {
+      if (token === 'read-only-token') return { id: 2, username: 'bob', role: 'admin', profiles: [] } as any
+      return null
+    })
+    const human = await connectGroupChatClient(port, 'ignored-user', 'Bob', { token: 'read-only-token' })
+    const agent = await connectGroupChatClient(port, 'agent-worker', 'Worker', {
+      source: 'agent',
+      agentSocketSecret: GROUP_CHAT_AGENT_SOCKET_SECRET,
+    })
+    harness.sockets.push(human, agent)
+    await emitAck(human, 'join', { roomId: 'room-1', inviteCode: 'ROOM1' })
+    await emitAck(agent, 'join', { roomId: 'room-1' })
+    const processMentions = vi.spyOn(groupServer.agentClients, 'processMentions').mockResolvedValue(undefined)
+
+    await emitAck(human, 'message', { roomId: 'room-1', id: 'readonly-msg-1', content: '@Worker hello' })
+
+    expect(processMentions).not.toHaveBeenCalled()
   })
 
   it('routes agent replies below the default mention-depth guard', async () => {
