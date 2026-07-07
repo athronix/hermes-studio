@@ -366,7 +366,7 @@ const flatNodes = computed<FlatNode[]>(() => {
     <!-- Selected path display -->
     <div v-if="selectedPath" class="folder-selected">
       <span class="folder-selected-label">{{ t('chat.folderPickerSelected') }}</span>
-      <span class="folder-selected-path">{{ selectedPath }}</span>
+      <span class="folder-selected-path" :title="selectedPath">{{ selectedPath }}</span>
     </div>
 
     <NDropdown

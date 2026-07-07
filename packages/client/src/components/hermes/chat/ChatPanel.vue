@@ -36,6 +36,7 @@ import TerminalPanel from "./TerminalPanel.vue";
 import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import SettingsCircuitBadge from "@/components/layout/SettingsCircuitBadge.vue";
 import { isStoredSuperAdmin } from "@/api/client";
+import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
@@ -328,6 +329,100 @@ const newChatApiKey = ref<string>("");
 const newChatApiMode = ref<CodingAgentApiMode>("codex_responses");
 const newChatWorkspace = ref("");
 const newChatLoading = ref(false);
+
+// Default workspace feature (multiple defaults supported)
+const defaultWorkspaces = ref<string[]>([]);
+const recentWorkspaces = ref<Array<{ path: string; lastUsed: number; useCount: number }>>([]);
+let workspaceComposable: ReturnType<typeof useDefaultWorkspace> | null = null;
+
+function initWorkspaceComposable(profile: string) {
+  workspaceComposable = useDefaultWorkspace(profile);
+  defaultWorkspaces.value = workspaceComposable.loadDefaultWorkspaces();
+  recentWorkspaces.value = workspaceComposable.loadRecentWorkspaces();
+}
+
+function handleToggleDefaultWorkspace() {
+  if (!workspaceComposable) return;
+  const currentPath = newChatWorkspace.value;
+  if (!currentPath) return;
+  
+  const isDefault = defaultWorkspaces.value.includes(currentPath);
+  if (isDefault) {
+    workspaceComposable.removeDefaultWorkspace(currentPath);
+    defaultWorkspaces.value = defaultWorkspaces.value.filter(p => p !== currentPath);
+  } else {
+    workspaceComposable.addDefaultWorkspace(currentPath);
+    defaultWorkspaces.value = [...defaultWorkspaces.value, currentPath];
+  }
+}
+
+function handleSelectRecentWorkspace(path: string) {
+  newChatWorkspace.value = path;
+}
+
+function handleSelectDefaultWorkspace(path: string) {
+  newChatWorkspace.value = path;
+  showDefaultWorkspaceMenu.value = false;
+}
+
+function handleTogglePinRecent(path: string) {
+  if (!workspaceComposable) return;
+  const isDefault = defaultWorkspaces.value.includes(path);
+  if (isDefault) {
+    workspaceComposable.removeDefaultWorkspace(path);
+    defaultWorkspaces.value = defaultWorkspaces.value.filter(p => p !== path);
+  } else {
+    workspaceComposable.addDefaultWorkspace(path);
+    defaultWorkspaces.value = [...defaultWorkspaces.value, path];
+  }
+}
+
+const isCurrentWorkspaceDefault = computed(() => {
+  return newChatWorkspace.value && defaultWorkspaces.value.includes(newChatWorkspace.value);
+});
+
+const showDefaultWorkspaceMenu = ref(false);
+
+function getFolderName(path: string | null): string {
+  if (!path) return '';
+  const parts = path.split('/');
+  return parts[parts.length - 1] || path;
+}
+
+const mostRecentDefaultWorkspace = computed(() => {
+  if (defaultWorkspaces.value.length === 0) return null;
+  
+  // 从最近使用记录中找第一个默认工作区
+  const recent = [...recentWorkspaces.value].sort((a, b) => b.lastUsed - a.lastUsed);
+  for (const entry of recent) {
+    if (defaultWorkspaces.value.includes(entry.path)) {
+      return entry.path;
+    }
+  }
+  
+  // 如果没有使用记录，返回第一个默认工作区
+  return defaultWorkspaces.value[0];
+});
+
+// 动态计算可见的工作区数量（根据容器宽度）
+const visibleDefaultWorkspaces = computed(() => {
+  if (defaultWorkspaces.value.length === 0) return [];
+  
+  // 简单策略：前2个总是可见，其余通过"更多"菜单
+  // 未来可以根据实际容器宽度动态调整
+  const maxVisible = Math.min(2, defaultWorkspaces.value.length);
+  return defaultWorkspaces.value.slice(0, maxVisible);
+});
+
+const hasHiddenDefaults = computed(() => {
+  return defaultWorkspaces.value.length > visibleDefaultWorkspaces.value.length;
+});
+
+const hiddenDefaultWorkspaces = computed(() => {
+  const visible = new Set(visibleDefaultWorkspaces.value);
+  return defaultWorkspaces.value.filter(ws => !visible.has(ws));
+});
+
 const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(["openai-codex", "copilot", "xai-oauth", "nous", "google-gemini-cli", "claude-oauth"]);
 
 const showEkkoAgentEntry = import.meta.env.DEV;
@@ -499,7 +594,13 @@ function ensureNewChatProviderSelection() {
 
 watch(
   () => [newChatAgent.value, newChatAgentMode.value, newChatProfile.value],
-  () => ensureNewChatProviderSelection(),
+  () => {
+    ensureNewChatProviderSelection();
+    // Reload workspace data when profile changes
+    if (newChatProfile.value) {
+      initWorkspaceComposable(newChatProfile.value);
+    }
+  },
 );
 
 async function openNewChatModal() {
@@ -513,12 +614,22 @@ async function openNewChatModal() {
     if (appStore.modelGroups.length === 0 && appStore.profileModelGroups.length === 0) {
       await appStore.loadModels();
     }
-    newChatWorkspace.value = "";
     newChatProfile.value =
       profilesStore.activeProfileName ||
       profilesStore.profiles.find((profile) => profile.active)?.name ||
       profilesStore.profiles[0]?.name ||
       "default";
+    
+    // Initialize workspace composable and load defaults
+    initWorkspaceComposable(newChatProfile.value);
+    
+    // Auto-fill most recent default workspace if available
+    if (mostRecentDefaultWorkspace.value) {
+      newChatWorkspace.value = mostRecentDefaultWorkspace.value;
+    } else {
+      newChatWorkspace.value = "";
+    }
+    
     syncNewChatModelSelection();
   } finally {
     newChatLoading.value = false;
@@ -584,6 +695,13 @@ async function confirmNewChat() {
     apiKey: source === "coding_agent" && !isGlobalCodingAgent ? group?.api_key || newChatApiKey.value.trim() || undefined : undefined,
     apiMode: isNewChatExternalCodingAgent.value && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
   });
+  
+  // Record workspace to recent list
+  if (newChatWorkspace.value && workspaceComposable) {
+    workspaceComposable.recordWorkspaceUsage(newChatWorkspace.value);
+    recentWorkspaces.value = workspaceComposable.loadRecentWorkspaces();
+  }
+  
   await router.push({
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
     params: { sessionId: session.id },
@@ -1572,8 +1690,92 @@ async function handleSessionModelCustomSubmit() {
             />
           </label>
           <div class="new-chat-field">
-            <span class="new-chat-label">{{ t("chat.workspace") }}</span>
-            <FolderPicker v-model="newChatWorkspace" />
+            <span class="new-chat-label">
+              {{ t("chat.workspace") }}
+              <NTooltip v-if="isCurrentWorkspaceDefault">
+                <template #trigger>
+                  <span class="workspace-default-badge">{{ t("chat.workspaceDefault") }}</span>
+                </template>
+                {{ t("chat.workspaceDefaultTooltip") }}
+              </NTooltip>
+            </span>
+            <!-- Default workspace chips -->
+            <div v-if="defaultWorkspaces.length > 0" class="default-workspace-chips">
+              <span class="default-workspace-label">{{ t("chat.defaultWorkspace") }}:</span>
+              <div class="workspace-chips-container">
+                <template v-for="(ws, index) in visibleDefaultWorkspaces" :key="ws">
+                  <div
+                    class="workspace-chip"
+                    :class="{ active: newChatWorkspace === ws }"
+                    @click="handleSelectDefaultWorkspace(ws)"
+                    :title="ws"
+                  >
+                    {{ getFolderName(ws) }}
+                  </div>
+                  <span v-if="index < visibleDefaultWorkspaces.length - 1 || hasHiddenDefaults" class="workspace-chip-separator">/</span>
+                </template>
+                <div v-if="hasHiddenDefaults" class="workspace-chip-dropdown">
+                  <button class="workspace-chip-more" @click="showDefaultWorkspaceMenu = !showDefaultWorkspaceMenu">
+                    {{ t("chat.more") }} ▼
+                  </button>
+                  <div v-if="showDefaultWorkspaceMenu" class="workspace-dropdown-menu">
+                    <div
+                      v-for="ws in hiddenDefaultWorkspaces"
+                      :key="ws"
+                      class="workspace-dropdown-item"
+                      @click="handleSelectDefaultWorkspace(ws)"
+                      :title="ws"
+                    >
+                      {{ getFolderName(ws) }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="workspace-input-row">
+              <FolderPicker v-model="newChatWorkspace" />
+              <NButton
+                size="small"
+                quaternary
+                @click="handleToggleDefaultWorkspace"
+                :disabled="!newChatWorkspace"
+                :title="isCurrentWorkspaceDefault ? t('chat.workspaceUnpin') : t('chat.workspacePin')"
+              >
+                <template #icon>
+                  <span :class="['workspace-star', { 'is-pinned': isCurrentWorkspaceDefault }]">
+                    {{ isCurrentWorkspaceDefault ? '★' : '☆' }}
+                  </span>
+                </template>
+              </NButton>
+            </div>
+            <div v-if="recentWorkspaces.length > 0" class="recent-workspaces">
+              <span class="recent-workspaces-label">{{ t("chat.workspaceRecent") }}:</span>
+              <div class="recent-workspaces-chips">
+                <NButton
+                  v-for="ws in recentWorkspaces"
+                  :key="ws.path"
+                  size="tiny"
+                  :type="ws.path === newChatWorkspace ? 'primary' : 'default'"
+                  @click="handleSelectRecentWorkspace(ws.path)"
+                >
+                  <template #icon>
+                    <span
+                      v-if="defaultWorkspaces.includes(ws.path)"
+                      class="recent-pin-icon"
+                      @click.stop="handleTogglePinRecent(ws.path)"
+                      :title="t('chat.workspaceUnpin')"
+                    >★</span>
+                    <span
+                      v-else
+                      class="recent-pin-icon"
+                      @click.stop="handleTogglePinRecent(ws.path)"
+                      :title="t('chat.workspacePin')"
+                    >☆</span>
+                  </template>
+                  {{ getFolderName(ws.path) }}
+                </NButton>
+              </div>
+            </div>
           </div>
         </div>
         <template #footer>
@@ -2639,6 +2841,186 @@ async function handleSessionModelCustomSubmit() {
 
   .chat-tool-resize-handle {
     display: none;
+  }
+}
+
+/* ── Default Workspace Feature ─────────────────────────────────── */
+
+.workspace-input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.workspace-input-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-star {
+  font-size: 16px;
+  line-height: 1;
+  color: $text-muted;
+  transition: color $transition-fast, transform $transition-fast;
+  cursor: pointer;
+
+  &:hover {
+    transform: scale(1.2);
+  }
+
+  &.is-pinned {
+    color: #f5a623;
+  }
+}
+
+.default-workspace-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.default-workspace-label {
+  font-size: 13px;
+  color: var(--n-text-color-3);
+  flex-shrink: 0;
+}
+
+.workspace-chips-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  position: relative;
+}
+
+.workspace-chip {
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-chip:hover {
+  background: rgba(var(--accent-primary-rgb), 0.06);
+  border-color: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+.workspace-chip.active {
+  background: rgba(var(--accent-primary-rgb), 0.12);
+  border-color: var(--accent-muted);
+  color: var(--accent-primary);
+  font-weight: 500;
+}
+
+.workspace-chip-separator {
+  color: var(--n-text-color-3);
+  font-size: 13px;
+  user-select: none;
+}
+
+.workspace-chip-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.workspace-chip-more {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  color: var(--text-secondary);
+}
+
+.workspace-chip-more:hover {
+  background: rgba(var(--accent-primary-rgb), 0.06);
+  border-color: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+.workspace-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 9999;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.workspace-dropdown-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-dropdown-item:hover {
+  background: var(--n-color-hover);
+}
+
+.workspace-default-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.12);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.recent-workspaces {
+  margin-top: 8px;
+}
+
+.recent-workspaces-label {
+  display: block;
+  font-size: 11px;
+  color: $text-muted;
+  margin-bottom: 4px;
+}
+
+.recent-workspaces-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.recent-pin-icon {
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: $text-muted;
+  transition: color $transition-fast;
+
+  &:hover {
+    color: #f5a623;
   }
 }
 </style>
