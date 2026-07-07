@@ -65,9 +65,6 @@ constexpr uint32_t kMcuFailureIdleDelayMs = 20000;
 constexpr uint32_t kMcuAudioDefaultDurationMs = 1800;
 constexpr uint32_t kMcuAudioMaxDurationMs = 9000;
 constexpr uint32_t kMcuAudioHttpTimeoutMs = 30000;
-constexpr uint32_t kMcuAudioPrebufferMs = 240;
-constexpr uint32_t kMcuAudioPrebufferTimeoutMs = 2500;
-constexpr size_t kMcuAudioPrebufferMaxBytes = 16 * 1024;
 constexpr uint32_t kBootDebounceMs = 80;
 constexpr uint32_t kBootInputArmDelayMs = 2500;
 constexpr uint32_t kBootLongPressMs = 360;
@@ -88,7 +85,7 @@ constexpr int kVoiceInputGainPermille = 2800;
 constexpr int kAudioSampleRate = 24000;
 constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
-constexpr size_t kVoiceStreamChunkFrames = 1024;
+constexpr size_t kVoiceStreamChunkFrames = 512;
 constexpr uint8_t kVoiceStreamQueueSlots = 8;
 constexpr uint32_t kVoiceStreamQueueWaitMs = 80;
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
@@ -2855,64 +2852,6 @@ uint32_t mcuAudioDurationFor(const McuAudioSegment &segment) {
   return min(max(estimated, kMcuAudioDefaultDurationMs), kMcuAudioMaxDurationMs);
 }
 
-size_t mcuAudioPrebufferTargetBytes(int contentLength, uint32_t sampleRate, uint8_t channels, size_t frameBytes) {
-  if (sampleRate == 0 || channels == 0 || frameBytes == 0) return 0;
-  size_t target = static_cast<size_t>((static_cast<uint64_t>(sampleRate) * channels * sizeof(int16_t) *
-                                       kMcuAudioPrebufferMs) / 1000ULL);
-  target = min(target, kMcuAudioPrebufferMaxBytes);
-  if (contentLength > 0) target = min(target, static_cast<size_t>(contentLength));
-  target -= target % frameBytes;
-  return target;
-}
-
-void releaseMcuAudioPrebuffer(uint8_t **buffer) {
-  if (buffer && *buffer) {
-    delete[] *buffer;
-    *buffer = nullptr;
-  }
-}
-
-bool prebufferPcmStream(WiFiClient *stream, int *remaining, size_t frameBytes, uint8_t channels,
-                        uint32_t sampleRate, uint8_t **bufferOut, size_t *lengthOut) {
-  if (!stream || !remaining || !bufferOut || !lengthOut) return false;
-  *bufferOut = nullptr;
-  *lengthOut = 0;
-  size_t target = mcuAudioPrebufferTargetBytes(*remaining, sampleRate, channels, frameBytes);
-  if (target == 0) return true;
-
-  uint8_t *buffer = new uint8_t[target];
-  if (!buffer) return true;
-
-  uint32_t startedAt = millis();
-  while (*lengthOut < target) {
-    int available = stream->available();
-    if (available <= 0) {
-      if (!stream->connected() && *remaining < 0) break;
-      if (millis() - startedAt > kMcuAudioPrebufferTimeoutMs) break;
-      delay(10);
-      yield();
-      continue;
-    }
-
-    size_t toRead = min(static_cast<size_t>(available), target - *lengthOut);
-    if (*remaining > 0) toRead = min(toRead, static_cast<size_t>(*remaining));
-    int bytesRead = stream->readBytes(buffer + *lengthOut, toRead);
-    if (bytesRead <= 0) continue;
-    *lengthOut += static_cast<size_t>(bytesRead);
-    if (*remaining > 0) *remaining -= bytesRead;
-    startedAt = millis();
-    yield();
-    if (*remaining == 0) break;
-  }
-
-  if (*lengthOut == 0) {
-    delete[] buffer;
-    return true;
-  }
-  *bufferOut = buffer;
-  return true;
-}
-
 bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleRate) {
   if (!stream || audioBusy || !i2sReady || !es8311Ready) {
     lastAudioDetail = F("audio stream is not ready");
@@ -2934,55 +2873,38 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
   uint32_t playedBytes = 0;
   uint32_t paddedBytes = 0;
   uint32_t idleStarted = millis();
-  uint8_t *prebuffer = nullptr;
-  size_t prebufferLength = 0;
-  size_t prebufferOffset = 0;
-  prebufferPcmStream(stream, &remaining, kAudioFrameBytes, 2, sampleRate, &prebuffer, &prebufferLength);
 
-  while (prebufferOffset < prebufferLength || remaining != 0) {
+  while (remaining != 0) {
     if (shouldInterruptAudioForVoice()) {
       lastAudioDetail = F("audio interrupted by listen");
-      releaseMcuAudioPrebuffer(&prebuffer);
       audioBusy = false;
       return false;
     }
-    int bytesRead = 0;
-    bool fromPrebuffer = false;
-    if (prebufferOffset < prebufferLength) {
-      size_t toRead = min(kChunkBytes, prebufferLength - prebufferOffset);
-      memcpy(buffer + pendingBytes, prebuffer + prebufferOffset, toRead);
-      prebufferOffset += toRead;
-      bytesRead = static_cast<int>(toRead);
-      fromPrebuffer = true;
-      if (prebufferOffset >= prebufferLength) releaseMcuAudioPrebuffer(&prebuffer);
-    } else {
-      int available = stream->available();
-      if (available <= 0) {
-        if (!stream->connected() && remaining < 0) break;
-        if (millis() - idleStarted > kMcuAudioHttpTimeoutMs) {
-          lastAudioDetail = F("audio stream timed out");
-          releaseMcuAudioPrebuffer(&prebuffer);
-          audioBusy = false;
-          markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
-          return false;
-        }
-        delay(10);
-        yield();
-        continue;
+    int available = stream->available();
+    if (available <= 0) {
+      if (!stream->connected() && remaining < 0) break;
+      if (millis() - idleStarted > kMcuAudioHttpTimeoutMs) {
+        lastAudioDetail = F("audio stream timed out");
+        audioBusy = false;
+        markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
+        return false;
       }
-      idleStarted = millis();
-
-      size_t toRead = min(static_cast<size_t>(available), kChunkBytes);
-      if (remaining > 0) toRead = min(toRead, static_cast<size_t>(remaining));
-      bytesRead = stream->readBytes(buffer + pendingBytes, toRead);
-      if (bytesRead <= 0) continue;
+      delay(10);
+      yield();
+      continue;
     }
+    idleStarted = millis();
+
+    size_t toRead = min(static_cast<size_t>(available), kChunkBytes);
+    if (remaining > 0) toRead = min(toRead, static_cast<size_t>(remaining));
+    int bytesRead = stream->readBytes(buffer + pendingBytes, toRead);
+    if (bytesRead <= 0) continue;
 
     streamBytes += static_cast<uint32_t>(bytesRead);
 
     size_t bufferedBytes = pendingBytes + static_cast<size_t>(bytesRead);
     size_t alignedBytes = bufferedBytes - (bufferedBytes % kAudioFrameBytes);
-    if (!fromPrebuffer && remaining > 0) remaining -= bytesRead;
+    if (remaining > 0) remaining -= bytesRead;
     if (alignedBytes == 0) {
       pendingBytes = bufferedBytes;
       continue;
@@ -2993,7 +2915,6 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
     esp_err_t err = i2s_write(kI2sPort, buffer, alignedBytes, &written, pdMS_TO_TICKS(1000));
     if (err != ESP_OK || written != alignedBytes) {
       lastAudioDetail = String(F("I2S write failed err=")) + String(static_cast<int>(err));
-      releaseMcuAudioPrebuffer(&prebuffer);
       audioBusy = false;
       markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
       return false;
@@ -3013,7 +2934,6 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
     esp_err_t err = i2s_write(kI2sPort, buffer, kAudioFrameBytes, &written, pdMS_TO_TICKS(1000));
     if (err != ESP_OK || written != kAudioFrameBytes) {
       lastAudioDetail = String(F("I2S final write failed err=")) + String(static_cast<int>(err));
-      releaseMcuAudioPrebuffer(&prebuffer);
       audioBusy = false;
       markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
       return false;
@@ -3021,7 +2941,6 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
     playedBytes += written;
   }
 
-  releaseMcuAudioPrebuffer(&prebuffer);
   drainI2sPlayback(playedBytes, 2, sampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   lastAudioAtMs = millis();
@@ -3055,55 +2974,38 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
   uint32_t playedBytes = 0;
   uint32_t paddedBytes = 0;
   uint32_t idleStarted = millis();
-  uint8_t *prebuffer = nullptr;
-  size_t prebufferLength = 0;
-  size_t prebufferOffset = 0;
-  prebufferPcmStream(stream, &remaining, kMonoFrameBytes, 1, sampleRate, &prebuffer, &prebufferLength);
 
-  while (prebufferOffset < prebufferLength || remaining != 0) {
+  while (remaining != 0) {
     if (shouldInterruptAudioForVoice()) {
       lastAudioDetail = F("audio interrupted by listen");
-      releaseMcuAudioPrebuffer(&prebuffer);
       audioBusy = false;
       return false;
     }
-    int bytesRead = 0;
-    bool fromPrebuffer = false;
-    if (prebufferOffset < prebufferLength) {
-      size_t toRead = min(kInputChunkBytes, prebufferLength - prebufferOffset);
-      memcpy(input + pendingBytes, prebuffer + prebufferOffset, toRead);
-      prebufferOffset += toRead;
-      bytesRead = static_cast<int>(toRead);
-      fromPrebuffer = true;
-      if (prebufferOffset >= prebufferLength) releaseMcuAudioPrebuffer(&prebuffer);
-    } else {
-      int available = stream->available();
-      if (available <= 0) {
-        if (!stream->connected() && remaining < 0) break;
-        if (millis() - idleStarted > kMcuAudioHttpTimeoutMs) {
-          lastAudioDetail = F("audio stream timed out");
-          releaseMcuAudioPrebuffer(&prebuffer);
-          audioBusy = false;
-          markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
-          return false;
-        }
-        delay(10);
-        yield();
-        continue;
+    int available = stream->available();
+    if (available <= 0) {
+      if (!stream->connected() && remaining < 0) break;
+      if (millis() - idleStarted > kMcuAudioHttpTimeoutMs) {
+        lastAudioDetail = F("audio stream timed out");
+        audioBusy = false;
+        markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
+        return false;
       }
-      idleStarted = millis();
-
-      size_t toRead = min(static_cast<size_t>(available), kInputChunkBytes);
-      if (remaining > 0) toRead = min(toRead, static_cast<size_t>(remaining));
-      bytesRead = stream->readBytes(input + pendingBytes, toRead);
-      if (bytesRead <= 0) continue;
+      delay(10);
+      yield();
+      continue;
     }
+    idleStarted = millis();
+
+    size_t toRead = min(static_cast<size_t>(available), kInputChunkBytes);
+    if (remaining > 0) toRead = min(toRead, static_cast<size_t>(remaining));
+    int bytesRead = stream->readBytes(input + pendingBytes, toRead);
+    if (bytesRead <= 0) continue;
 
     streamBytes += static_cast<uint32_t>(bytesRead);
 
     size_t bufferedBytes = pendingBytes + static_cast<size_t>(bytesRead);
     size_t alignedBytes = bufferedBytes - (bufferedBytes % kMonoFrameBytes);
-    if (!fromPrebuffer && remaining > 0) remaining -= bytesRead;
+    if (remaining > 0) remaining -= bytesRead;
     if (alignedBytes == 0) {
       pendingBytes = bufferedBytes;
       continue;
@@ -3125,7 +3027,6 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
     esp_err_t err = i2s_write(kI2sPort, stereo, bytesToWrite, &written, pdMS_TO_TICKS(1000));
     if (err != ESP_OK || written != bytesToWrite) {
       lastAudioDetail = String(F("I2S mono write failed err=")) + String(static_cast<int>(err));
-      releaseMcuAudioPrebuffer(&prebuffer);
       audioBusy = false;
       markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
       return false;
@@ -3149,7 +3050,6 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
     esp_err_t err = i2s_write(kI2sPort, stereo, 2 * sizeof(int16_t), &written, pdMS_TO_TICKS(1000));
     if (err != ESP_OK || written != 2 * sizeof(int16_t)) {
       lastAudioDetail = String(F("I2S mono final write failed err=")) + String(static_cast<int>(err));
-      releaseMcuAudioPrebuffer(&prebuffer);
       audioBusy = false;
       markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
       return false;
@@ -3157,7 +3057,6 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
     playedBytes += written;
   }
 
-  releaseMcuAudioPrebuffer(&prebuffer);
   drainI2sPlayback(playedBytes, 2, sampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   lastAudioAtMs = millis();
