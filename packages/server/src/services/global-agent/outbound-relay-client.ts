@@ -215,6 +215,7 @@ class McuSocketIoRelayClient {
     bitsPerSample: number
     chunks: Buffer[]
   }) | null = null
+  private localMcuForwardQueue = Promise.resolve()
   private readonly audioWaiters = new Map<string, { resolve: () => void; reject: (err: Error) => void; timer: NodeJS.Timeout }>()
   private readonly activeRuns = new Map<string, { socket: Socket; sessionId: string }>()
   private readonly sessionRuns = new Map<string, { interactionId: string; socket: Socket }>()
@@ -334,7 +335,15 @@ class McuSocketIoRelayClient {
     })
     socket.onAny((eventName: string, payload: unknown) => {
       if (SOCKET_IO_RESERVED_EVENTS.has(eventName)) return
-      void this.forwardLocalMcuEventToRelay(eventName, payload)
+      this.localMcuForwardQueue = this.localMcuForwardQueue
+        .then(() => this.forwardLocalMcuEventToRelay(eventName, payload))
+        .catch((err) => {
+          logger.warn({
+            err,
+            relayUrl: this.redactedRelayUrl(),
+            eventName,
+          }, '[outbound-relay:mcu-sio] failed to forward local MCU event to relay')
+        })
     })
   }
 

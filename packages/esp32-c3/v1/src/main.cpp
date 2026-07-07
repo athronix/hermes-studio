@@ -87,6 +87,7 @@ constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
 constexpr size_t kVoiceStreamChunkFrames = 1024;
 constexpr uint8_t kVoiceStreamQueueSlots = 8;
+constexpr uint32_t kVoiceStreamQueueWaitMs = 80;
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
 constexpr uint8_t kDefaultOutputVolumePercent = 70;
@@ -97,7 +98,9 @@ constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 Preferences prefs;
 WebServer server(80);
 WiFiUDP lanUdp;
-WiFiClient mcuWsClient;
+WiFiClient mcuWsPlainClient;
+WiFiClientSecure mcuWsSecureClient;
+WiFiClient *mcuWsClient = &mcuWsPlainClient;
 bool wifiReady = false;
 bool setupApMode = false;
 bool oledFound = false;
@@ -1266,6 +1269,15 @@ int16_t shapeVoiceInputSample(int16_t sample) {
   if (value > 32767) return 32767;
   if (value < -32768) return -32768;
   return static_cast<int16_t>(value);
+}
+
+void drainI2sPlayback(uint32_t writtenBytes, uint8_t channels, uint32_t sampleRate) {
+  if (writtenBytes == 0 || channels == 0 || sampleRate == 0) return;
+  uint32_t frameBytes = static_cast<uint32_t>(channels) * sizeof(int16_t);
+  uint32_t totalMs = (writtenBytes / frameBytes) * 1000UL / sampleRate;
+  uint32_t drainMs = min<uint32_t>(max<uint32_t>(totalMs / 5, 100), 180);
+  delay(drainMs);
+  yield();
 }
 
 uint16_t sampleMagnitude(int16_t sample) {
@@ -2752,7 +2764,7 @@ String mcuStatusJson() {
 }
 
 bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
-  if (!mcuWsClient.connected()) return false;
+  if (!mcuWsClient->connected()) return false;
   uint8_t header[14];
   size_t headerLen = 0;
   header[headerLen++] = 0x80 | (opcode & 0x0F);
@@ -2769,7 +2781,7 @@ bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
   uint8_t mask[4];
   for (uint8_t i = 0; i < 4; ++i) mask[i] = static_cast<uint8_t>(esp_random() & 0xFF);
   for (uint8_t i = 0; i < 4; ++i) header[headerLen++] = mask[i];
-  if (mcuWsClient.write(header, headerLen) != headerLen) return false;
+  if (mcuWsClient->write(header, headerLen) != headerLen) return false;
 
   constexpr size_t kChunk = 256;
   uint8_t buffer[kChunk];
@@ -2779,7 +2791,7 @@ bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
     for (size_t i = 0; i < n; ++i) {
       buffer[i] = data[offset + i] ^ mask[(offset + i) & 3];
     }
-    if (mcuWsClient.write(buffer, n) != n) return false;
+    if (mcuWsClient->write(buffer, n) != n) return false;
     offset += n;
   }
   return true;
@@ -2928,6 +2940,7 @@ bool playPcmStereoStream(WiFiClient *stream, int contentLength, uint32_t sampleR
     playedBytes += written;
   }
 
+  drainI2sPlayback(playedBytes, 2, sampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   lastAudioAtMs = millis();
   lastAudioDetail = String(F("pcm played bytes=")) + String(playedBytes) +
@@ -3042,6 +3055,7 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
     playedBytes += written;
   }
 
+  drainI2sPlayback(playedBytes, 2, sampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   lastAudioAtMs = millis();
   lastAudioDetail = String(F("mono pcm played bytes=")) + String(playedBytes) +
@@ -3096,6 +3110,7 @@ bool playRecordedWav(uint8_t *wav, size_t wavLen) {
     yield();
   }
 
+  drainI2sPlayback(playedBytes, 2, kVoiceInputSampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   audioBusy = false;
   lastAudioAtMs = millis();
@@ -3885,7 +3900,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   senderContext.interactionId = &interactionId;
   senderContext.queue = streamQueue;
   TaskHandle_t senderTask = nullptr;
-  if (xTaskCreate(voiceStreamSenderTask, "voice-send", 8192, &senderContext, 1, &senderTask) != pdPASS) {
+  if (xTaskCreate(voiceStreamSenderTask, "voice-send", 8192, &senderContext, 2, &senderTask) != pdPASS) {
     vQueueDelete(streamQueue);
     audioBusy = false;
     lastAudioDetail = F("voice stream sender start failed");
@@ -3926,7 +3941,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
     pcmChunk.done = false;
     pcmChunk.offset = queuedBytes;
     pcmChunk.bytes = bytes;
-    if (senderContext.failed || xQueueSend(streamQueue, &pcmChunk, 0) != pdTRUE) {
+    if (senderContext.failed || xQueueSend(streamQueue, &pcmChunk, pdMS_TO_TICKS(kVoiceStreamQueueWaitMs)) != pdTRUE) {
       return false;
     }
     queuedBytes += static_cast<uint32_t>(bytes);
@@ -4416,9 +4431,9 @@ bool readMcuWsBytes(uint8_t *buffer, size_t length, uint32_t timeoutMs = 100) {
   size_t read = 0;
   uint32_t startedAt = millis();
   while (read < length && millis() - startedAt < timeoutMs) {
-    int available = mcuWsClient.available();
+    int available = mcuWsClient->available();
     if (available > 0) {
-      int n = mcuWsClient.read(buffer + read, min(static_cast<size_t>(available), length - read));
+      int n = mcuWsClient->read(buffer + read, min(static_cast<size_t>(available), length - read));
       if (n > 0) read += static_cast<size_t>(n);
     } else {
       delay(1);
@@ -4429,7 +4444,7 @@ bool readMcuWsBytes(uint8_t *buffer, size_t length, uint32_t timeoutMs = 100) {
 }
 
 void closeMcuSocketTransport(const __FlashStringHelper *reason) {
-  if (mcuWsClient.connected()) mcuWsClient.stop();
+  if (mcuWsClient->connected()) mcuWsClient->stop();
   wsReady = false;
   mcuSocketConnected = false;
   mcuSocketNamespaceReady = false;
@@ -4443,12 +4458,12 @@ void closeMcuSocketTransport(const __FlashStringHelper *reason) {
 
 void mcuSocketLoop() {
   if (!wsReady) return;
-  if (!mcuWsClient.connected()) {
+  if (!mcuWsClient->connected()) {
     closeMcuSocketTransport(F("tcp closed"));
     return;
   }
 
-  while (mcuWsClient.available() >= 2) {
+  while (mcuWsClient->available() >= 2) {
     uint8_t header[2];
     if (!readMcuWsBytes(header, 2)) return;
     uint8_t opcode = header[0] & 0x0F;
@@ -4489,7 +4504,9 @@ void mcuSocketLoop() {
 }
 
 void disconnectMcuSocketClient() {
-  if (mcuWsClient.connected()) mcuWsClient.stop();
+  if (mcuWsPlainClient.connected()) mcuWsPlainClient.stop();
+  if (mcuWsSecureClient.connected()) mcuWsSecureClient.stop();
+  mcuWsClient = &mcuWsPlainClient;
   wsReady = false;
   mcuSocketConnected = false;
   mcuSocketNamespaceReady = false;
@@ -4527,12 +4544,19 @@ void connectMcuSocketClient() {
   if (wsReady && mcuSocketTargetKey == targetKey) return;
   disconnectMcuSocketClient();
 
-  if (scheme != F("http")) {
+  if (scheme != F("http") && scheme != F("https")) {
     Serial.printf("Socket.IO client unsupported scheme=%s\n", scheme.c_str());
     return;
   }
 
-  if (!mcuWsClient.connect(host.c_str(), port, 5000)) {
+  if (scheme == F("https")) {
+    mcuWsSecureClient.setInsecure();
+    mcuWsClient = &mcuWsSecureClient;
+  } else {
+    mcuWsClient = &mcuWsPlainClient;
+  }
+  mcuWsClient->setTimeout(5);
+  if (!mcuWsClient->connect(host.c_str(), port, 5000)) {
     Serial.printf("Socket.IO tcp connect failed host=%s port=%u\n", host.c_str(), port);
     return;
   }
@@ -4550,18 +4574,18 @@ void connectMcuSocketClient() {
   request += F("\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ");
   request += key;
   request += F("\r\nUser-Agent: HStudio-ESP32C3\r\n\r\n");
-  mcuWsClient.print(request);
+  mcuWsClient->print(request);
 
-  String statusLine = mcuWsClient.readStringUntil('\n');
+  String statusLine = mcuWsClient->readStringUntil('\n');
   statusLine.trim();
   if (!statusLine.startsWith(F("HTTP/1.1 101")) && !statusLine.startsWith(F("HTTP/1.0 101"))) {
     Serial.printf("Socket.IO websocket upgrade failed: %s\n", statusLine.c_str());
-    mcuWsClient.stop();
+    mcuWsClient->stop();
     return;
   }
   uint32_t headerStartedAt = millis();
-  while (mcuWsClient.connected() && millis() - headerStartedAt < 3000) {
-    String line = mcuWsClient.readStringUntil('\n');
+  while (mcuWsClient->connected() && millis() - headerStartedAt < 3000) {
+    String line = mcuWsClient->readStringUntil('\n');
     line.trim();
     if (line.length() == 0) break;
   }
