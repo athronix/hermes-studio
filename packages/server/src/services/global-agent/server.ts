@@ -160,6 +160,10 @@ interface McuAudioWaiter {
   timer: ReturnType<typeof setTimeout>
 }
 
+interface EnqueuedMcuSpeechSegment {
+  playbackDone: Promise<void>
+}
+
 interface McuVoiceStreamState {
   interactionId: string
   profile: string
@@ -518,6 +522,7 @@ export class GlobalAgentServer {
     })
     let segmentIndex = 0
     let ttsQueue = Promise.resolve()
+    const playbackQueue: Promise<void>[] = []
     let settled = false
     let output = ''
     const speechSegmenter = createMcuSpeechSegmenter()
@@ -547,7 +552,10 @@ export class GlobalAgentServer {
       if (!segmentText) return
       const segmentId = `${options.interactionId}-tts-${++segmentIndex}`
       ttsQueue = ttsQueue
-        .then(() => this.enqueueMcuSpeechSegment(options, segmentId, segmentText))
+        .then(async () => {
+          const audio = await this.enqueueMcuSpeechSegment(options, segmentId, segmentText)
+          playbackQueue.push(audio.playbackDone)
+        })
         .catch((err) => {
           if (err instanceof Error && err.message === 'audio.interrupted') {
             this.interruptedMcuInteractions.add(options.interactionId)
@@ -661,7 +669,8 @@ export class GlobalAgentServer {
       }
       flushCompletedAssistantMessage()
       ttsQueue
-        .then(() => {
+        .then(async () => {
+          await Promise.all(playbackQueue)
           if (this.interruptedMcuInteractions.has(options.interactionId)) {
             finish()
             return
@@ -1199,14 +1208,19 @@ export class GlobalAgentServer {
     return { url: `/api/hermes/mcu/audio/${file}`, mimeType: 'audio/x-ima-adpcm' }
   }
 
-  private async enqueueMcuSpeechSegment(options: McuVoiceChatTurnOptions, segmentId: string, text: string): Promise<void> {
-    if (this.interruptedMcuInteractions.has(options.interactionId)) return
+  private async enqueueMcuSpeechSegment(options: McuVoiceChatTurnOptions, segmentId: string, text: string): Promise<EnqueuedMcuSpeechSegment> {
+    if (this.interruptedMcuInteractions.has(options.interactionId)) {
+      return { playbackDone: Promise.resolve() }
+    }
     this.emitMcuEvent({ type: 'interaction.status', interactionId: options.interactionId, status: 'speaking' }, { clientId: options.clientId })
     const controller = this.registerMcuTtsAbortController(options.interactionId)
     try {
       const audio = await this.synthesizeMcuSpeech(text, options.userToken, options.profile, controller.signal)
-      if (this.interruptedMcuInteractions.has(options.interactionId) || controller.signal.aborted) return
+      if (this.interruptedMcuInteractions.has(options.interactionId) || controller.signal.aborted) {
+        return { playbackDone: Promise.resolve() }
+      }
       const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(90_000, Math.min(text.length * 1200, 300_000)))
+      waitForDone.catch(() => undefined)
       this.emitMcuEvent({
         type: 'audio.enqueue',
         interactionId: options.interactionId,
@@ -1219,7 +1233,7 @@ export class GlobalAgentServer {
         durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
         completionManagedByServer: true,
       }, { clientId: options.clientId })
-      await waitForDone
+      return { playbackDone: waitForDone }
     } catch (err) {
       if (controller.signal.aborted) throw new Error('audio.interrupted')
       throw err

@@ -702,7 +702,7 @@ describe('GlobalAgentServer', () => {
     server.init()
 
     const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
-    expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/)
+    expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.adpcm$/)
     expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({
       'X-Hermes-Profile': 'research',
     })
@@ -767,7 +767,7 @@ describe('GlobalAgentServer', () => {
 
     const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
 
-    expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/)
+    expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.adpcm$/)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
       'X-Hermes-Profile': 'research',
@@ -810,7 +810,7 @@ describe('GlobalAgentServer', () => {
 
     const audio = await (server as any).synthesizeMcuSpeech('hello', 'user-jwt', 'research')
 
-    expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/)
+    expect(audio.url).toMatch(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.adpcm$/)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({
       'X-Hermes-Profile': 'research',
@@ -876,13 +876,9 @@ describe('GlobalAgentServer', () => {
     expect(agentSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-1',
-      url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/),
+      url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.adpcm$/),
       completionManagedByServer: true,
     }))
-    agentSocket.__handlers.get('audio.done')?.({
-      interactionId: 'voice-1',
-      segmentId: 'voice-1-tts-1',
-    })
     localSocket.__handlers.get('tool.completed')?.({ tool: 'weather' })
     localSocket.__handlers.get('message.delta')?.({ delta: '结果如下：\n| 名称 | 值 |\n' })
     localSocket.__handlers.get('message.delta')?.({ delta: '| --- | --- |\n| foo | 1 |\n请确认。' })
@@ -898,9 +894,17 @@ describe('GlobalAgentServer', () => {
     expect(agentSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-2',
-      url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/),
+      url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.adpcm$/),
       completionManagedByServer: true,
     }))
+    expect(agentSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+      interactionId: 'voice-1',
+      status: 'completed',
+    }))
+    agentSocket.__handlers.get('audio.done')?.({
+      interactionId: 'voice-1',
+      segmentId: 'voice-1-tts-1',
+    })
     expect(agentSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({
       interactionId: 'voice-1',
       status: 'completed',

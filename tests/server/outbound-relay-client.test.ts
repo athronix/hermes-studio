@@ -324,7 +324,7 @@ describe('outbound relay client', () => {
       interactionId: 'voice-stream-1',
       offset: 0,
       bytes: 4,
-      data: Buffer.from([1, 2, 3, 4]).toString('base64'),
+      data: Buffer.from([1, 2, 3, 4]),
     }))
     expect(localGlobalAgentSocket.emit).toHaveBeenCalledWith('voice.stream.end', expect.objectContaining({
       type: 'voice.stream.end',
@@ -518,13 +518,13 @@ describe('outbound relay client', () => {
     expect(uploadCall).toBeTruthy()
     expect(uploadCall?.[1].headers).toMatchObject({
       Authorization: 'Bearer upload-token',
-      'Content-Type': 'audio/x-pcm',
+      'Content-Type': 'audio/x-ima-adpcm',
       'X-Device-Code': 'device-code-1',
       'X-Audio-Sample-Rate': '24000',
       'X-Audio-Channels': '1',
     })
     expect(uploadCall?.[1].body).toBeInstanceOf(Uint8Array)
-    expect(Buffer.from(uploadCall?.[1].body as Uint8Array)).toEqual(pcm)
+    expect(Buffer.from(uploadCall?.[1].body as Uint8Array).subarray(0, 4).toString('ascii')).toBe('HADP')
   })
 
   it('queues the hosted TTS-failed prompt when Socket.IO MCU speech synthesis fails', async () => {
