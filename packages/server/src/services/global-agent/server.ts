@@ -166,7 +166,7 @@ interface McuVoiceStreamState {
   channels: number
   bitsPerSample: number
   bytes: number
-  chunks: Array<{ offset: number; chunk: Buffer }>
+  chunks: Array<{ offset: number; chunk: Buffer; seq?: number; crc32?: number }>
   userToken: string
 }
 
@@ -351,6 +351,17 @@ function responseHeaders(response: Response): Record<string, string> {
 function isTextualResponse(contentType: string): boolean {
   const lower = contentType.toLowerCase()
   return TEXTUAL_RESPONSE_TYPES.some(prefix => lower.startsWith(prefix) || lower.includes(prefix))
+}
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff
+  for (const byte of buffer) {
+    crc ^= byte
+    for (let i = 0; i < 8; i += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0
 }
 
 async function readResponseBody(response: Response): Promise<{ body?: string; bodyBase64?: string; truncated?: boolean }> {
@@ -1448,24 +1459,110 @@ export class GlobalAgentServer {
 
   private handleMcuVoiceStreamChunk(clientId: string, payload: Record<string, unknown>): void {
     const stream = this.mcuVoiceStreams.get(clientId)
-    if (!stream) return
+    const payloadInteractionId = typeof payload.interactionId === 'string' ? payload.interactionId.trim() : ''
+    const interactionId = typeof payload.interactionId === 'string' ? payload.interactionId.trim() : ''
+    const seq = Number(payload.seq)
+    const normalizedSeq = Number.isFinite(seq) && seq >= 0 ? Math.floor(seq) : undefined
+    const expectsAck = normalizedSeq !== undefined || Number.isFinite(Number(payload.crc32))
+    if (!stream) {
+      if (expectsAck) {
+        this.emitMcuEvent({
+          type: 'voice.stream.chunk.ack',
+          interactionId: payloadInteractionId || undefined,
+          seq: normalizedSeq,
+          offset: Number.isFinite(Number(payload.offset)) ? Math.floor(Number(payload.offset)) : undefined,
+          ok: false,
+          reason: 'missing_stream',
+        }, { clientId })
+      }
+      return
+    }
+    const ack = (ok: boolean, reason?: string, offset?: number, bytes?: number, checksum?: number) => {
+      if (!expectsAck) return
+      this.emitMcuEvent({
+        type: 'voice.stream.chunk.ack',
+        interactionId: stream.interactionId,
+        seq: normalizedSeq,
+        offset,
+        bytes,
+        crc32: checksum,
+        ok,
+        reason,
+      }, { clientId })
+    }
+    if (interactionId && interactionId !== stream.interactionId) {
+      logger.warn({
+        clientId,
+        streamInteractionId: stream.interactionId,
+        chunkInteractionId: interactionId,
+      }, '[global-agent] ignoring MCU voice stream chunk for stale interaction')
+      ack(false, 'stale_interaction')
+      return
+    }
     const data = typeof payload.data === 'string' ? payload.data : ''
-    if (!data) return
+    if (!data) {
+      ack(false, 'missing_data')
+      return
+    }
     const chunk = Buffer.from(data, 'base64')
-    if (!chunk.length) return
+    if (!chunk.length) {
+      ack(false, 'empty_data')
+      return
+    }
     const offset = Number(payload.offset)
-    const normalizedOffset = Number.isFinite(offset) && offset >= 0 ? offset : stream.bytes
-    stream.chunks.push({ offset: normalizedOffset, chunk })
+    const normalizedOffset = Number.isFinite(offset) && offset >= 0 ? Math.floor(offset) : stream.bytes
+    const expectedBytes = Number(payload.bytes)
+    if (Number.isFinite(expectedBytes) && expectedBytes >= 0 && Math.floor(expectedBytes) !== chunk.byteLength) {
+      ack(false, 'byte_count_mismatch', normalizedOffset, chunk.byteLength)
+      return
+    }
+    const checksum = crc32(chunk)
+    const expectedChecksum = Number(payload.crc32)
+    if (Number.isFinite(expectedChecksum) && expectedChecksum >= 0 && (Math.floor(expectedChecksum) >>> 0) !== checksum) {
+      ack(false, 'crc_mismatch', normalizedOffset, chunk.byteLength, checksum)
+      return
+    }
+    const existing = stream.chunks.find(part => part.offset === normalizedOffset)
+    if (existing) {
+      if (existing.chunk.equals(chunk)) {
+        ack(true, undefined, normalizedOffset, chunk.byteLength, checksum)
+        return
+      }
+      ack(false, 'offset_conflict', normalizedOffset, chunk.byteLength, checksum)
+      return
+    }
+    if (normalizedOffset !== stream.bytes) {
+      logger.warn({
+        clientId,
+        interactionId: stream.interactionId,
+        expectedOffset: stream.bytes,
+        actualOffset: normalizedOffset,
+        bytes: chunk.byteLength,
+      }, '[global-agent] rejecting out-of-order MCU voice stream chunk')
+      ack(false, 'out_of_order', normalizedOffset, chunk.byteLength, checksum)
+      return
+    }
+    stream.chunks.push({ offset: normalizedOffset, chunk, seq: normalizedSeq, crc32: checksum })
     stream.bytes += chunk.byteLength
+    ack(true, undefined, normalizedOffset, chunk.byteLength, checksum)
   }
 
   private async handleMcuVoiceStreamEnd(clientId: string, payload: Record<string, unknown>): Promise<void> {
     const stream = this.mcuVoiceStreams.get(clientId)
-    this.mcuVoiceStreams.delete(clientId)
     if (!stream) {
       this.emitMcuEvent({ type: 'interaction.status', status: 'failed', text: 'missing voice stream metadata' }, { clientId })
       return
     }
+    const interactionId = typeof payload.interactionId === 'string' ? payload.interactionId.trim() : ''
+    if (interactionId && interactionId !== stream.interactionId) {
+      logger.warn({
+        clientId,
+        streamInteractionId: stream.interactionId,
+        endInteractionId: interactionId,
+      }, '[global-agent] ignoring MCU voice stream end for stale interaction')
+      return
+    }
+    this.mcuVoiceStreams.delete(clientId)
     const expectedBytes = Number(payload.bytes)
     const sortedChunks = [...stream.chunks].sort((a, b) => a.offset - b.offset)
     let expectedOffset = 0
@@ -1561,9 +1658,18 @@ export class GlobalAgentServer {
 
   private handleMcuVoiceStreamAbort(clientId: string, payload: Record<string, unknown>): void {
     const stream = this.mcuVoiceStreams.get(clientId)
+    const payloadInteractionId = typeof payload.interactionId === 'string' ? payload.interactionId.trim() : ''
+    if (stream && payloadInteractionId && payloadInteractionId !== stream.interactionId) {
+      logger.warn({
+        clientId,
+        streamInteractionId: stream.interactionId,
+        abortInteractionId: payloadInteractionId,
+      }, '[global-agent] ignoring MCU voice stream abort for stale interaction')
+      return
+    }
     this.mcuVoiceStreams.delete(clientId)
-    const interactionId = typeof payload.interactionId === 'string' && payload.interactionId.trim()
-      ? payload.interactionId.trim()
+    const interactionId = payloadInteractionId
+      ? payloadInteractionId
       : stream?.interactionId
     const reason = typeof payload.reason === 'string' && payload.reason.trim()
       ? payload.reason.trim()

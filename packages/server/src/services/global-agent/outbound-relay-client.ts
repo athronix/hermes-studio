@@ -457,14 +457,28 @@ class McuSocketIoRelayClient {
       if (!data) return
       const audio = Buffer.from(data, 'base64')
       if (this.pendingVoiceStream) {
+        const chunkInteractionId = typeof event.interactionId === 'string' ? event.interactionId.trim() : ''
+        if (chunkInteractionId && chunkInteractionId !== this.pendingVoiceStream.interactionId) {
+          logger.warn({
+            relayUrl: this.redactedRelayUrl(),
+            streamInteractionId: this.pendingVoiceStream.interactionId,
+            chunkInteractionId,
+          }, '[outbound-relay:mcu-sio] ignoring stale voice stream chunk')
+          return
+        }
+        const eventOffset = Number(event.offset)
+        const offset = Number.isFinite(eventOffset) && eventOffset >= 0
+          ? Math.floor(eventOffset)
+          : this.pendingVoiceStream.bytes
         this.pendingVoiceStream.chunks.push(audio)
-        const offset = this.pendingVoiceStream.bytes
         this.pendingVoiceStream.bytes += audio.length
         this.emitLocalMcuEvent('voice.stream.chunk', {
           ...event,
           interactionId: this.pendingVoiceStream.interactionId,
           offset,
           bytes: audio.length,
+          seq: Number.isFinite(Number(event.seq)) ? Math.floor(Number(event.seq)) : undefined,
+          crc32: Number.isFinite(Number(event.crc32)) ? Math.floor(Number(event.crc32)) >>> 0 : undefined,
           data,
         })
         return
@@ -479,11 +493,20 @@ class McuSocketIoRelayClient {
     }
     if (event.type === 'voice.stream.end') {
       const stream = this.pendingVoiceStream
-      this.pendingVoiceStream = null
       if (!stream) {
         this.sendJson({ type: 'interaction.status', status: 'failed', text: 'missing voice stream metadata' })
         return
       }
+      const endInteractionId = typeof event.interactionId === 'string' ? event.interactionId.trim() : ''
+      if (endInteractionId && endInteractionId !== stream.interactionId) {
+        logger.warn({
+          relayUrl: this.redactedRelayUrl(),
+          streamInteractionId: stream.interactionId,
+          endInteractionId,
+        }, '[outbound-relay:mcu-sio] ignoring stale voice stream end')
+        return
+      }
+      this.pendingVoiceStream = null
       logger.info({
         relayUrl: this.redactedRelayUrl(),
         bytes: stream.bytes,

@@ -85,8 +85,8 @@ constexpr int kVoiceInputGainPermille = 2800;
 constexpr int kAudioSampleRate = 24000;
 constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
-constexpr size_t kVoiceStreamChunkFrames = 512;
-constexpr uint8_t kVoiceStreamQueueSlots = 12;
+constexpr size_t kVoiceStreamChunkFrames = 1024;
+constexpr uint8_t kVoiceStreamQueueSlots = 32;
 constexpr uint32_t kVoiceStreamQueueWaitMs = 250;
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
@@ -1287,10 +1287,7 @@ uint16_t sampleMagnitude(int16_t sample) {
 int16_t voiceInputMonoSample(int16_t left, int16_t right) {
   uint16_t leftMag = sampleMagnitude(left);
   uint16_t rightMag = sampleMagnitude(right);
-  if (leftMag > rightMag * 2U) return shapeVoiceInputSample(left);
-  if (rightMag > leftMag * 2U) return shapeVoiceInputSample(right);
-  int32_t mixed = (static_cast<int32_t>(left) + static_cast<int32_t>(right)) / 2;
-  return shapeVoiceInputSample(static_cast<int16_t>(mixed));
+  return shapeVoiceInputSample(leftMag >= rightMag ? left : right);
 }
 
 void shapePcmBuffer(uint8_t *buffer, size_t length) {

@@ -108,6 +108,17 @@ async function waitForMockCalls(mock: { mock: { calls: unknown[] } }, count: num
   }
 }
 
+function crc32ForTest(buffer: Buffer): number {
+  let crc = 0xffffffff
+  for (const byte of buffer) {
+    crc ^= byte
+    for (let i = 0; i < 8; i += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
 async function waitForMockCallWith(
   mock: { mock: { calls: unknown[][] } },
   predicate: (call: unknown[]) => boolean,
@@ -482,6 +493,142 @@ describe('GlobalAgentServer', () => {
       interactionId: 'voice-1',
       status: 'transcribing',
     }))
+  })
+
+  it('ignores stale MCU voice stream chunks and ends from previous interactions', async () => {
+    authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
+    authMocks.userCanAccessProfile.mockReturnValue(true)
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const nsp = createMockNamespace()
+    const io = { of: vi.fn(() => nsp) }
+    const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
+
+    const server = new GlobalAgentServer(io as any, {
+      fetchImpl: fetchImpl as any,
+      localBaseUrl: 'http://127.0.0.1:8647',
+    })
+    server.init()
+
+    const agentSocket = createMockSocket('jwt-agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
+    await new Promise<void>((resolve, reject) => {
+      nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
+    })
+    nsp.__handlers.get('connection')?.(agentSocket)
+
+    const stalePcm = Buffer.from([1, 0, 1, 0])
+    const currentPcm = Buffer.from([2, 0, 2, 0])
+    agentSocket.__handlers.get('voice.stream.start')?.({
+      interactionId: 'voice-2',
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16,
+    })
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-1',
+      offset: 0,
+      bytes: stalePcm.length,
+      data: stalePcm.toString('base64'),
+    })
+    agentSocket.__handlers.get('voice.stream.end')?.({
+      interactionId: 'voice-1',
+      bytes: stalePcm.length,
+    })
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-2',
+      offset: 0,
+      bytes: currentPcm.length,
+      data: currentPcm.toString('base64'),
+    })
+    agentSocket.__handlers.get('voice.stream.end')?.({
+      interactionId: 'voice-2',
+      bytes: currentPcm.length,
+    })
+
+    await waitForMockCalls(fetchImpl, 1)
+    const request = fetchImpl.mock.calls[0][1] as RequestInit
+    const wav = Buffer.from(request.body as Uint8Array)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(wav.readUInt32LE(40)).toBe(currentPcm.length)
+    expect(wav.subarray(44)).toEqual(currentPcm)
+  })
+
+  it('rejects MCU voice stream chunks that arrive out of offset order', async () => {
+    authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
+    authMocks.userCanAccessProfile.mockReturnValue(true)
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const nsp = createMockNamespace()
+    const io = { of: vi.fn(() => nsp) }
+    const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
+
+    const server = new GlobalAgentServer(io as any, {
+      fetchImpl: fetchImpl as any,
+      localBaseUrl: 'http://127.0.0.1:8647',
+    })
+    server.init()
+
+    const agentSocket = createMockSocket('jwt-agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
+    await new Promise<void>((resolve, reject) => {
+      nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
+    })
+    nsp.__handlers.get('connection')?.(agentSocket)
+
+    const firstPcm = Buffer.from([1, 0, 1, 0])
+    const secondPcm = Buffer.from([2, 0, 2, 0])
+    agentSocket.__handlers.get('voice.stream.start')?.({
+      interactionId: 'voice-1',
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16,
+    })
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-1',
+      seq: 1,
+      offset: firstPcm.length,
+      bytes: secondPcm.length,
+      crc32: crc32ForTest(secondPcm),
+      data: secondPcm.toString('base64'),
+    })
+    expect(agentSocket.emit).toHaveBeenCalledWith('voice.stream.chunk.ack', expect.objectContaining({
+      interactionId: 'voice-1',
+      offset: firstPcm.length,
+      ok: false,
+      reason: 'out_of_order',
+    }))
+
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-1',
+      seq: 0,
+      offset: 0,
+      bytes: firstPcm.length,
+      crc32: crc32ForTest(firstPcm),
+      data: firstPcm.toString('base64'),
+    })
+    agentSocket.__handlers.get('voice.stream.end')?.({
+      interactionId: 'voice-1',
+      bytes: firstPcm.length,
+    })
+
+    await waitForMockCalls(fetchImpl, 1)
+    const request = fetchImpl.mock.calls[0][1] as RequestInit
+    const wav = Buffer.from(request.body as Uint8Array)
+    expect(wav.readUInt32LE(40)).toBe(firstPcm.length)
+    expect(wav.subarray(44)).toEqual(firstPcm)
   })
 
   it('returns relative MCU audio URLs for device-side playback', async () => {
