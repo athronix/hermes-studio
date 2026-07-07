@@ -139,7 +139,10 @@ String pendingProfileDeviceKey;
 String activeDeviceKey;
 String activeDeviceUrl;
 String mcuAuthToken;
+String mcuSocketRelayUrl;
 String mcuSocketTargetKey;
+String mcuRemoteDiscoveryToken;
+bool mcuSocketReconnectBlocked = false;
 String mcuInteractionId;
 String mcuInteractionStatus = "idle";
 String mcuInteractionText;
@@ -221,10 +224,13 @@ struct LanDevice {
   String webVersion;
   String agentVersion;
   String profile;
+  String relayUrl;
   uint16_t httpPort = 0;
   uint32_t responseMs = 0;
   uint32_t lastSeenMs = 0;
   bool loggedIn = false;
+  bool manualSource = false;
+  bool remoteLogin = false;
 };
 
 LanDevice lanDevices[kMaxLanDevices];
@@ -739,6 +745,7 @@ String mcuDeviceCode() {
 }
 
 String mcuSocketStateLabel() {
+  if (mcuSocketReconnectBlocked) return F("已被其他设备接管");
   if (mcuSocketNamespaceReady) return F("已连接");
   if (mcuSocketConnected) return F("握手中");
   if (wsReady) return F("重连中");
@@ -915,6 +922,42 @@ String jsonObjectValue(const String &json, const __FlashStringHelper *key) {
     if (inString) continue;
     if (c == '{') ++depth;
     if (c == '}') {
+      --depth;
+      if (depth == 0) return json.substring(openAt, i + 1);
+    }
+  }
+  return "";
+}
+
+String jsonArrayValue(const String &json, const __FlashStringHelper *key) {
+  String pattern = String(F("\"")) + key + F("\"");
+  int keyAt = json.indexOf(pattern);
+  if (keyAt < 0) return "";
+  int colonAt = json.indexOf(':', keyAt + pattern.length());
+  if (colonAt < 0) return "";
+  int openAt = json.indexOf('[', colonAt + 1);
+  if (openAt < 0) return "";
+
+  bool inString = false;
+  bool escaped = false;
+  int depth = 0;
+  for (int i = openAt; i < static_cast<int>(json.length()); ++i) {
+    char c = json[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c == '\\') {
+      escaped = inString;
+      continue;
+    }
+    if (c == '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (c == '[') ++depth;
+    if (c == ']') {
       --depth;
       if (depth == 0) return json.substring(openAt, i + 1);
     }
@@ -1463,6 +1506,10 @@ String endpointLabel(const String &endpointKind, uint16_t httpPort) {
   return String(F("自定义端口 ")) + httpPort;
 }
 
+String lanDeviceSourceLabel(const LanDevice &device) {
+  return (device.manualSource || device.remoteLogin) ? String(F("远程获取局域网")) : String(F("局域网"));
+}
+
 String lanDeviceKey(const String &id, const String &endpointKind, uint16_t httpPort) {
   return id + F("|") + endpointKind + F("|") + String(httpPort);
 }
@@ -1564,12 +1611,14 @@ void clearProfileForDevice(const String &deviceKey, const String &addressKey) {
     prefs.remove("active_key");
     prefs.remove("active_addr");
     prefs.remove("active_url");
+    prefs.remove("relay_url");
     prefs.remove("auth_token");
   }
   prefs.end();
   if (activeDeviceKey == deviceKey) {
     activeDeviceKey = "";
     activeDeviceUrl = "";
+    mcuSocketRelayUrl = "";
     mcuAuthToken = "";
     disconnectMcuSocketClient();
   }
@@ -1581,10 +1630,13 @@ void applySavedProfile(LanDevice &device) {
   profile.trim();
   device.profile = profile;
   device.loggedIn = profile.length() > 0;
+  prefs.begin("mcu", true);
+  String activeKey = prefs.getString("active_key", "");
+  String activeAddr = prefs.getString("active_addr", "");
+  String relayUrl = prefs.getString("relay_url", "");
+  prefs.end();
+  device.remoteLogin = relayUrl.length() > 0 && (activeKey == lanDeviceKey(device) || activeAddr == lanAddressKey(device));
   if (activeDeviceKey.length() == 0) {
-    prefs.begin("mcu", true);
-    String activeAddr = prefs.getString("active_addr", "");
-    prefs.end();
     if (activeAddr.length() > 0 && activeAddr == lanAddressKey(device)) {
       activeDeviceKey = lanDeviceKey(device);
     }
@@ -1596,7 +1648,8 @@ String activeDeviceLabel() {
   for (int i = 0; i < lanDeviceCount; ++i) {
     if (lanDeviceKey(lanDevices[i]) == activeDeviceKey) {
       return endpointLabel(lanDevices[i].endpointKind, lanDevices[i].httpPort) + F(" · ") +
-             lanDevices[i].name + F(" · ") + lanDevices[i].profile;
+             lanDeviceSourceLabel(lanDevices[i]) + F(" · ") + lanDevices[i].name + F(" · ") +
+             lanDevices[i].profile;
     }
   }
   return activeDeviceKey;
@@ -1631,7 +1684,7 @@ int oldestLanDeviceSlot() {
 }
 
 void rememberLanDeviceInfo(const String &json, const String &host, const String &baseUrl, uint32_t responseMs,
-                           bool requireAnnouncement) {
+                           bool requireAnnouncement, bool manualSource = false) {
   if (requireAnnouncement) {
     if (jsonStringValue(json, F("type")) != F("hermes.announce")) return;
     if (jsonIntValue(json, F("version")) != 1) return;
@@ -1662,13 +1715,16 @@ void rememberLanDeviceInfo(const String &json, const String &host, const String 
   device.url = baseUrl.length() > 0 ? baseUrl : String(F("http://")) + device.ip + F(":") + httpPort;
   device.webVersion = jsonStringValue(json, F("hermes_web_ui_version"));
   device.agentVersion = jsonStringValue(json, F("hermes_agent_version"));
+  device.relayUrl = jsonStringValue(json, F("relay_url"));
+  device.relayUrl.trim();
   device.responseMs = responseMs;
   device.lastSeenMs = millis();
+  device.manualSource = manualSource;
   applySavedProfile(device);
 }
 
 void rememberLanDevice(const String &json, const IPAddress &remoteIp, uint32_t responseMs) {
-  rememberLanDeviceInfo(json, remoteIp.toString(), "", responseMs, true);
+  rememberLanDeviceInfo(json, remoteIp.toString(), "", responseMs, true, false);
 }
 
 String manualDevicePrefKey(int index) {
@@ -1742,7 +1798,7 @@ bool fetchManualDeviceInfo(const String &input, String *error) {
     if (error) *error = F("机器信息缺少设备身份");
     return false;
   }
-  rememberLanDeviceInfo(body, host, baseUrl, millis() - started, false);
+  rememberLanDeviceInfo(body, host, baseUrl, millis() - started, false, true);
   persistManualDeviceUrl(baseUrl);
   return true;
 }
@@ -1760,6 +1816,116 @@ void refreshManualDevices() {
     if (urls[i].length() == 0) continue;
     String ignored;
     fetchManualDeviceInfo(urls[i], &ignored);
+  }
+}
+
+void rememberRemoteMachineInfo(const String &json) {
+  if (!jsonBoolValue(json, F("connected"))) return;
+  String url = jsonStringValue(json, F("url"));
+  String host;
+  String baseUrl = normalizedManualDeviceUrl(url, &host);
+  if (baseUrl.length() == 0) return;
+  if (jsonStringValue(json, F("device_id")).length() == 0 ||
+      jsonStringValue(json, F("device_public_key")).length() == 0) {
+    return;
+  }
+  rememberLanDeviceInfo(json, host, baseUrl, 0, false, true);
+}
+
+void rememberRemoteMachineList(const String &json) {
+  String machines = jsonArrayValue(json, F("machines"));
+  if (machines.length() == 0) return;
+  bool inString = false;
+  bool escaped = false;
+  int depth = 0;
+  int objectStart = -1;
+  for (int i = 0; i < static_cast<int>(machines.length()); ++i) {
+    char c = machines[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c == '\\') {
+      escaped = inString;
+      continue;
+    }
+    if (c == '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (c == '{') {
+      if (depth == 0) objectStart = i;
+      ++depth;
+    } else if (c == '}') {
+      --depth;
+      if (depth == 0 && objectStart >= 0) {
+        rememberRemoteMachineInfo(machines.substring(objectStart, i + 1));
+        objectStart = -1;
+      }
+    }
+  }
+}
+
+String normalizedRelayBaseUrl(const String &input) {
+  String raw = input;
+  raw.trim();
+  while (raw.endsWith("/")) raw.remove(raw.length() - 1);
+  if (raw.length() == 0) return "";
+  String scheme;
+  String host;
+  uint16_t port = 0;
+  String path;
+  if (!parseAudioUrl(raw, &scheme, &host, &port, &path)) return "";
+  return scheme + F("://") + host + F(":") + String(port);
+}
+
+bool relayUrlAlreadyQueued(const String urls[], int count, const String &url) {
+  for (int i = 0; i < count; ++i) {
+    if (urls[i] == url) return true;
+  }
+  return false;
+}
+
+void queueRelayUrl(String urls[], int *count, const String &url) {
+  if (!count || *count >= kMaxLanDevices + 1) return;
+  String normalized = normalizedRelayBaseUrl(url);
+  if (normalized.length() == 0 || relayUrlAlreadyQueued(urls, *count, normalized)) return;
+  urls[*count] = normalized;
+  *count += 1;
+}
+
+void fetchRemoteDevicesFromRelay(const String &relayBaseUrl) {
+  if (mcuRemoteDiscoveryToken.length() == 0) return;
+  if (normalizedRelayBaseUrl(mcuSocketRelayUrl) != relayBaseUrl) {
+    Serial.printf("Remote machine discovery skipped relay=%s without token\n", relayBaseUrl.c_str());
+    return;
+  }
+  String endpoint = relayBaseUrl + F("/global-agent/devices/") + mcuDeviceCode() + F("/machines");
+  HTTPClient http;
+  http.setTimeout(kMcuLoginTimeoutMs);
+  if (!http.begin(endpoint)) return;
+  http.addHeader(F("Authorization"), String(F("Bearer ")) + mcuRemoteDiscoveryToken);
+  int code = http.GET();
+  String body = http.getString();
+  http.end();
+  if (code < 200 || code >= 300) {
+    Serial.printf("Remote machine discovery failed code=%d body=%s\n", code, body.substring(0, 160).c_str());
+    return;
+  }
+  rememberRemoteMachineList(body);
+}
+
+void refreshRemoteDevices() {
+  if (!wifiReady || WiFi.status() != WL_CONNECTED) return;
+  String relayUrls[kMaxLanDevices + 1];
+  int relayUrlCount = 0;
+  queueRelayUrl(relayUrls, &relayUrlCount, mcuSocketRelayUrl);
+  for (int i = 0; i < lanDeviceCount; ++i) {
+    queueRelayUrl(relayUrls, &relayUrlCount, lanDevices[i].relayUrl);
+  }
+  for (int i = 0; i < relayUrlCount; ++i) {
+    fetchRemoteDevicesFromRelay(relayUrls[i]);
   }
 }
 
@@ -1809,6 +1975,7 @@ void scanLanDevices() {
   }
   lastLanDiscoveryAtMs = millis();
   refreshManualDevices();
+  refreshRemoteDevices();
 }
 
 bool ssidAlreadyScanned(const String &ssid) {
@@ -1861,6 +2028,7 @@ String pageStart(const String &title) {
 	                  "main{max-width:760px;margin:auto;padding:28px 18px 40px}.panel,.card{background:var(--surface);border:1px solid var(--line);border-radius:6px}.panel{padding:22px}.card{padding:16px;margin-top:12px}"
 	                  "h1{font-size:clamp(28px,5vw,44px);line-height:1.05;margin:0 0 10px}h2{font-size:18px;margin:0 0 10px}.lead,.hint{color:var(--muted);line-height:1.6}.lead{font-size:15px;margin:0 0 18px}.hint{font-size:12px;margin:0}.meta{font:12px/1.4 ui-monospace,'SFMono-Regular',Consolas,monospace;color:var(--muted);word-break:break-all}"
 	                  "form{display:grid;gap:12px}.field{display:grid;gap:7px}.label{font-size:12px;color:var(--muted)}input,select{width:100%;min-height:42px;border:1px solid var(--line);border-radius:6px;background:#fff;padding:10px 11px;font:14px/1.2 ui-monospace,'SFMono-Regular',Consolas,monospace;color:var(--ink)}select{appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 18px) 18px,calc(100% - 13px) 18px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}input:focus,select:focus{outline:2px solid #cfcfcf;outline-offset:1px}"
+	                  ".choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.choice{position:relative;display:block}.choice input{position:absolute;opacity:0;pointer-events:none}.choice-card{height:100%;min-height:96px;border:1px solid var(--line);border-radius:6px;background:#fff;padding:14px 14px 14px 42px;display:grid;align-content:start;gap:6px;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s}.choice-dot{position:absolute;left:14px;top:16px;width:16px;height:16px;border:1px solid #aaa;border-radius:50%;background:#fff}.choice-title{font:700 15px/1.2 'Avenir Next','PingFang SC','Noto Sans CJK SC',sans-serif}.choice-copy{font-size:12px;line-height:1.5;color:var(--muted)}.choice-meta{margin-top:2px;font:700 10px/1 ui-monospace,'SFMono-Regular',Consolas,monospace;color:#888;text-transform:uppercase}.choice input:checked+.choice-card{border-color:var(--accent);background:#f7f7f7;box-shadow:inset 0 0 0 1px var(--accent)}.choice input:checked+.choice-card .choice-dot{border-color:var(--accent);box-shadow:inset 0 0 0 4px #fff;background:var(--accent)}.choice input:focus+.choice-card{outline:2px solid #cfcfcf;outline-offset:1px}@media(max-width:560px){.choice-grid{grid-template-columns:1fr}.choice-card{min-height:84px}}"
 	                  ".tabs{display:flex;gap:8px;border-bottom:1px solid var(--line);margin:18px -22px 18px;padding:0 22px}.tab{border:1px solid var(--line);border-bottom:0;border-radius:6px 6px 0 0;background:#f4f4f4;min-height:38px;padding:10px 14px;font:600 13px/1 'Avenir Next','PingFang SC','Noto Sans CJK SC',sans-serif;color:inherit;text-decoration:none}.tab.active{background:var(--surface);position:relative;top:1px}.info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.info-row{border:1px solid var(--line);border-radius:6px;padding:12px;min-width:0}.info-row span{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.info-row strong{display:block;font:600 14px/1.35 ui-monospace,'SFMono-Regular',Consolas,monospace;word-break:break-all}@media(max-width:560px){.info-grid{grid-template-columns:1fr}}"
 	                  ".btn{border:1px solid var(--line);background:var(--surface);border-radius:6px;min-height:38px;padding:9px 13px;font:600 13px/1 'Avenir Next','PingFang SC','Noto Sans CJK SC',sans-serif;color:inherit;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn.warn{background:var(--warn);border-color:var(--warn);color:#fff}.btn-row{display:flex;gap:10px;flex-wrap:wrap}.ok{color:var(--good)}.bad{color:var(--warn)}"
 	                  "</style></head><body><main>");
@@ -1955,6 +2123,9 @@ void sendStatusPage() {
   appendInfoRow(html, F("运行时间"), uptimeText());
   appendInfoRow(html, F("可用内存"), String(ESP.getFreeHeap()) + F(" bytes"));
   appendInfoRow(html, F("服务连接"), mcuSocketStateLabel());
+  if (mcuSocketRelayUrl.length() > 0) {
+    appendInfoRow(html, F("远程转发"), mcuSocketRelayUrl);
+  }
   appendInfoRow(html, F("音频硬件"), String(es8311Ready && i2sReady ? F("就绪") : F("未就绪")) + F(" · ") + lastAudioDetail);
   appendInfoRow(html, F("音量"), String(outputVolumePercent) + F("%"));
   appendInfoRow(html, F("电量"), F("未启用"));
@@ -2005,6 +2176,8 @@ void sendStatusPage() {
       bool online = millis() - device.lastSeenMs < kLanDiscoveryStaleMs;
       html += F("<div class='info-row'><span>");
       html += endpointLabel(device.endpointKind, device.httpPort);
+      html += F(" · ");
+      html += lanDeviceSourceLabel(device);
       html += online ? F(" · 在线") : F(" · 可能离线");
       html += device.loggedIn ? F(" · 已登录") : F(" · 未登录");
       if (lanDeviceKey(device) == activeDeviceKey) html += F(" · 当前交互");
@@ -2180,7 +2353,7 @@ bool lanDeviceIndex(int index, LanDevice **device) {
   return true;
 }
 
-String mcuLoginPayload(const String &account, const String &password) {
+String mcuLoginPayload(const String &account, const String &password, bool useRemoteRelay) {
   String payload;
   payload.reserve(560);
   payload += F("{\"token\":\"");
@@ -2194,11 +2367,13 @@ String mcuLoginPayload(const String &account, const String &password) {
   payload += escapeJson(account);
   payload += F("\",\"password\":\"");
   payload += escapeJson(password);
+  payload += F("\",\"relayMode\":\"");
+  payload += useRemoteRelay ? F("remote") : F("lan");
   payload += F("\"}");
   return payload;
 }
 
-bool runMcuLogin(LanDevice &device, const String &account, const String &password) {
+bool runMcuLogin(LanDevice &device, const String &account, const String &password, bool useRemoteRelay = false) {
   String endpoint = device.url;
   while (endpoint.endsWith("/")) endpoint.remove(endpoint.length() - 1);
   endpoint += F("/api/auth/mcu-login");
@@ -2215,7 +2390,7 @@ bool runMcuLogin(LanDevice &device, const String &account, const String &passwor
   http.addHeader(F("Content-Type"), F("application/json"));
   http.addHeader(F("X-Hermes-Device-Id"), deviceId());
   http.addHeader(F("X-Hermes-Device-Name"), F("HStudio ESP32-C3"));
-  int code = http.POST(mcuLoginPayload(account, password));
+  int code = http.POST(mcuLoginPayload(account, password, useRemoteRelay));
   String response = http.getString();
   http.end();
 
@@ -2227,9 +2402,21 @@ bool runMcuLogin(LanDevice &device, const String &account, const String &passwor
     pendingProfileDeviceKey = lanDeviceKey(device);
     activeDeviceUrl = device.url;
     mcuAuthToken = jsonStringValue(response, F("token"));
+    String relayPayload = jsonObjectValue(response, F("relay"));
+    String relayUrl = relayPayload.length() > 0 ? jsonStringValue(relayPayload, F("url")) : "";
+    relayUrl.trim();
+    mcuSocketRelayUrl = relayUrl;
+    device.remoteLogin = mcuSocketRelayUrl.length() > 0;
+    mcuSocketReconnectBlocked = false;
     prefs.begin("mcu", false);
     prefs.putString("active_url", activeDeviceUrl);
+    if (mcuSocketRelayUrl.length() > 0) {
+      prefs.putString("relay_url", mcuSocketRelayUrl);
+    } else {
+      prefs.remove("relay_url");
+    }
     if (mcuAuthToken.length() > 0) prefs.putString("auth_token", mcuAuthToken);
+    prefs.remove("relay_replaced");
     prefs.end();
     parseLoginProfiles(response);
     connectMcuSocketClient();
@@ -2254,12 +2441,13 @@ bool savedCredentialsForDevice(const LanDevice &device, String *account, String 
 }
 
 bool autoLoginDevice(LanDevice &device) {
+  if (mcuSocketReconnectBlocked && mcuSocketRelayUrl.length() > 0) return false;
   String account;
   String password;
   if (!savedCredentialsForDevice(device, &account, &password)) return false;
   Serial.printf("Auto MCU login target=%s url=%s profile=%s\n",
                 lanDeviceKey(device).c_str(), device.url.c_str(), selectedProfile.c_str());
-  bool ok = runMcuLogin(device, account, password);
+  bool ok = runMcuLogin(device, account, password, mcuSocketRelayUrl.length() > 0);
   if (ok && selectedProfile.length() > 0) {
     String key = lanDeviceKey(device);
     String addr = lanAddressKey(device);
@@ -2314,18 +2502,29 @@ void sendMcuLoginPage() {
   }
 
   String html = pageStart(F("登录设备"));
+  bool defaultRemoteLogin = device->manualSource || device->remoteLogin;
   html += F("<section class='panel'><p class='meta'>MCU LOGIN</p><h1>登录 ");
   html += escapeHtml(endpointLabel(device->endpointKind, device->httpPort));
   html += F("</h1><p class='lead'>");
   html += escapeHtml(device->name);
+  html += F(" · ");
+  html += escapeHtml(lanDeviceSourceLabel(*device));
   html += F(" · ");
   html += escapeHtml(device->url);
   html += F("</p><form method='post' action='/device/login'><input type='hidden' name='i' value='");
   html += index;
   html += F("'><div class='field'><span class='label'>账号</span><input name='account' autocomplete='username' required></div>");
   html += F("<div class='field'><span class='label'>密码</span><input name='password' type='password' autocomplete='current-password' required></div>");
+  html += F("<div class='field'><span class='label'>连接方式</span><div class='choice-grid'>");
+  html += F("<label class='choice'><input type='radio' name='login_mode' value='lan'");
+  if (!defaultRemoteLogin) html += F(" checked");
+  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>局域网登录</span><span class='choice-copy'>直连当前 Web UI，同一 Wi-Fi 下响应最快。</span><span class='choice-meta'>LOCAL</span></span></label>");
+  html += F("<label class='choice'><input type='radio' name='login_mode' value='remote'");
+  if (defaultRemoteLogin) html += F(" checked");
+  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>远程登录</span><span class='choice-copy'>通过远程服务器转发，适合跨网络使用。</span><span class='choice-meta'>REMOTE</span></span></label>");
+  html += F("</div></div>");
   html += F("<div class='btn-row'><button class='btn primary' type='submit'>登录</button><a class='btn' href='/device'>返回</a></div>");
-  html += F("<p class='hint'>登录成功后会让你选择 profile，设备会使用登录 token 连接当前机器。</p></form></section>");
+  html += F("<p class='hint'>局域网登录会连接当前机器；远程登录会请求当前机器返回远程转发服务地址。</p></form></section>");
   html += pageEnd();
   server.send(200, F("text/html; charset=utf-8"), html);
 }
@@ -2387,7 +2586,9 @@ void handleMcuLogin() {
   int index = server.arg(F("i")).toInt();
   String account = server.arg(F("account"));
   String password = server.arg(F("password"));
+  String loginMode = server.arg(F("login_mode"));
   account.trim();
+  loginMode.trim();
   LanDevice *device = nullptr;
   if (!lanDeviceIndex(index, &device)) {
     server.send(404, F("text/plain; charset=utf-8"), F("设备不存在，请先刷新探测"));
@@ -2397,7 +2598,7 @@ void handleMcuLogin() {
     server.send(400, F("text/plain; charset=utf-8"), F("缺少账号或密码"));
     return;
   }
-  runMcuLogin(*device, account, password);
+  runMcuLogin(*device, account, password, loginMode == F("remote"));
   sendProfilePage();
 }
 
@@ -2446,6 +2647,9 @@ void setActiveDevice() {
 
   activeDeviceKey = lanDeviceKey(*device);
   activeDeviceUrl = device->url;
+  mcuSocketRelayUrl = "";
+  mcuSocketReconnectBlocked = false;
+  device->remoteLogin = false;
   selectedProfile = device->profile;
   mcuAuthToken = "";
   disconnectMcuSocketClient();
@@ -2455,7 +2659,9 @@ void setActiveDevice() {
   prefs.putString("active_url", activeDeviceUrl);
   prefs.putString("last_key", activeDeviceKey);
   prefs.putString("last_profile", selectedProfile);
+  prefs.remove("relay_url");
   prefs.remove("auth_token");
+  prefs.remove("relay_replaced");
   prefs.end();
 
   if (!runMcuLogin(*device, account, password)) {
@@ -2478,6 +2684,7 @@ void logoutDevice() {
   clearProfileForDevice(key, lanAddressKey(*device));
   device->profile = "";
   device->loggedIn = false;
+  device->remoteLogin = false;
   if (pendingProfileDeviceKey == key) pendingProfileDeviceKey = "";
   if (activeDeviceKey == key) activeDeviceKey = "";
   String lastKey;
@@ -2565,6 +2772,7 @@ bool sendRawWsText(const String &payload) {
 
 bool sendMcuSocketEvent(const String &event, const String &json) {
   if (!wsReady || !mcuSocketNamespaceReady || event.length() == 0) return false;
+  if (mcuSocketReconnectBlocked && event != F("mcu.ready")) return false;
   String payload;
   payload.reserve(json.length() + event.length() + 28);
   payload += F("42/global-agent,[\"");
@@ -3987,10 +4195,15 @@ void handleBootButton() {
 }
 
 String mcuSocketAuthJson() {
+  String deviceCode = mcuDeviceCode();
   String json;
-  json.reserve(mcuAuthToken.length() + selectedProfile.length() + 180);
+  json.reserve(mcuAuthToken.length() + selectedProfile.length() + deviceCode.length() * 2 + 220);
   json += F("{\"token\":\"");
   json += escapeJson(mcuAuthToken);
+  json += F("\",\"deviceCode\":\"");
+  json += escapeJson(deviceCode);
+  json += F("\",\"device_code\":\"");
+  json += escapeJson(deviceCode);
   json += F("\",\"role\":\"hermes-studio\",\"instanceId\":\"");
   json += escapeJson(deviceId());
   json += F("\",\"profile\":\"");
@@ -4095,6 +4308,20 @@ void handleSocketIoText(const String &message) {
     String json;
     if (parseSocketIoEvent(message, &event, &json)) {
       Serial.printf("Socket.IO event %s %s\n", event.c_str(), json.c_str());
+      if (event == F("relay.replaced") || jsonStringValue(json, F("type")) == F("relay.replaced")) {
+        mcuSocketReconnectBlocked = true;
+        prefs.begin("mcu", false);
+        prefs.putBool("relay_replaced", true);
+        prefs.end();
+        lastAudioDetail = F("远程连接已被其他设备接管");
+        setOledStatus(OledMode::Error, F("SOCKET"), F("REPLACED"), 0);
+        return;
+      }
+      if (event == F("relay.auth.ok") || jsonStringValue(json, F("type")) == F("relay.auth.ok")) {
+        String machineList = jsonObjectValue(json, F("machineList"));
+        mcuRemoteDiscoveryToken = jsonStringValue(machineList, F("token"));
+        return;
+      }
       handleMcuWebSocketText(0, json);
     }
     return;
@@ -4185,9 +4412,20 @@ void disconnectMcuSocketClient() {
   mcuSocketTargetKey = "";
 }
 
+String activeMcuSocketUrl() {
+  String url = mcuSocketRelayUrl;
+  url.trim();
+  if (url.length() > 0) return url;
+  return activeDeviceUrl;
+}
+
 void connectMcuSocketClient() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED || activeDeviceUrl.length() == 0 || mcuAuthToken.length() == 0) {
     disconnectMcuSocketClient();
+    return;
+  }
+  if (mcuSocketReconnectBlocked && mcuSocketRelayUrl.length() > 0) {
+    Serial.println(F("Socket.IO reconnect blocked after relay replacement"));
     return;
   }
 
@@ -4195,7 +4433,8 @@ void connectMcuSocketClient() {
   String host;
   uint16_t port = 0;
   String path;
-  if (!parseAudioUrl(activeDeviceUrl, &scheme, &host, &port, &path)) {
+  String socketUrl = activeMcuSocketUrl();
+  if (!parseAudioUrl(socketUrl, &scheme, &host, &port, &path)) {
     disconnectMcuSocketClient();
     return;
   }
@@ -4247,8 +4486,8 @@ void connectMcuSocketClient() {
   mcuSocketNamespaceReady = false;
   mcuSocketTargetKey = targetKey;
   lastMcuSocketConnectAtMs = millis();
-  Serial.printf("Socket.IO client connecting host=%s port=%u profile=%s\n",
-                host.c_str(), port, selectedProfile.c_str());
+  Serial.printf("Socket.IO client connecting host=%s port=%u profile=%s relay=%d\n",
+                host.c_str(), port, selectedProfile.c_str(), mcuSocketRelayUrl.length() > 0 ? 1 : 0);
   mcuSocketLoop();
 }
 
@@ -4534,7 +4773,9 @@ void setup() {
   pendingProfileDeviceKey = prefs.getString("last_key", "");
   activeDeviceKey = prefs.getString("active_key", "");
   activeDeviceUrl = prefs.getString("active_url", "");
+  mcuSocketRelayUrl = prefs.getString("relay_url", "");
   mcuAuthToken = prefs.getString("auth_token", "");
+  mcuSocketReconnectBlocked = prefs.getBool("relay_replaced", false);
   selectedProfile = prefs.getString("last_profile", "");
   prefs.end();
   setOledStatus(OledMode::Boot, F("BOOT"), F("WIFI ONLY"), 15);
