@@ -12,7 +12,6 @@
 #include "driver/i2s.h"
 #include "esp_system.h"
 #include "esp_rom_sys.h"
-#include "mbedtls/base64.h"
 
 namespace {
 constexpr char kApName[] = "HStudio-WIFI";
@@ -81,13 +80,11 @@ constexpr uint32_t kVoiceVadRmsStart = 190;
 constexpr uint32_t kVoiceVadPeakStart = 480;
 constexpr uint32_t kVoiceVadActiveThreshold = 260;
 constexpr uint32_t kVoiceVadMinActiveSamples = 16;
-constexpr int kVoiceInputGainPermille = 2800;
+constexpr int kVoiceInputGainPermille = 1800;
 constexpr int kAudioSampleRate = 24000;
 constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
-constexpr size_t kVoiceStreamChunkFrames = 1024;
-constexpr uint8_t kVoiceStreamQueueSlots = 32;
-constexpr uint32_t kVoiceStreamQueueWaitMs = 250;
+constexpr size_t kVoiceStreamChunkFrames = 4096;
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
 constexpr uint8_t kDefaultOutputVolumePercent = 70;
@@ -199,19 +196,10 @@ struct VoiceStreamChunk {
   int16_t samples[kVoiceStreamChunkFrames] = {};
 };
 
-struct VoiceStreamSenderContext {
-  const String *interactionId = nullptr;
-  QueueHandle_t queue = nullptr;
-  volatile bool done = false;
-  volatile bool failed = false;
-  uint32_t sentBytes = 0;
-};
-
 McuAudioSegment mcuAudioQueue[kMaxMcuAudioQueue];
 int mcuAudioHead = 0;
 int mcuAudioCount = 0;
 McuAudioSegment mcuCurrentAudio;
-uint8_t voiceWavBuffer[kVoiceRecordBufferBytes];
 
 void markMcuInteraction(const String &interactionId, const String &status, const String &text);
 void triggerBootVoiceTurn();
@@ -1215,7 +1203,7 @@ bool configureI2sBus() {
   config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   config.intr_alloc_flags = 0;
-  config.dma_buf_count = 16;
+  config.dma_buf_count = 24;
   config.dma_buf_len = 512;
   config.use_apll = false;
   config.tx_desc_auto_clear = true;
@@ -1285,9 +1273,8 @@ uint16_t sampleMagnitude(int16_t sample) {
 }
 
 int16_t voiceInputMonoSample(int16_t left, int16_t right) {
-  uint16_t leftMag = sampleMagnitude(left);
-  uint16_t rightMag = sampleMagnitude(right);
-  return shapeVoiceInputSample(leftMag >= rightMag ? left : right);
+  (void)left;
+  return shapeVoiceInputSample(right);
 }
 
 void shapePcmBuffer(uint8_t *buffer, size_t length) {
@@ -1388,7 +1375,12 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
   }
 
   const uint32_t maxFrames = kVoiceRecordMaxFrames;
-  uint8_t *wav = voiceWavBuffer;
+  uint8_t *wav = static_cast<uint8_t *>(malloc(kVoiceRecordBufferBytes));
+  if (!wav) {
+    lastAudioDetail = String(F("voice wav alloc failed heap=")) + String(ESP.getFreeHeap());
+    setOledStatus(OledMode::Error, F("VOICE"), F("MEMORY"), 0);
+    return false;
+  }
   memset(wav, 0, 44);
 
   audioBusy = true;
@@ -1439,6 +1431,7 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
     esp_err_t err = i2s_read(kI2sPort, readBuffer, sizeof(readBuffer), &bytesRead, pdMS_TO_TICKS(40));
     if (err != ESP_OK) {
       audioBusy = false;
+      free(wav);
       lastAudioDetail = String(F("I2S read failed err=")) + String(static_cast<int>(err));
       setOledStatus(OledMode::Error, F("I2S"), F("READ FAIL"), 0);
       return false;
@@ -1482,6 +1475,7 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
   const uint32_t dataBytes = framesDone * sizeof(int16_t);
   if (dataBytes == 0) {
     audioBusy = false;
+    free(wav);
     lastAudioDetail = String(F("voice record empty, i2s empty reads=")) + String(emptyReads);
     setOledStatus(OledMode::Error, F("MIC"), F("NO DATA"), 0);
     return false;
@@ -2760,6 +2754,127 @@ String mcuStatusJson() {
   return json;
 }
 
+bool writeMcuWsBytes(const uint8_t *data, size_t length, uint32_t timeoutMs = 1500) {
+  if (!data && length > 0) return false;
+  size_t written = 0;
+  uint32_t startedAt = millis();
+  while (written < length) {
+    if (!mcuWsClient->connected()) return false;
+    size_t n = mcuWsClient->write(data + written, length - written);
+    if (n > 0) {
+      written += n;
+      startedAt = millis();
+      continue;
+    }
+    if (millis() - startedAt > timeoutMs) return false;
+    delay(2);
+    yield();
+  }
+  return true;
+}
+
+bool writeMcuWsMaskedBytes(const uint8_t *data, size_t length, const uint8_t mask[4], size_t *maskOffset) {
+  if (!data && length > 0) return false;
+  if (!maskOffset) return false;
+  constexpr size_t kChunk = 256;
+  uint8_t buffer[kChunk];
+  size_t offset = 0;
+  while (offset < length) {
+    size_t n = min(kChunk, length - offset);
+    for (size_t i = 0; i < n; ++i) {
+      buffer[i] = data[offset + i] ^ mask[(*maskOffset + i) & 3];
+    }
+    if (!writeMcuWsBytes(buffer, n)) return false;
+    *maskOffset += n;
+    offset += n;
+    yield();
+  }
+  return true;
+}
+
+bool writeMcuWsMaskedString(const String &text, const uint8_t mask[4], size_t *maskOffset) {
+  return writeMcuWsMaskedBytes(reinterpret_cast<const uint8_t *>(text.c_str()), text.length(), mask, maskOffset);
+}
+
+size_t base64EncodedLength(size_t length) {
+  return ((length + 2) / 3) * 4;
+}
+
+bool writeMcuWsMaskedBase64(const uint8_t *data, size_t length, const uint8_t mask[4], size_t *maskOffset) {
+  static const char kBase64Table[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (!data && length > 0) return false;
+  char out[256];
+  size_t outLen = 0;
+  auto flush = [&]() -> bool {
+    if (outLen == 0) return true;
+    bool ok = writeMcuWsMaskedBytes(reinterpret_cast<const uint8_t *>(out), outLen, mask, maskOffset);
+    outLen = 0;
+    return ok;
+  };
+  auto append4 = [&](char a, char b, char c, char d) -> bool {
+    if (outLen + 4 > sizeof(out) && !flush()) return false;
+    out[outLen++] = a;
+    out[outLen++] = b;
+    out[outLen++] = c;
+    out[outLen++] = d;
+    return true;
+  };
+  size_t offset = 0;
+  while (offset + 3 <= length) {
+    uint32_t value = (static_cast<uint32_t>(data[offset]) << 16) |
+                     (static_cast<uint32_t>(data[offset + 1]) << 8) |
+                     static_cast<uint32_t>(data[offset + 2]);
+    if (!append4(kBase64Table[(value >> 18) & 0x3F],
+                 kBase64Table[(value >> 12) & 0x3F],
+                 kBase64Table[(value >> 6) & 0x3F],
+                 kBase64Table[value & 0x3F])) {
+      return false;
+    }
+    offset += 3;
+  }
+  size_t remaining = length - offset;
+  if (remaining > 0) {
+    uint8_t b0 = data[offset];
+    uint8_t b1 = remaining > 1 ? data[offset + 1] : 0;
+    uint32_t value = (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(b1) << 8);
+    if (!append4(kBase64Table[(value >> 18) & 0x3F],
+                 kBase64Table[(value >> 12) & 0x3F],
+                 remaining > 1 ? kBase64Table[(value >> 6) & 0x3F] : '=',
+                 '=')) {
+      return false;
+    }
+  }
+  return flush();
+}
+
+bool sendRawWsTextWithBase64Data(const String &prefix, const uint8_t *data, size_t length, const String &suffix) {
+  if (!mcuWsClient->connected() || !data || length == 0) return false;
+  size_t payloadLength = prefix.length() + base64EncodedLength(length) + suffix.length();
+  if (payloadLength > 0xFFFF) return false;
+
+  uint8_t header[14];
+  size_t headerLen = 0;
+  header[headerLen++] = 0x81;
+  if (payloadLength < 126) {
+    header[headerLen++] = 0x80 | static_cast<uint8_t>(payloadLength);
+  } else {
+    header[headerLen++] = 0x80 | 126;
+    header[headerLen++] = static_cast<uint8_t>((payloadLength >> 8) & 0xFF);
+    header[headerLen++] = static_cast<uint8_t>(payloadLength & 0xFF);
+  }
+
+  uint8_t mask[4];
+  for (uint8_t i = 0; i < 4; ++i) mask[i] = static_cast<uint8_t>(esp_random() & 0xFF);
+  for (uint8_t i = 0; i < 4; ++i) header[headerLen++] = mask[i];
+  if (!writeMcuWsBytes(header, headerLen)) return false;
+
+  size_t maskOffset = 0;
+  return writeMcuWsMaskedString(prefix, mask, &maskOffset) &&
+         writeMcuWsMaskedBase64(data, length, mask, &maskOffset) &&
+         writeMcuWsMaskedString(suffix, mask, &maskOffset);
+}
+
 bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
   if (!mcuWsClient->connected()) return false;
   uint8_t header[14];
@@ -2778,7 +2893,7 @@ bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
   uint8_t mask[4];
   for (uint8_t i = 0; i < 4; ++i) mask[i] = static_cast<uint8_t>(esp_random() & 0xFF);
   for (uint8_t i = 0; i < 4; ++i) header[headerLen++] = mask[i];
-  if (mcuWsClient->write(header, headerLen) != headerLen) return false;
+  if (!writeMcuWsBytes(header, headerLen)) return false;
 
   constexpr size_t kChunk = 256;
   uint8_t buffer[kChunk];
@@ -2788,7 +2903,7 @@ bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
     for (size_t i = 0; i < n; ++i) {
       buffer[i] = data[offset + i] ^ mask[(offset + i) & 3];
     }
-    if (mcuWsClient->write(buffer, n) != n) return false;
+    if (!writeMcuWsBytes(buffer, n)) return false;
     offset += n;
     yield();
   }
@@ -2816,24 +2931,6 @@ bool sendMcuSocketJson(const String &json) {
   String type = jsonStringValue(json, F("type"));
   if (type.length() == 0) type = F("mcu.event");
   return sendMcuSocketEvent(type, json);
-}
-
-String base64Encode(const uint8_t *data, size_t length) {
-  if (!data || length == 0) return "";
-  size_t outputLength = 0;
-  mbedtls_base64_encode(nullptr, 0, &outputLength, data, length);
-  String output;
-  output.reserve(outputLength + 1);
-  char *buffer = new char[outputLength + 1];
-  if (!buffer) return "";
-  if (mbedtls_base64_encode(reinterpret_cast<unsigned char *>(buffer), outputLength + 1, &outputLength, data, length) != 0) {
-    delete[] buffer;
-    return "";
-  }
-  buffer[outputLength] = '\0';
-  output = buffer;
-  delete[] buffer;
-  return output;
 }
 
 void sendWsJson(uint8_t, const String &json) {
@@ -3129,6 +3226,26 @@ bool playPcmUrl(const String &url, uint8_t channels, uint32_t sampleRate) {
     return false;
   }
 
+  bool releasedSocketForAudio = false;
+  auto releaseSocketForAudio = [&]() {
+    if (scheme == F("https") && mcuSocketRelayUrl.length() > 0 && (wsReady || mcuSocketConnected)) {
+      Serial.printf("Audio HTTPS releasing Socket.IO before playback heap=%lu\n",
+                    static_cast<unsigned long>(ESP.getFreeHeap()));
+      disconnectMcuSocketClient();
+      releasedSocketForAudio = true;
+      delay(20);
+      yield();
+    }
+  };
+  auto restoreSocketAfterAudio = [&]() {
+    if (!releasedSocketForAudio) return;
+    Serial.printf("Audio HTTPS reconnecting Socket.IO after playback heap=%lu\n",
+                  static_cast<unsigned long>(ESP.getFreeHeap()));
+    connectMcuSocketClient();
+    waitForMcuSocketReady(5000);
+  };
+
+  releaseSocketForAudio();
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
   WiFiClient *client = &plainClient;
@@ -3140,6 +3257,7 @@ bool playPcmUrl(const String &url, uint8_t channels, uint32_t sampleRate) {
   if (!client->connect(host.c_str(), port)) {
     lastAudioDetail = String(F("cannot connect audio host ")) + host + F(":") + String(port);
     markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
+    restoreSocketAfterAudio();
     return false;
   }
 
@@ -3154,18 +3272,21 @@ bool playPcmUrl(const String &url, uint8_t channels, uint32_t sampleRate) {
   String contentType;
   if (!readHttpResponseHeaders(*client, &statusCode, &contentLength, &contentType)) {
     client->stop();
+    restoreSocketAfterAudio();
     return false;
   }
   if (statusCode < 200 || statusCode >= 300) {
     lastAudioDetail = String(F("audio HTTP ")) + statusCode;
     markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
     client->stop();
+    restoreSocketAfterAudio();
     return false;
   }
   if (contentType.indexOf(F("mpeg")) >= 0 || contentType.indexOf(F("mp3")) >= 0) {
     lastAudioDetail = F("mp3 is not supported on MCU; send 24k PCM");
     markMcuInteraction(mcuInteractionId, F("failed"), lastAudioDetail);
     client->stop();
+    restoreSocketAfterAudio();
     return false;
   }
 
@@ -3173,6 +3294,7 @@ bool playPcmUrl(const String &url, uint8_t channels, uint32_t sampleRate) {
   bool ok = channels == 1 ? playPcmMonoStream(client, contentLength, playbackRate)
                           : playPcmStereoStream(client, contentLength, playbackRate);
   client->stop();
+  restoreSocketAfterAudio();
   return ok;
 }
 
@@ -3818,53 +3940,35 @@ bool broadcastMcuVoiceStreamChunk(const String &interactionId, const uint8_t *da
                   static_cast<unsigned>(length), static_cast<unsigned long>(offset));
     return false;
   }
-  String encoded = base64Encode(data, length);
-  if (encoded.length() == 0) {
-    Serial.printf("Voice stream chunk base64 failed len=%u offset=%lu heap=%lu\n",
-                  static_cast<unsigned>(length), static_cast<unsigned long>(offset),
-                  static_cast<unsigned long>(ESP.getFreeHeap()));
-    return false;
+  String payloadPrefix;
+  payloadPrefix.reserve(260);
+  payloadPrefix += F("42/global-agent,[\"voice.stream.chunk\",{\"type\":\"voice.stream.chunk\",\"interactionId\":\"");
+  payloadPrefix += escapeJson(interactionId);
+  payloadPrefix += F("\",\"offset\":");
+  payloadPrefix += offset;
+  payloadPrefix += F(",\"bytes\":");
+  payloadPrefix += length;
+  payloadPrefix += F(",\"data\":\"");
+  const String payloadSuffix = F("\"}]");
+  uint32_t sendStartedAt = millis();
+  bool sent = sendRawWsTextWithBase64Data(payloadPrefix, data, length, payloadSuffix);
+  uint32_t sendMs = millis() - sendStartedAt;
+  if (sendMs > 25 || (offset % (kVoiceStreamChunkFrames * sizeof(int16_t) * 8UL)) == 0) {
+    Serial.printf("Voice stream send offset=%lu len=%u b64=%u ms=%lu heap=%lu min_heap=%lu\n",
+                  static_cast<unsigned long>(offset), static_cast<unsigned>(length),
+                  static_cast<unsigned>(base64EncodedLength(length)),
+                  static_cast<unsigned long>(sendMs), static_cast<unsigned long>(ESP.getFreeHeap()),
+                  static_cast<unsigned long>(ESP.getMinFreeHeap()));
   }
-  String json;
-  json.reserve(encoded.length() + 260);
-  json += F("{\"type\":\"voice.stream.chunk\",\"interactionId\":\"");
-  json += escapeJson(interactionId);
-  json += F("\",\"offset\":");
-  json += offset;
-  json += F(",\"bytes\":");
-  json += length;
-  json += F(",\"data\":\"");
-  json += encoded;
-  json += F("\"}");
-  bool sent = sendMcuSocketJson(json);
   if (!sent) {
-    Serial.printf("Voice stream chunk send failed len=%u encoded=%u offset=%lu heap=%lu ws=%d namespace=%d\n",
-                  static_cast<unsigned>(length), static_cast<unsigned>(encoded.length()),
+    Serial.printf("Voice stream chunk send failed len=%u b64=%u offset=%lu heap=%lu ws=%d namespace=%d\n",
+                  static_cast<unsigned>(length), static_cast<unsigned>(base64EncodedLength(length)),
                   static_cast<unsigned long>(offset), static_cast<unsigned long>(ESP.getFreeHeap()),
                   wsReady ? 1 : 0, mcuSocketNamespaceReady ? 1 : 0);
   }
   mcuSocketLoop();
   yield();
   return sent;
-}
-
-void voiceStreamSenderTask(void *param) {
-  VoiceStreamSenderContext *ctx = static_cast<VoiceStreamSenderContext *>(param);
-  VoiceStreamChunk chunk;
-  while (ctx && ctx->queue && xQueueReceive(ctx->queue, &chunk, portMAX_DELAY) == pdTRUE) {
-    if (chunk.done) break;
-    if (!ctx->interactionId ||
-        !broadcastMcuVoiceStreamChunk(*ctx->interactionId,
-                                      reinterpret_cast<const uint8_t *>(chunk.samples),
-                                      chunk.bytes,
-                                      chunk.offset)) {
-      ctx->failed = true;
-      break;
-    }
-    ctx->sentBytes += static_cast<uint32_t>(chunk.bytes);
-  }
-  if (ctx) ctx->done = true;
-  vTaskDelete(nullptr);
 }
 
 bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
@@ -3892,7 +3996,6 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
 
   constexpr size_t kReadBytes = 512;
   uint8_t readBuffer[kReadBytes];
-  VoiceStreamChunk pcmChunk;
   size_t pcmChunkFrames = 0;
   uint32_t framesDone = 0;
   uint32_t emptyReads = 0;
@@ -3905,27 +4008,19 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   auto abortVoiceStream = [&](const String &reason) {
     broadcastMcuVoiceStreamAbort(interactionId, reason, queuedBytes);
   };
+  VoiceStreamChunk *pcmChunk = static_cast<VoiceStreamChunk *>(malloc(sizeof(VoiceStreamChunk)));
+  if (!pcmChunk) {
+    audioBusy = false;
+    lastAudioDetail = String(F("voice stream chunk alloc failed heap=")) + String(ESP.getFreeHeap());
+    abortVoiceStream(F("chunk_alloc"));
+    setOledStatus(OledMode::Error, F("VOICE"), F("MEMORY"), 0);
+    return false;
+  }
+  memset(pcmChunk, 0, sizeof(VoiceStreamChunk));
   const char *stopReason = "max";
-  QueueHandle_t streamQueue = xQueueCreate(kVoiceStreamQueueSlots, sizeof(VoiceStreamChunk));
-  if (!streamQueue) {
-    audioBusy = false;
-    lastAudioDetail = F("voice stream queue alloc failed");
-    abortVoiceStream(F("queue_alloc"));
-    setOledStatus(OledMode::Error, F("VOICE"), F("QUEUE"), 0);
-    return false;
-  }
-  VoiceStreamSenderContext senderContext;
-  senderContext.interactionId = &interactionId;
-  senderContext.queue = streamQueue;
-  TaskHandle_t senderTask = nullptr;
-  if (xTaskCreate(voiceStreamSenderTask, "voice-send", 8192, &senderContext, 2, &senderTask) != pdPASS) {
-    vQueueDelete(streamQueue);
-    audioBusy = false;
-    lastAudioDetail = F("voice stream sender start failed");
-    abortVoiceStream(F("sender_start"));
-    setOledStatus(OledMode::Error, F("VOICE"), F("SEND"), 0);
-    return false;
-  }
+  Serial.printf("Voice stream direct mode chunkFrames=%u heap=%lu\n",
+                static_cast<unsigned>(kVoiceStreamChunkFrames),
+                static_cast<unsigned long>(ESP.getFreeHeap()));
   voiceRecordHeardSpeech = false;
   voiceRecordRms = 0;
   voiceRecordPeak = 0;
@@ -3936,31 +4031,13 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   uint32_t lastRecordOledAtMs = startedAt;
   uint8_t lastRecordProgress = 0;
 
-  auto stopSender = [&]() -> bool {
-    VoiceStreamChunk doneChunk;
-    doneChunk.done = true;
-    xQueueSend(streamQueue, &doneChunk, pdMS_TO_TICKS(1000));
-    uint32_t waitStartedAt = millis();
-    while (!senderContext.done && millis() - waitStartedAt < 10000) {
-      delay(10);
-      yield();
-    }
-    if (!senderContext.done && senderTask) {
-      vTaskDelete(senderTask);
-      senderContext.done = true;
-      senderContext.failed = true;
-    }
-    vQueueDelete(streamQueue);
-    return !senderContext.failed;
-  };
-
   auto queuePcmChunk = [&]() -> bool {
     if (pcmChunkFrames == 0) return true;
     size_t bytes = pcmChunkFrames * sizeof(int16_t);
-    pcmChunk.done = false;
-    pcmChunk.offset = queuedBytes;
-    pcmChunk.bytes = bytes;
-    if (senderContext.failed || xQueueSend(streamQueue, &pcmChunk, pdMS_TO_TICKS(kVoiceStreamQueueWaitMs)) != pdTRUE) {
+    if (!broadcastMcuVoiceStreamChunk(interactionId,
+                                      reinterpret_cast<const uint8_t *>(pcmChunk->samples),
+                                      bytes,
+                                      queuedBytes)) {
       return false;
     }
     queuedBytes += static_cast<uint32_t>(bytes);
@@ -3991,10 +4068,10 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
     esp_err_t err = i2s_read(kI2sPort, readBuffer, sizeof(readBuffer), &bytesRead, pdMS_TO_TICKS(40));
     if (err != ESP_OK) {
       audioBusy = false;
+      free(pcmChunk);
       lastAudioDetail = String(F("I2S stream read failed err=")) + String(static_cast<int>(err));
       setOledStatus(OledMode::Error, F("I2S"), F("READ FAIL"), 0);
       abortVoiceStream(F("i2s_read"));
-      stopSender();
       return false;
     }
     if (bytesRead == 0) {
@@ -4019,14 +4096,14 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
       if (monoMag > monoPeak) monoPeak = monoMag;
       monoSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
       if (monoMag >= kVoiceVadActiveThreshold) ++activeSamples;
-      pcmChunk.samples[pcmChunkFrames++] = mono;
+      pcmChunk->samples[pcmChunkFrames++] = mono;
       ++framesDone;
 
       if (pcmChunkFrames >= kVoiceStreamChunkFrames && !queuePcmChunk()) {
         audioBusy = false;
-        lastAudioDetail = senderContext.failed ? F("voice stream chunk send failed") : F("voice stream queue full");
-        abortVoiceStream(senderContext.failed ? F("chunk_send") : F("queue_full"));
-        stopSender();
+        free(pcmChunk);
+        lastAudioDetail = F("voice stream chunk send failed");
+        abortVoiceStream(F("chunk_send"));
         return false;
       }
     }
@@ -4043,21 +4120,15 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
 
   if (!queuePcmChunk()) {
     audioBusy = false;
-    lastAudioDetail = senderContext.failed ? F("voice stream final send failed") : F("voice stream final queue failed");
-    abortVoiceStream(senderContext.failed ? F("final_send") : F("final_queue"));
-    stopSender();
-    return false;
-  }
-
-  if (!stopSender()) {
-    audioBusy = false;
-    lastAudioDetail = F("voice stream sender failed");
-    abortVoiceStream(F("sender_failed"));
+    free(pcmChunk);
+    lastAudioDetail = F("voice stream final send failed");
+    abortVoiceStream(F("final_send"));
     return false;
   }
 
   audioBusy = false;
-  if (senderContext.sentBytes == 0) {
+  free(pcmChunk);
+  if (queuedBytes == 0) {
     lastAudioDetail = String(F("voice stream empty, i2s empty reads=")) + String(emptyReads);
     abortVoiceStream(F("empty"));
     setOledStatus(OledMode::Error, F("MIC"), F("NO DATA"), 0);
@@ -4070,16 +4141,16 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   voiceRecordHeardSpeech = voiceRecordRms >= kVoiceVadRmsStart &&
                             voiceRecordPeak >= kVoiceVadPeakStart &&
                             voiceRecordActiveSamples >= kVoiceVadMinActiveSamples;
-  lastAudioDetail = String(F("voice pcm bytes=")) + String(senderContext.sentBytes) +
+  lastAudioDetail = String(F("voice pcm bytes=")) + String(queuedBytes) +
                     F(", frames=") + String(framesDone) +
                     F(", rms=") + String(voiceRecordRms) +
                     F(", peak=") + String(voiceRecordPeak) +
                     F(", active=") + String(voiceRecordActiveSamples);
   Serial.printf("Voice stream frames=%lu bytes=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu vad=%s\n",
-                static_cast<unsigned long>(framesDone), static_cast<unsigned long>(senderContext.sentBytes), stopReason,
+                static_cast<unsigned long>(framesDone), static_cast<unsigned long>(queuedBytes), stopReason,
                 leftPeak, rightPeak, monoPeak, static_cast<unsigned long>(voiceRecordRms),
                 static_cast<unsigned long>(voiceRecordActiveSamples), voiceRecordHeardSpeech ? "true" : "false");
-  broadcastMcuVoiceStreamEnd(interactionId, senderContext.sentBytes);
+  broadcastMcuVoiceStreamEnd(interactionId, queuedBytes);
   return true;
 }
 
@@ -4235,6 +4306,7 @@ void triggerBootRecordPlaybackTest() {
   markMcuInteraction(interactionId, F("speaking"), F("PLAY REC"));
   broadcastMcuStatus();
   bool played = playRecordedWav(wav, wavLen);
+  free(wav);
   markMcuInteraction(interactionId, played ? F("completed") : F("failed"),
                      played ? String(F("")) : String(F("playback failed")));
   broadcastMcuStatus();
