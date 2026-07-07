@@ -2,7 +2,6 @@ import { randomUUID } from 'crypto'
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { io, type Socket } from 'socket.io-client'
-import WebSocket from 'ws'
 import { config } from '../../config'
 import { clearSessionMessages } from '../../db/hermes/session-store'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
@@ -15,6 +14,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const MAX_REQUEST_TIMEOUT_MS = 120_000
 const MAX_REQUEST_BODY_BYTES = 5 * 1024 * 1024
 const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024
+const GLOBAL_AGENT_NAMESPACE = '/global-agent'
 
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'])
 const ALLOWED_REQUEST_HEADERS = new Set([
@@ -79,11 +79,30 @@ const NON_STREAMING_SUPPRESSED_EVENTS = new Set([
   'thinking.delta',
   'reasoning.available',
 ])
+const SOCKET_IO_RESERVED_EVENTS = new Set([
+  'connect',
+  'connect_error',
+  'disconnect',
+  'disconnecting',
+  'newListener',
+  'removeListener',
+])
 const MCU_TTS_OPTIONS = {
   mcuPlayback: true,
   sampleRate: MCU_TTS_SAMPLE_RATE,
 } as const
 const MCU_INTERRUPT_DEBOUNCE_MS = 280
+
+function resolveGlobalAgentSocketIoUrl(input: string): string {
+  const url = new URL(input)
+  const path = url.pathname.replace(/\/+$/, '')
+  if (!path) {
+    url.pathname = GLOBAL_AGENT_NAMESPACE
+  } else if (path !== GLOBAL_AGENT_NAMESPACE && !path.endsWith(GLOBAL_AGENT_NAMESPACE)) {
+    url.pathname = `${path}${GLOBAL_AGENT_NAMESPACE}`
+  }
+  return url.toString()
+}
 
 function chooseMcuApprovalChoice(event: Record<string, unknown>): 'once' | 'session' | 'always' | null {
   const rawChoices = Array.isArray(event.choices) ? event.choices.map(choice => String(choice)) : []
@@ -155,15 +174,18 @@ interface StartOutboundRelayClientOptions {
   relayToken?: string
   userToken?: string
   instanceId?: string
+  deviceCode?: string
   localBaseUrl?: string
+  machineInfo?: Record<string, unknown>
   fetchImpl?: typeof fetch
-  relayProtocol?: 'socket.io' | 'websocket'
+  relayProtocol?: 'socket.io' | 'mcu-socket.io'
 }
 
 type OutboundRelayClientOptions =
-  Required<Omit<StartOutboundRelayClientOptions, 'connectionId' | 'relayProtocol' | 'userToken'>> &
+  Required<Omit<StartOutboundRelayClientOptions, 'connectionId' | 'relayProtocol' | 'userToken' | 'machineInfo'>> &
   Pick<StartOutboundRelayClientOptions, 'userToken'>
-type RelayClient = Pick<OutboundRelayClient, 'start' | 'stop'> | PlainWebSocketRelayClient
+  & { machineInfo?: Record<string, unknown> }
+type RelayClient = Pick<OutboundRelayClient, 'start' | 'stop'> | McuSocketIoRelayClient
 
 interface LocalSocketBridge {
   id: string
@@ -181,11 +203,11 @@ interface McuVoiceMeta {
   profile: string
 }
 
-class PlainWebSocketRelayClient {
-  private socket: WebSocket | null = null
-  private reconnectTimer: NodeJS.Timeout | null = null
-  private reconnectDelayMs = 1000
+class McuSocketIoRelayClient {
+  private socket: Socket | null = null
+  private localAgentSocket: Socket | null = null
   private stopped = false
+  private reconnectBlockedReason = ''
   private pendingVoice: McuVoiceMeta | null = null
   private pendingVoiceStream: (McuVoiceMeta & {
     sampleRate: number
@@ -200,92 +222,157 @@ class PlainWebSocketRelayClient {
   private readonly ttsAbortControllers = new Map<string, Set<AbortController>>()
   private readonly recentlyInterruptedSessions = new Map<string, number>()
   private readonly pendingInterrupts = new Map<string, { profile: string; interactionId: string; timer: NodeJS.Timeout }>()
+  private audioUploadToken = ''
+  private audioUploadPath = '/global-agent/audio'
 
   constructor(private readonly options: OutboundRelayClientOptions) {}
 
   start(): void {
-    if (this.socket || this.reconnectTimer) return
+    if (this.socket) return
     this.stopped = false
+    this.reconnectBlockedReason = ''
     this.connect()
   }
 
   stop(): void {
     this.stopped = true
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer)
-      this.reconnectTimer = null
-    }
-    this.socket?.close()
+    this.socket?.disconnect()
     this.socket = null
+    this.localAgentSocket?.disconnect()
+    this.localAgentSocket = null
     this.cancelPendingInterrupts()
-    this.rejectAudioWaiters(new Error('MCU websocket stopped'))
+    this.rejectAudioWaiters(new Error('MCU Socket.IO relay stopped'))
   }
 
   private connect(): void {
     if (this.stopped) return
-    const socket = new WebSocket(this.options.relayUrl)
+    const authPayload: Record<string, unknown> = {
+      token: this.options.relayToken || undefined,
+      instanceId: this.options.instanceId || undefined,
+      role: 'hermes-studio',
+      clientRole: 'web',
+      relayRole: 'web',
+      machine: this.options.machineInfo || undefined,
+    }
+    if (this.options.deviceCode) {
+      authPayload.deviceCode = this.options.deviceCode
+      authPayload.device_code = this.options.deviceCode
+    }
+    const relaySocketUrl = resolveGlobalAgentSocketIoUrl(this.options.relayUrl)
+    const socket: Socket = io(relaySocketUrl, {
+      auth: authPayload,
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 30_000,
+      timeout: 30_000,
+    })
     this.socket = socket
 
-    socket.on('open', () => {
-      this.reconnectDelayMs = 1000
-      logger.info({ relayUrl: this.redactedRelayUrl() }, '[outbound-relay:ws] connected')
-      this.sendJson({
-        type: 'mcu.auth',
-        token: this.options.relayToken || undefined,
-        instanceId: this.options.instanceId || undefined,
-        role: 'hermes-studio',
-      })
+    socket.on('connect', () => {
+      logger.info({ relayUrl: this.redactedRelayUrl() }, '[outbound-relay:mcu-sio] connected')
+      this.connectLocalAgentSocket()
     })
 
-    socket.on('message', (data, isBinary) => {
-      if (isBinary) {
-        const audio = this.binaryBuffer(data)
-        if (this.pendingVoiceStream) {
-          this.pendingVoiceStream.chunks.push(audio)
-          this.pendingVoiceStream.bytes += audio.length
-          return
-        }
-        logger.info({
-          relayUrl: this.redactedRelayUrl(),
-          bytes: audio.length,
-          interactionId: this.pendingVoice?.interactionId,
-        }, '[outbound-relay:ws] binary received')
-        void this.handleVoiceAudio(audio)
-        return
+    socket.on('connect_error', (err: Error) => {
+      logger.warn({ err, relayUrl: this.redactedRelayUrl() }, '[outbound-relay:mcu-sio] connection error')
+      if (err.message === 'device_code_not_allowed' || err.message.includes('非官方设备码')) {
+        this.stopped = true
+        this.reconnectBlockedReason = err.message
+        socket.io.opts.reconnection = false
       }
-      const text = Buffer.isBuffer(data) ? data.toString('utf-8') : String(data)
-      this.handleText(text)
     })
 
-    socket.on('error', (err) => {
-      logger.warn({ err, relayUrl: this.redactedRelayUrl() }, '[outbound-relay:ws] connection error')
-    })
-
-    socket.on('close', (code, reason) => {
-      if (this.socket === socket) this.socket = null
-      this.rejectAudioWaiters(new Error('MCU websocket disconnected'))
+    socket.on('disconnect', (reason: string) => {
+      this.localAgentSocket?.disconnect()
+      this.localAgentSocket = null
+      this.rejectAudioWaiters(new Error('MCU Socket.IO relay disconnected'))
       logger.info({
-        code,
-        reason: reason.toString(),
+        reason,
+        reconnectBlockedReason: this.reconnectBlockedReason || undefined,
         relayUrl: this.redactedRelayUrl(),
-      }, '[outbound-relay:ws] disconnected')
-      this.scheduleReconnect()
+      }, '[outbound-relay:mcu-sio] disconnected')
+    })
+
+    socket.onAny((eventName: string, payload: unknown) => {
+      if (SOCKET_IO_RESERVED_EVENTS.has(eventName)) return
+      this.handleRemoteEvent(eventName, payload)
     })
   }
 
-  private scheduleReconnect(): void {
-    if (this.stopped || this.reconnectTimer) return
-    const delay = this.reconnectDelayMs
-    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 30_000)
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null
-      this.connect()
-    }, delay)
+  private connectLocalAgentSocket(): void {
+    if (this.localAgentSocket || !this.options.userToken) return
+    const localBaseUrl = this.options.localBaseUrl.replace(/\/$/, '')
+    const socket: Socket = io(`${localBaseUrl}/global-agent`, {
+      auth: {
+        token: this.options.userToken,
+        role: 'hermes-studio',
+        instanceId: this.options.instanceId || this.options.deviceCode || undefined,
+      },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 30_000,
+      timeout: 30_000,
+    })
+    this.localAgentSocket = socket
+    socket.on('connect', () => {
+      logger.info({
+        relayUrl: this.redactedRelayUrl(),
+        localBaseUrl,
+        instanceId: this.options.instanceId || this.options.deviceCode || undefined,
+      }, '[outbound-relay:mcu-sio] local global-agent bridge connected')
+    })
+    socket.on('connect_error', (err: Error) => {
+      logger.warn({ err, localBaseUrl }, '[outbound-relay:mcu-sio] local global-agent bridge connection failed')
+    })
+    socket.on('disconnect', (reason: string) => {
+      logger.info({ reason, localBaseUrl }, '[outbound-relay:mcu-sio] local global-agent bridge disconnected')
+      if (this.localAgentSocket === socket) this.localAgentSocket = null
+    })
+    socket.onAny((eventName: string, payload: unknown) => {
+      if (SOCKET_IO_RESERVED_EVENTS.has(eventName)) return
+      void this.forwardLocalMcuEventToRelay(eventName, payload)
+    })
+  }
+
+  private emitLocalMcuEvent(eventName: string, payload: Record<string, unknown>): void {
+    this.connectLocalAgentSocket()
+    this.localAgentSocket?.emit(eventName, payload)
+  }
+
+  private async forwardLocalMcuEventToRelay(eventName: string, payload: unknown): Promise<void> {
+    if (this.stopped) return
+    const body = isRecord(payload)
+      ? { ...payload, type: typeof payload.type === 'string' && payload.type ? payload.type : eventName }
+      : { type: eventName, payload }
+    const out = await this.prepareMcuRelayPayload(body)
+    this.sendJson(out)
+  }
+
+  private async prepareMcuRelayPayload(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (payload.type !== 'audio.enqueue') return payload
+    const url = typeof payload.url === 'string' ? payload.url.trim() : ''
+    if (!url) return payload
+    const remoteUrl = await this.uploadMcuAudioUrlToRelay(url).catch((err) => {
+      logger.warn({
+        err,
+        relayUrl: this.redactedRelayUrl(),
+        url,
+        interactionId: typeof payload.interactionId === 'string' ? payload.interactionId : undefined,
+        segmentId: typeof payload.segmentId === 'string' ? payload.segmentId : undefined,
+      }, '[outbound-relay:mcu-sio] failed to upload local MCU audio URL to relay')
+      return ''
+    })
+    return remoteUrl ? { ...payload, url: remoteUrl } : payload
   }
 
   private sendJson(payload: Record<string, unknown>): void {
-    if (this.socket?.readyState !== WebSocket.OPEN) return
-    this.socket.send(JSON.stringify(payload))
+    if (!this.socket?.connected || this.stopped) return
+    const type = typeof payload.type === 'string' && payload.type.trim() ? payload.type.trim() : 'mcu.event'
+    this.socket.emit(type, payload)
   }
 
   private rejectAudioWaiters(error: Error): void {
@@ -296,21 +383,42 @@ class PlainWebSocketRelayClient {
     }
   }
 
-  private handleText(text: string): void {
-    let event: Record<string, unknown>
-    try {
-      event = JSON.parse(text) as Record<string, unknown>
-    } catch {
-      logger.warn({ relayUrl: this.redactedRelayUrl(), text: text.slice(0, 300) }, '[outbound-relay:ws] invalid json')
-      return
-    }
+  private handleRemoteEvent(eventName: string, payload: unknown): void {
+    const event: Record<string, unknown> = isRecord(payload)
+      ? { ...payload, type: typeof payload.type === 'string' && payload.type ? payload.type : eventName }
+      : { type: eventName, payload }
     logger.info({
       relayUrl: this.redactedRelayUrl(),
       type: typeof event.type === 'string' ? event.type : undefined,
       status: typeof event.status === 'string' ? event.status : undefined,
       text: typeof event.text === 'string' ? event.text.slice(0, 300) : undefined,
       interactionId: typeof event.interactionId === 'string' ? event.interactionId : undefined,
-    }, '[outbound-relay:ws] event')
+    }, '[outbound-relay:mcu-sio] event')
+    if (event.type === 'mcu.auth.ok') {
+      const audioUpload = isRecord(event.audioUpload) ? event.audioUpload : null
+      const token = typeof audioUpload?.token === 'string' ? audioUpload.token.trim() : ''
+      if (token) {
+        this.audioUploadToken = token
+        this.audioUploadPath = typeof audioUpload?.url === 'string' && audioUpload.url.trim()
+          ? audioUpload.url.trim()
+          : '/global-agent/audio'
+      }
+      return
+    }
+    if (event.type === 'relay.replaced') {
+      this.reconnectBlockedReason = 'replaced'
+      this.stopped = true
+      logger.warn({
+        relayUrl: this.redactedRelayUrl(),
+        deviceCode: typeof event.deviceCode === 'string' ? event.deviceCode : undefined,
+        role: typeof event.role === 'string' ? event.role : undefined,
+      }, '[outbound-relay:mcu-sio] remote relay connection replaced; relay left connected but inactive')
+      this.localAgentSocket?.disconnect()
+      this.localAgentSocket = null
+      this.cancelPendingInterrupts()
+      this.rejectAudioWaiters(new Error('remote relay connection replaced'))
+      return
+    }
     if (event.type === 'voice.recorded') {
       this.pendingVoice = {
         interactionId: typeof event.interactionId === 'string' && event.interactionId.trim() ? event.interactionId.trim() : `mcu-voice-${Date.now()}`,
@@ -332,6 +440,32 @@ class PlainWebSocketRelayClient {
         bitsPerSample: Number(event.bitsPerSample) === 16 ? 16 : 16,
         chunks: [],
       }
+      this.emitLocalMcuEvent('voice.stream.start', event)
+      return
+    }
+    if (event.type === 'voice.stream.chunk') {
+      const data = typeof event.data === 'string' ? event.data : ''
+      if (!data) return
+      const audio = Buffer.from(data, 'base64')
+      if (this.pendingVoiceStream) {
+        this.pendingVoiceStream.chunks.push(audio)
+        const offset = this.pendingVoiceStream.bytes
+        this.pendingVoiceStream.bytes += audio.length
+        this.emitLocalMcuEvent('voice.stream.chunk', {
+          ...event,
+          interactionId: this.pendingVoiceStream.interactionId,
+          offset,
+          bytes: audio.length,
+          data,
+        })
+        return
+      }
+      logger.info({
+        relayUrl: this.redactedRelayUrl(),
+        bytes: audio.length,
+        interactionId: this.pendingVoice?.interactionId,
+      }, '[outbound-relay:mcu-sio] voice chunk received without stream metadata')
+      void this.handleVoiceAudio(audio)
       return
     }
     if (event.type === 'voice.stream.end') {
@@ -341,22 +475,16 @@ class PlainWebSocketRelayClient {
         this.sendJson({ type: 'interaction.status', status: 'failed', text: 'missing voice stream metadata' })
         return
       }
-      const pcm = Buffer.concat(stream.chunks, stream.bytes)
       logger.info({
         relayUrl: this.redactedRelayUrl(),
-        bytes: pcm.length,
+        bytes: stream.bytes,
         interactionId: stream.interactionId,
-      }, '[outbound-relay:ws] voice stream completed')
-      const wav = this.wrapPcmAsWav(pcm, stream.sampleRate, stream.channels, stream.bitsPerSample)
-      void this.handleVoiceAudio(wav, {
-        interactionId: stream.interactionId,
-        mimeType: 'audio/wav',
-        bytes: wav.length,
-        profile: stream.profile,
-      })
+      }, '[outbound-relay:mcu-sio] voice stream completed')
+      this.emitLocalMcuEvent('voice.stream.end', event)
       return
     }
     if (event.type === 'audio.done' || event.type === 'audio.interrupted' || event.type === 'audio.dropped') {
+      this.emitLocalMcuEvent(event.type, event)
       if (event.type === 'audio.interrupted' && typeof event.interactionId === 'string') {
         this.abortActiveRun(event.interactionId)
       }
@@ -374,23 +502,16 @@ class PlainWebSocketRelayClient {
       return
     }
     if (event.type === 'mcu.interrupt') {
-      const interactionId = typeof event.interactionId === 'string' ? event.interactionId.trim() : ''
-      const profile = typeof event.profile === 'string' && event.profile.trim() ? event.profile.trim() : 'default'
-      this.scheduleMcuInterrupt(profile, interactionId)
-      this.sendJson({ type: 'mcu.interrupt.ack', interactionId, profile })
+      this.emitLocalMcuEvent('mcu.interrupt', event)
       return
     }
     if (event.type === 'mcu.session.clear') {
-      const profile = typeof event.profile === 'string' && event.profile.trim() ? event.profile.trim() : 'default'
-      const interactionId = typeof event.interactionId === 'string' ? event.interactionId.trim() : ''
-      this.clearMcuSession(profile, interactionId)
+      this.emitLocalMcuEvent('mcu.session.clear', event)
+      return
     }
-  }
-
-  private binaryBuffer(data: WebSocket.RawData): Buffer {
-    if (Buffer.isBuffer(data)) return data
-    if (Array.isArray(data)) return Buffer.concat(data)
-    return Buffer.from(data)
+    if (typeof event.type === 'string' && event.type.trim()) {
+      this.emitLocalMcuEvent(event.type.trim(), event)
+    }
   }
 
   private wrapPcmAsWav(pcm: Buffer, sampleRate: number, channels: number, bitsPerSample: number): Buffer {
@@ -1005,7 +1126,88 @@ class PlainWebSocketRelayClient {
     await mkdir(dir, { recursive: true })
     const file = `${randomUUID()}.pcm`
     await writeFile(join(dir, file), audio)
-    return { url: `${baseUrl}/api/hermes/mcu/audio/${file}` }
+    const localUrl = `${baseUrl}/api/hermes/mcu/audio/${file}`
+    const remoteUrl = await this.uploadMcuAudioToRelay(audio, signal).catch((err) => {
+      logger.warn({
+        err,
+        relayUrl: this.redactedRelayUrl(),
+        bytes: audio.length,
+      }, '[outbound-relay:ws] failed to upload MCU audio to relay')
+      return ''
+    })
+    return { url: remoteUrl || localUrl }
+  }
+
+  private relayHttpBaseUrl(): string {
+    const url = new URL(this.options.relayUrl)
+    if (url.protocol === 'ws:') url.protocol = 'http:'
+    if (url.protocol === 'wss:') url.protocol = 'https:'
+    url.pathname = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  }
+
+  private resolveRelayAudioUploadUrl(): string {
+    const baseUrl = this.relayHttpBaseUrl()
+    if (/^https?:\/\//i.test(this.audioUploadPath)) return this.audioUploadPath
+    const path = this.audioUploadPath.startsWith('/') ? this.audioUploadPath : `/${this.audioUploadPath}`
+    return `${baseUrl}${path}`
+  }
+
+  private async uploadMcuAudioToRelay(audio: Buffer, signal?: AbortSignal): Promise<string> {
+    if (!this.audioUploadToken || !this.options.deviceCode) return ''
+    const uploadUrl = this.resolveRelayAudioUploadUrl()
+    const response = await this.options.fetchImpl(uploadUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.audioUploadToken}`,
+        'Content-Type': 'audio/x-pcm',
+        'X-Device-Code': this.options.deviceCode,
+        'X-Audio-Sample-Rate': String(MCU_TTS_SAMPLE_RATE),
+        'X-Audio-Channels': '1',
+      },
+      body: new Uint8Array(audio),
+      signal,
+    })
+    const text = await response.text()
+    let payload: Record<string, unknown> = {}
+    try {
+      payload = text ? JSON.parse(text) as Record<string, unknown> : {}
+    } catch {
+      payload = { error: text }
+    }
+    if (!response.ok || payload.ok === false) {
+      const error = typeof payload.error === 'string' ? payload.error : `relay audio upload failed: ${response.status}`
+      throw new Error(error)
+    }
+    const url = typeof payload.url === 'string' ? payload.url.trim() : ''
+    if (url) return url
+    const path = typeof payload.path === 'string' ? payload.path.trim() : ''
+    if (!path) throw new Error('relay audio upload did not return a URL')
+    return `${this.relayHttpBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`
+  }
+
+  private resolveLocalAudioUrl(url: string): string {
+    if (/^https?:\/\//i.test(url)) return url
+    const path = url.startsWith('/') ? url : `/${url}`
+    return `${this.options.localBaseUrl.replace(/\/$/, '')}${path}`
+  }
+
+  private async uploadMcuAudioUrlToRelay(url: string): Promise<string> {
+    if (!this.audioUploadToken || !this.options.deviceCode) return ''
+    const localUrl = this.resolveLocalAudioUrl(url)
+    const response = await this.options.fetchImpl(localUrl, {
+      method: 'GET',
+      headers: this.options.userToken ? { Authorization: `Bearer ${this.options.userToken}` } : undefined,
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(`local MCU audio fetch failed: ${response.status}${detail ? ` ${detail.slice(0, 120)}` : ''}`)
+    }
+    const audio = Buffer.from(await response.arrayBuffer())
+    if (!audio.length) throw new Error('local MCU audio fetch returned empty audio')
+    return await this.uploadMcuAudioToRelay(audio, undefined)
   }
 
   private redactedRelayUrl(): string {
@@ -1205,25 +1407,35 @@ export class OutboundRelayClient {
   private readonly relayUrl: string
   private readonly relayToken: string
   private readonly instanceId: string
+  private readonly deviceCode: string
   private readonly localBaseUrl: string
+  private readonly machineInfo?: Record<string, unknown>
   private readonly fetchImpl: typeof fetch
 
   constructor(options: OutboundRelayClientOptions) {
     this.relayUrl = options.relayUrl
     this.relayToken = options.relayToken
     this.instanceId = options.instanceId
+    this.deviceCode = options.deviceCode
     this.localBaseUrl = options.localBaseUrl.replace(/\/$/, '')
+    this.machineInfo = options.machineInfo
     this.fetchImpl = options.fetchImpl
   }
 
   start(): void {
     if (this.socket) return
+    const auth: Record<string, unknown> = {
+      role: 'hermes-studio',
+    }
+    if (this.relayToken) auth.token = this.relayToken
+    if (this.deviceCode) {
+      auth.deviceCode = this.deviceCode
+      auth.device_code = this.deviceCode
+    }
+    if (this.instanceId) auth.instanceId = this.instanceId
+    if (this.machineInfo) auth.machine = this.machineInfo
     this.socket = io(this.relayUrl, {
-      auth: {
-        token: this.relayToken || undefined,
-        instanceId: this.instanceId || undefined,
-        role: 'hermes-studio',
-      },
+      auth,
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -1241,9 +1453,16 @@ export class OutboundRelayClient {
     })
     this.socket.on('connect_error', (err: Error) => {
       logger.warn({ err, relayUrl: this.redactedRelayUrl() }, '[outbound-relay] connection failed')
+      if (err.message === 'device_code_not_allowed' || err.message.includes('非官方设备码')) {
+        this.stop()
+      }
     })
     this.socket.on('disconnect', (reason: string) => {
       logger.info({ reason, relayUrl: this.redactedRelayUrl() }, '[outbound-relay] disconnected')
+    })
+    this.socket.on('relay.replaced', (payload: unknown) => {
+      logger.warn({ payload, relayUrl: this.redactedRelayUrl() }, '[outbound-relay] remote relay connection replaced; reconnect disabled')
+      this.stop()
     })
     this.socket.on('http.request', (request: RelayHttpRequest, ack?: (response: RelayHttpResponse) => void) => {
       void this.handleHttpRequest(request)
@@ -1489,16 +1708,18 @@ export function startOutboundRelayClient(options: StartOutboundRelayClientOption
   const activeClient = activeClients.get(connectionId)
   if (activeClient) return activeClient
 
-  const clientOptions: OutboundRelayClientOptions = {
+    const clientOptions: OutboundRelayClientOptions = {
     relayUrl,
     relayToken: options.relayToken ?? '',
     userToken: options.userToken ?? '',
     instanceId: options.instanceId ?? '',
+    deviceCode: options.deviceCode ?? '',
     localBaseUrl: options.localBaseUrl ?? `http://127.0.0.1:${config.port}`,
+    machineInfo: options.machineInfo,
     fetchImpl: options.fetchImpl ?? fetch,
   }
-  const client = options.relayProtocol === 'websocket'
-    ? new PlainWebSocketRelayClient(clientOptions)
+  const client = options.relayProtocol === 'mcu-socket.io'
+    ? new McuSocketIoRelayClient(clientOptions)
     : new OutboundRelayClient(clientOptions)
   client.start()
   activeClients.set(connectionId, client)

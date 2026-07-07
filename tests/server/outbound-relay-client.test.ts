@@ -3,16 +3,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { mockIo, mockSocket, sockets, socketHandlers, mockWebSockets, MockWebSocket, resetMockSockets } = vi.hoisted(() => {
   function createMockSocket(id: string) {
     const handlers = new Map<string, (...args: any[]) => void>()
+    const anyHandlers: Array<(event: string, ...args: any[]) => void> = []
     const socket: any = {
       id,
+      connected: false,
+      io: { opts: {} },
       __handlers: handlers,
+      __anyHandlers: anyHandlers,
       on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        handlers.set(event, handler)
+        handlers.set(event, (...args: any[]) => {
+          if (event === 'connect') socket.connected = true
+          if (event === 'disconnect') socket.connected = false
+          return handler(...args)
+        })
+        return socket
+      }),
+      onAny: vi.fn((handler: (event: string, ...args: any[]) => void) => {
+        anyHandlers.push(handler)
         return socket
       }),
       emit: vi.fn(),
       removeAllListeners: vi.fn(),
-      disconnect: vi.fn(),
+      disconnect: vi.fn(() => {
+        socket.connected = false
+      }),
     }
     return socket
   }
@@ -28,6 +42,7 @@ const { mockIo, mockSocket, sockets, socketHandlers, mockWebSockets, MockWebSock
   const resetMockSockets = () => {
     sockets.length = 0
     mockSocket.__handlers.clear()
+    mockSocket.__anyHandlers.length = 0
     mockWebSockets.length = 0
   }
 
@@ -76,6 +91,25 @@ describe('outbound relay client', () => {
     vi.clearAllMocks()
   })
 
+  function connectRemoteSocket() {
+    const socket = sockets[0]
+    socket.__handlers.get('connect')?.()
+    return socket
+  }
+
+  function emitRemote(socket: any, event: string, payload: unknown) {
+    for (const handler of socket.__anyHandlers) {
+      handler(event, payload)
+    }
+  }
+
+  function findEmittedPayload(socket: any, event: string, predicate: (payload: any) => boolean = () => true) {
+    return socket.emit.mock.calls
+      .filter(([eventName]: [string]) => eventName === event)
+      .map(([, payload]: [string, any]) => payload)
+      .find(predicate)
+  }
+
   it('stays disabled when no relay url is passed explicitly', async () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
 
@@ -114,7 +148,7 @@ describe('outbound relay client', () => {
     })
   })
 
-  it('queues missing-STT prompt audio from websocket MCU voice turns', async () => {
+  it('queues missing-STT prompt audio from Socket.IO MCU voice turns', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       ok: false,
       audio: {
@@ -132,32 +166,35 @@ describe('outbound relay client', () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
 
     startOutboundRelayClient({
-      relayUrl: 'ws://device.local:8787/',
-      relayProtocol: 'websocket',
+      relayUrl: 'http://device.local:8787/',
+      relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
       localBaseUrl: 'http://127.0.0.1:8648',
       fetchImpl: fetchImpl as any,
     })
 
-    const ws = mockWebSockets[0]
-    expect(ws).toBeInstanceOf(MockWebSocket)
-    ws.__handlers.get('open')?.()
-    ws.__handlers.get('message')?.(JSON.stringify({
+    expect(mockIo).toHaveBeenCalledWith('http://device.local:8787/global-agent', expect.objectContaining({
+      auth: expect.objectContaining({
+        clientRole: 'web',
+        relayRole: 'web',
+      }),
+    }))
+    const remoteSocket = connectRemoteSocket()
+    emitRemote(remoteSocket, 'voice.recorded', {
       type: 'voice.recorded',
       interactionId: 'voice-1',
       mimeType: 'audio/wav',
       profile: 'default',
-    }), false)
-    ws.__handlers.get('message')?.(Buffer.from('wav-audio'), true)
+    })
+    emitRemote(remoteSocket, 'voice.stream.chunk', {
+      type: 'voice.stream.chunk',
+      data: Buffer.from('wav-audio').toString('base64'),
+    })
 
     await vi.waitFor(() => {
-      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"audio.enqueue"'))
+      expect(remoteSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.any(Object))
     })
-    const enqueuePayload = JSON.parse(
-      ws.send.mock.calls
-        .map(([payload]: [string]) => payload)
-        .find((payload: string) => payload.includes('"audio.enqueue"')),
-    )
+    const enqueuePayload = findEmittedPayload(remoteSocket, 'audio.enqueue')
     expect(enqueuePayload).toMatchObject({
       type: 'audio.enqueue',
       interactionId: 'voice-1',
@@ -170,16 +207,232 @@ describe('outbound relay client', () => {
     })
     expect(enqueuePayload).not.toHaveProperty('completionManagedByServer')
 
-    ws.__handlers.get('message')?.(JSON.stringify({
+    emitRemote(remoteSocket, 'audio.done', {
       type: 'audio.done',
       segmentId: 'voice-1-prompt',
-    }), false)
+    })
     await vi.waitFor(() => {
-      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"status":"completed"'))
+      expect(remoteSocket.emit).toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+        status: 'completed',
+      }))
     })
   })
 
-  it('queues the hosted TTS-failed prompt when websocket MCU speech synthesis fails', async () => {
+  it('does not reconnect the Socket.IO relay client after it is replaced remotely', async () => {
+    vi.useFakeTimers()
+    try {
+      const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
+
+      startOutboundRelayClient({
+        relayUrl: 'http://relay.example.com',
+        relayProtocol: 'mcu-socket.io',
+        userToken: 'user-jwt',
+        deviceCode: 'device-code-1',
+        localBaseUrl: 'http://127.0.0.1:8648',
+        fetchImpl: vi.fn() as any,
+      })
+
+      const remoteSocket = connectRemoteSocket()
+      const localSocket = sockets[1]
+
+      emitRemote(remoteSocket, 'relay.replaced', {
+        type: 'relay.replaced',
+        deviceCode: 'device-code-1',
+        role: 'web',
+      })
+      remoteSocket.__handlers.get('disconnect')?.('io server disconnect')
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(localSocket.disconnect).toHaveBeenCalled()
+      expect(sockets).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not reconnect the Socket.IO relay client after device-code auth is rejected', async () => {
+    vi.useFakeTimers()
+    try {
+      const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
+
+      startOutboundRelayClient({
+        relayUrl: 'http://relay.example.com',
+        relayProtocol: 'mcu-socket.io',
+        deviceCode: 'device-code-1',
+        localBaseUrl: 'http://127.0.0.1:8648',
+        fetchImpl: vi.fn() as any,
+      })
+
+      const remoteSocket = sockets[0]
+      remoteSocket.__handlers.get('connect_error')?.(new Error('非官方设备码'))
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(sockets).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bridges Socket.IO MCU voice streams to the local global-agent server without completing early', async () => {
+    const fetchImpl = vi.fn()
+    const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
+
+    startOutboundRelayClient({
+      relayUrl: 'http://device.local:8787',
+      relayProtocol: 'mcu-socket.io',
+      userToken: 'user-jwt',
+      instanceId: 'mcu-1',
+      deviceCode: 'device-code-1',
+      localBaseUrl: 'http://127.0.0.1:8648',
+      fetchImpl: fetchImpl as any,
+    })
+
+    const remoteSocket = connectRemoteSocket()
+    const localGlobalAgentSocket = sockets.at(-1)
+    expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/global-agent', expect.objectContaining({
+      auth: expect.objectContaining({
+        token: 'user-jwt',
+        role: 'hermes-studio',
+        instanceId: 'mcu-1',
+      }),
+    }))
+
+    emitRemote(remoteSocket, 'voice.stream.start', {
+      type: 'voice.stream.start',
+      interactionId: 'voice-stream-1',
+      sampleRate: 24000,
+      channels: 1,
+      bitsPerSample: 16,
+      profile: 'default',
+    })
+    emitRemote(remoteSocket, 'voice.stream.chunk', {
+      type: 'voice.stream.chunk',
+      data: Buffer.from([1, 2, 3, 4]).toString('base64'),
+    })
+    emitRemote(remoteSocket, 'voice.stream.end', {
+      type: 'voice.stream.end',
+      interactionId: 'voice-stream-1',
+      bytes: 4,
+    })
+
+    expect(localGlobalAgentSocket.emit).toHaveBeenCalledWith('voice.stream.start', expect.objectContaining({
+      type: 'voice.stream.start',
+      interactionId: 'voice-stream-1',
+      profile: 'default',
+    }))
+    expect(localGlobalAgentSocket.emit).toHaveBeenCalledWith('voice.stream.chunk', expect.objectContaining({
+      interactionId: 'voice-stream-1',
+      offset: 0,
+      bytes: 4,
+      data: Buffer.from([1, 2, 3, 4]).toString('base64'),
+    }))
+    expect(localGlobalAgentSocket.emit).toHaveBeenCalledWith('voice.stream.end', expect.objectContaining({
+      type: 'voice.stream.end',
+      interactionId: 'voice-stream-1',
+      bytes: 4,
+    }))
+    expect(fetchImpl).not.toHaveBeenCalledWith(expect.stringContaining('/api/hermes/mcu/voice-turn'), expect.any(Object))
+    expect(remoteSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({ status: 'completed' }))
+
+    localGlobalAgentSocket.__anyHandlers[0]('interaction.status', {
+      type: 'interaction.status',
+      interactionId: 'voice-stream-1',
+      status: 'thinking',
+      text: '你好',
+    })
+    await vi.waitFor(() => {
+      expect(remoteSocket.emit).toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+        status: 'thinking',
+      }))
+    })
+  })
+
+  it('uploads Socket.IO MCU TTS audio to the remote relay before enqueueing playback', async () => {
+    const pcm = Buffer.from('pcm-audio')
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('/api/hermes/mcu/voice-turn')) {
+        return new Response(JSON.stringify({ ok: true, transcript: '你好' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/hermes/tts/synthesize')) {
+        return new Response(pcm, {
+          status: 200,
+          headers: { 'content-type': 'audio/x-pcm' },
+        })
+      }
+      if (url === 'http://device.local:8787/global-agent/audio') {
+        return new Response(JSON.stringify({
+          ok: true,
+          url: 'http://device.local:8787/global-agent/audio/audio-1?token=download-token',
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ error: 'unexpected url' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
+
+    startOutboundRelayClient({
+      relayUrl: 'http://device.local:8787',
+      relayProtocol: 'mcu-socket.io',
+      userToken: 'user-jwt',
+      deviceCode: 'device-code-1',
+      localBaseUrl: 'http://127.0.0.1:8648',
+      fetchImpl: fetchImpl as any,
+    })
+
+    const remoteSocket = connectRemoteSocket()
+    emitRemote(remoteSocket, 'mcu.auth.ok', {
+      type: 'mcu.auth.ok',
+      audioUpload: {
+        url: '/global-agent/audio',
+        token: 'upload-token',
+      },
+    })
+    emitRemote(remoteSocket, 'voice.recorded', {
+      type: 'voice.recorded',
+      interactionId: 'voice-tts-ok',
+      mimeType: 'audio/wav',
+      profile: 'research',
+    })
+    emitRemote(remoteSocket, 'voice.stream.chunk', {
+      type: 'voice.stream.chunk',
+      data: Buffer.from('wav-audio').toString('base64'),
+    })
+
+    await vi.waitFor(() => {
+      expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
+    })
+    const localSocket = sockets.at(-1)
+    localSocket.__handlers.get('connect')?.()
+    localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
+    localSocket.__handlers.get('run.completed')?.({})
+
+    await vi.waitFor(() => {
+      expect(remoteSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
+        url: 'http://device.local:8787/global-agent/audio/audio-1?token=download-token',
+      }))
+    })
+    const uploadCall = fetchImpl.mock.calls.find(([url]: [string]) => url === 'http://device.local:8787/global-agent/audio')
+    expect(uploadCall).toBeTruthy()
+    expect(uploadCall?.[1].headers).toMatchObject({
+      Authorization: 'Bearer upload-token',
+      'Content-Type': 'audio/x-pcm',
+      'X-Device-Code': 'device-code-1',
+      'X-Audio-Sample-Rate': '24000',
+      'X-Audio-Channels': '1',
+    })
+    expect(uploadCall?.[1].body).toBeInstanceOf(Uint8Array)
+    expect(Buffer.from(uploadCall?.[1].body as Uint8Array)).toEqual(pcm)
+  })
+
+  it('queues the hosted TTS-failed prompt when Socket.IO MCU speech synthesis fails', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes('/api/hermes/mcu/voice-turn')) {
         return new Response(JSON.stringify({ ok: true, transcript: '你好' }), {
@@ -195,22 +448,24 @@ describe('outbound relay client', () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
 
     startOutboundRelayClient({
-      relayUrl: 'ws://device.local:8787/',
-      relayProtocol: 'websocket',
+      relayUrl: 'http://device.local:8787/',
+      relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
       localBaseUrl: 'http://127.0.0.1:8648',
       fetchImpl: fetchImpl as any,
     })
 
-    const ws = mockWebSockets[0]
-    ws.__handlers.get('open')?.()
-    ws.__handlers.get('message')?.(JSON.stringify({
+    const remoteSocket = connectRemoteSocket()
+    emitRemote(remoteSocket, 'voice.recorded', {
       type: 'voice.recorded',
       interactionId: 'voice-tts-fail',
       mimeType: 'audio/wav',
       profile: 'research',
-    }), false)
-    ws.__handlers.get('message')?.(Buffer.from('wav-audio'), true)
+    })
+    emitRemote(remoteSocket, 'voice.stream.chunk', {
+      type: 'voice.stream.chunk',
+      data: Buffer.from('wav-audio').toString('base64'),
+    })
 
     await vi.waitFor(() => {
       expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
@@ -221,7 +476,9 @@ describe('outbound relay client', () => {
     localSocket.__handlers.get('run.completed')?.({})
 
     await vi.waitFor(() => {
-      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('tts-failed-24k.s16le.pcm'))
+      expect(remoteSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
+        url: '/api/hermes/mcu/audio/tts-failed-24k.s16le.pcm',
+      }))
     })
     const ttsCalls = fetchImpl.mock.calls.filter(([url]: [string]) => url.includes('/api/hermes/tts/synthesize'))
     expect(ttsCalls).toHaveLength(2)
@@ -231,11 +488,7 @@ describe('outbound relay client', () => {
     expect(ttsCalls[1][1].headers).toMatchObject({
       'X-Hermes-Profile': 'research',
     })
-    const enqueuePayload = JSON.parse(
-      ws.send.mock.calls
-        .map(([payload]: [string]) => payload)
-        .find((payload: string) => payload.includes('tts-failed-24k.s16le.pcm')),
-    )
+    const enqueuePayload = findEmittedPayload(remoteSocket, 'audio.enqueue', payload => payload.url === '/api/hermes/mcu/audio/tts-failed-24k.s16le.pcm')
     expect(enqueuePayload).toMatchObject({
       type: 'audio.enqueue',
       interactionId: 'voice-tts-fail',
@@ -250,7 +503,7 @@ describe('outbound relay client', () => {
     expect(enqueuePayload).not.toHaveProperty('completionManagedByServer')
   })
 
-  it('aborts in-flight websocket MCU TTS synthesis when playback is interrupted', async () => {
+  it('aborts in-flight Socket.IO MCU TTS synthesis when playback is interrupted', async () => {
     let ttsSignal: AbortSignal | undefined
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/hermes/mcu/voice-turn')) {
@@ -267,22 +520,24 @@ describe('outbound relay client', () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
 
     startOutboundRelayClient({
-      relayUrl: 'ws://device.local:8787/',
-      relayProtocol: 'websocket',
+      relayUrl: 'http://device.local:8787/',
+      relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
       localBaseUrl: 'http://127.0.0.1:8648',
       fetchImpl: fetchImpl as any,
     })
 
-    const ws = mockWebSockets[0]
-    ws.__handlers.get('open')?.()
-    ws.__handlers.get('message')?.(JSON.stringify({
+    const remoteSocket = connectRemoteSocket()
+    emitRemote(remoteSocket, 'voice.recorded', {
       type: 'voice.recorded',
       interactionId: 'voice-abort',
       mimeType: 'audio/wav',
       profile: 'research',
-    }), false)
-    ws.__handlers.get('message')?.(Buffer.from('wav-audio'), true)
+    })
+    emitRemote(remoteSocket, 'voice.stream.chunk', {
+      type: 'voice.stream.chunk',
+      data: Buffer.from('wav-audio').toString('base64'),
+    })
 
     await vi.waitFor(() => {
       expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
@@ -296,17 +551,17 @@ describe('outbound relay client', () => {
     })
     expect(ttsSignal?.aborted).toBe(false)
 
-    ws.__handlers.get('message')?.(JSON.stringify({
+    emitRemote(remoteSocket, 'audio.interrupted', {
       type: 'audio.interrupted',
       interactionId: 'voice-abort',
       segmentId: 'voice-abort-tts-1',
-    }), false)
+    })
 
     await vi.waitFor(() => {
       expect(ttsSignal?.aborted).toBe(true)
     })
     expect(localSocket.emit).toHaveBeenCalledWith('abort', { session_id: 'mcu-device-research' })
-    expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"audio.enqueue"'))
+    expect(remoteSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.any(Object))
   })
 
   it('forwards an allowed HTTP request to the local Web UI server', async () => {
