@@ -67,6 +67,9 @@ constexpr uint32_t kMcuAudioHttpTimeoutMs = 30000;
 constexpr uint32_t kMcuAudioPrebufferMs = 240;
 constexpr uint32_t kMcuAudioPrebufferTimeoutMs = 2500;
 constexpr size_t kMcuAudioPrebufferMaxBytes = 16 * 1024;
+constexpr uint32_t kMcuAudioDrainMinMs = 180;
+constexpr uint32_t kMcuAudioDrainMaxMs = 650;
+constexpr uint32_t kMcuAudioTailSilenceMs = 120;
 constexpr size_t kMcuAdpcmHeaderBytes = 20;
 constexpr size_t kMcuAdpcmReadChunkBytes = 256;
 constexpr size_t kMcuAdpcmOutputFrames = 256;
@@ -1268,8 +1271,18 @@ int16_t shapeVoiceInputSample(int16_t sample) {
 void drainI2sPlayback(uint32_t writtenBytes, uint8_t channels, uint32_t sampleRate) {
   if (writtenBytes == 0 || channels == 0 || sampleRate == 0) return;
   uint32_t frameBytes = static_cast<uint32_t>(channels) * sizeof(int16_t);
+  uint32_t silenceFrames = (sampleRate * kMcuAudioTailSilenceMs) / 1000UL;
+  int16_t silence[128 * 2] = {};
+  while (silenceFrames > 0) {
+    uint32_t frames = min<uint32_t>(silenceFrames, 128);
+    size_t written = 0;
+    esp_err_t err = i2s_write(kI2sPort, silence, frames * frameBytes, &written, pdMS_TO_TICKS(1000));
+    if (err != ESP_OK || written == 0) break;
+    silenceFrames -= written / frameBytes;
+    yield();
+  }
   uint32_t totalMs = (writtenBytes / frameBytes) * 1000UL / sampleRate;
-  uint32_t drainMs = min<uint32_t>(max<uint32_t>(totalMs / 5, 100), 180);
+  uint32_t drainMs = min<uint32_t>(max<uint32_t>(totalMs / 4, kMcuAudioDrainMinMs), kMcuAudioDrainMaxMs);
   delay(drainMs);
   yield();
 }

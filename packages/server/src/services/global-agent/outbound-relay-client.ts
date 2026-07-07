@@ -208,6 +208,10 @@ interface EnqueuedMcuSpeechSegment {
   playbackDone: Promise<void>
 }
 
+type McuSpeechSynthesisResult =
+  | { ok: true; audio: { url: string; mimeType: string } }
+  | { ok: false; err: unknown; aborted: boolean }
+
 class McuSocketIoRelayClient {
   private socket: Socket | null = null
   private localAgentSocket: Socket | null = null
@@ -675,6 +679,7 @@ class McuSocketIoRelayClient {
       let segmentIndex = 0
       let ttsQueue = Promise.resolve()
       const playbackQueue: Promise<void>[] = []
+      let previousPlaybackDone = Promise.resolve()
       let settled = false
       const speechSegmenter = createMcuSpeechSegmenter()
       const enqueueSpeech = (text: string) => {
@@ -682,8 +687,22 @@ class McuSocketIoRelayClient {
         const segmentText = normalizeMcuSpeechText(text)
         if (!segmentText) return
         const segmentId = `${voice.interactionId}-tts-${++segmentIndex}`
+        this.sendJson({ type: 'interaction.status', interactionId: voice.interactionId, status: 'speaking' })
+        const controller = this.registerTtsAbortController(voice.interactionId)
+        const audioResult: Promise<McuSpeechSynthesisResult> = this.synthesizeMcuSpeech(
+          segmentText,
+          voice.profile,
+          controller.signal,
+        )
+          .then(audio => ({ ok: true as const, audio }))
+          .catch(err => ({ ok: false as const, err, aborted: controller.signal.aborted }))
+          .finally(() => {
+            this.releaseTtsAbortController(voice.interactionId, controller)
+          })
         ttsQueue = ttsQueue.then(async () => {
-          const audio = await this.enqueueMcuSpeechSegment(voice.profile, voice.interactionId, segmentId, segmentText)
+          await previousPlaybackDone
+          const audio = await this.enqueueMcuSpeechSegment(voice.interactionId, segmentId, segmentText, audioResult)
+          previousPlaybackDone = audio.playbackDone
           playbackQueue.push(audio.playbackDone)
         })
           .catch((err) => {
@@ -1066,38 +1085,38 @@ class McuSocketIoRelayClient {
     return `mcu-${instance}-${profileId}`
   }
 
-  private async enqueueMcuSpeechSegment(profile: string, interactionId: string, segmentId: string, text: string): Promise<EnqueuedMcuSpeechSegment> {
+  private async enqueueMcuSpeechSegment(
+    interactionId: string,
+    segmentId: string,
+    text: string,
+    audioResult: Promise<McuSpeechSynthesisResult>,
+  ): Promise<EnqueuedMcuSpeechSegment> {
     if (this.interruptedInteractions.has(interactionId)) {
       return { playbackDone: Promise.resolve() }
     }
-    this.sendJson({ type: 'interaction.status', interactionId, status: 'speaking' })
-    const controller = this.registerTtsAbortController(interactionId)
-    try {
-      const audio = await this.synthesizeMcuSpeech(text, profile, controller.signal)
-      if (this.interruptedInteractions.has(interactionId) || controller.signal.aborted) {
-        return { playbackDone: Promise.resolve() }
-      }
-      const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(90_000, Math.min(text.length * 1200, 300_000)))
-      waitForDone.catch(() => undefined)
-      this.sendJson({
-        type: 'audio.enqueue',
-        interactionId,
-        segmentId,
-        text: '',
-        url: audio.url,
-        mimeType: audio.mimeType,
-        channels: 1,
-        sampleRate: MCU_TTS_SAMPLE_RATE,
-        durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
-        completionManagedByServer: true,
-      })
-      return { playbackDone: waitForDone }
-    } catch (err) {
-      if (controller.signal.aborted) throw new Error('audio.interrupted')
-      throw err
-    } finally {
-      this.releaseTtsAbortController(interactionId, controller)
+    const result = await audioResult
+    if (!result.ok) {
+      if (result.aborted) throw new Error('audio.interrupted')
+      throw result.err
     }
+    if (this.interruptedInteractions.has(interactionId)) {
+      return { playbackDone: Promise.resolve() }
+    }
+    const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(90_000, Math.min(text.length * 1200, 300_000)))
+    waitForDone.catch(() => undefined)
+    this.sendJson({
+      type: 'audio.enqueue',
+      interactionId,
+      segmentId,
+      text: '',
+      url: result.audio.url,
+      mimeType: result.audio.mimeType,
+      channels: 1,
+      sampleRate: MCU_TTS_SAMPLE_RATE,
+      durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
+      completionManagedByServer: true,
+    })
+    return { playbackDone: waitForDone }
   }
 
   private waitForMcuAudioDone(segmentId: string, timeoutMs: number): Promise<void> {

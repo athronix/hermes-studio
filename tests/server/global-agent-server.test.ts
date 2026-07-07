@@ -863,13 +863,11 @@ describe('GlobalAgentServer', () => {
     const localSocket = clientSocketMocks.localSockets.at(-1)
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '好嘞，这就去查。' })
-    expect(fetchImpl).not.toHaveBeenCalled()
-
-    localSocket.__handlers.get('tool.started')?.({ tool: 'weather', preview: '厦门天气' })
     await waitForMockCalls(fetchImpl, 1)
     expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({
       text: '好嘞，这就去查。',
     })
+    localSocket.__handlers.get('tool.started')?.({ tool: 'weather', preview: '厦门天气' })
     await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
       event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-1-tts-1',
     )
@@ -888,6 +886,17 @@ describe('GlobalAgentServer', () => {
     expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
       text: '结果如下： 请确认。',
     })
+    expect(agentSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
+      segmentId: 'voice-1-tts-2',
+    }))
+    expect(agentSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+      interactionId: 'voice-1',
+      status: 'completed',
+    }))
+    agentSocket.__handlers.get('audio.done')?.({
+      interactionId: 'voice-1',
+      segmentId: 'voice-1-tts-1',
+    })
     await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
       event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-1-tts-2',
     )
@@ -903,15 +912,98 @@ describe('GlobalAgentServer', () => {
     }))
     agentSocket.__handlers.get('audio.done')?.({
       interactionId: 'voice-1',
-      segmentId: 'voice-1-tts-1',
-    })
-    expect(agentSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({
-      interactionId: 'voice-1',
-      status: 'completed',
-    }))
-    agentSocket.__handlers.get('audio.done')?.({
-      interactionId: 'voice-1',
       segmentId: 'voice-1-tts-2',
+    })
+    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
+      event === 'interaction.status' && (payload as { status?: string })?.status === 'completed',
+    )
+  })
+
+  it('starts later MCU TTS synthesis early but triggers MCU playback one segment at a time', async () => {
+    authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
+    authMocks.userCanAccessProfile.mockReturnValue(true)
+    let resolveFirstTts: ((response: Response) => void) | undefined
+    const firstTts = new Promise<Response>((resolve) => {
+      resolveFirstTts = resolve
+    })
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}'))
+      if (body.text === '第一句。') return firstTts
+      return new Response(Buffer.from([2, 0, 2, 0]), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/x-pcm' },
+      })
+    })
+    const nsp = createMockNamespace()
+    const io = { of: vi.fn(() => nsp) }
+    const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
+
+    const server = new GlobalAgentServer(io as any, {
+      fetchImpl: fetchImpl as any,
+      localBaseUrl: 'http://127.0.0.1:8647',
+    })
+    server.init()
+
+    const agentSocket = createMockSocket('jwt-agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
+    await new Promise<void>((resolve, reject) => {
+      nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
+    })
+    nsp.__handlers.get('connection')?.(agentSocket)
+
+    server.startMcuVoiceChatTurn({
+      userToken: 'user-jwt',
+      profile: 'research',
+      interactionId: 'voice-pipeline',
+      transcript: 'hi',
+      clientId: 'device-1',
+    })
+    const localSocket = clientSocketMocks.localSockets.at(-1)
+    localSocket.__handlers.get('connect')?.()
+    localSocket.__handlers.get('message.delta')?.({ delta: '第一句。' })
+    await waitForMockCalls(fetchImpl, 1)
+    localSocket.__handlers.get('message.delta')?.({ delta: '第二句。' })
+    localSocket.__handlers.get('run.completed')?.({})
+    await waitForMockCalls(fetchImpl, 2)
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
+      text: '第二句。',
+    })
+    expect(agentSocket.emit).not.toHaveBeenCalledWith('audio.enqueue', expect.any(Object))
+
+    resolveFirstTts?.(new Response(Buffer.from([1, 0, 1, 0]), {
+      status: 200,
+      headers: { 'Content-Type': 'audio/x-pcm' },
+    }))
+
+    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
+      event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-pipeline-tts-1',
+    )
+    const segmentIds = agentSocket.emit.mock.calls
+      .filter(([event]: [string]) => event === 'audio.enqueue')
+      .map(([, payload]: [string, { segmentId: string }]) => payload.segmentId)
+    expect(segmentIds).toEqual(['voice-pipeline-tts-1'])
+
+    agentSocket.__handlers.get('audio.done')?.({
+      interactionId: 'voice-pipeline',
+      segmentId: 'voice-pipeline-tts-1',
+    })
+    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
+      event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-pipeline-tts-2',
+    )
+    const segmentIdsAfterFirstDone = agentSocket.emit.mock.calls
+      .filter(([event]: [string]) => event === 'audio.enqueue')
+      .map(([, payload]: [string, { segmentId: string }]) => payload.segmentId)
+    expect(segmentIdsAfterFirstDone).toEqual(['voice-pipeline-tts-1', 'voice-pipeline-tts-2'])
+
+    agentSocket.__handlers.get('audio.done')?.({
+      interactionId: 'voice-pipeline',
+      segmentId: 'voice-pipeline-tts-2',
     })
     await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
       event === 'interaction.status' && (payload as { status?: string })?.status === 'completed',
