@@ -2552,7 +2552,7 @@ void sendMcuLoginPage() {
   html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>局域网登录</span><span class='choice-copy'>直连当前 Web UI，同一 Wi-Fi 下响应最快。</span><span class='choice-meta'>LOCAL</span></span></label>");
   html += F("<label class='choice'><input type='radio' name='login_mode' value='remote'");
   if (defaultRemoteLogin) html += F(" checked");
-  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>远程登录</span><span class='choice-copy'>通过远程服务器转发，适合跨网络使用。</span><span class='choice-meta'>REMOTE</span></span></label>");
+  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>远程登录(免费测试)</span><span class='choice-copy'>通过远程服务器转发，适合跨网络使用。</span><span class='choice-meta'>REMOTE</span></span></label>");
   html += F("</div></div>");
   html += F("<div class='btn-row'><button class='btn primary' type='submit'>登录</button><a class='btn' href='/device'>返回</a></div>");
   html += F("<p class='hint'>局域网登录会连接当前机器；远程登录会请求当前机器返回远程转发服务地址。</p></form></section>");
