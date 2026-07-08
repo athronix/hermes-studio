@@ -325,8 +325,11 @@ export async function microcontrollerLogin(ctx: Context) {
   }
 
   const connectionId = id.trim()
-  stopOutboundRelayClient(connectionId)
-  if (relayUrl) {
+  const forwardedRemoteMcuLogin = wantsRemoteRelay && ctx.get('x-hermes-relay-forwarded') === 'mcu-socket.io'
+  if (!forwardedRemoteMcuLogin) {
+    stopOutboundRelayClient(connectionId)
+  }
+  if (relayUrl && !forwardedRemoteMcuLogin) {
     const relayStartUrl = wantsRemoteRelay && relayUrl === remoteRelayUrl
       ? config.remoteRelay.url
       : relayUrl

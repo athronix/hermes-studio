@@ -3,7 +3,7 @@ import { computed, h, ref } from 'vue'
 import { NButton, NDataTable, NForm, NFormItem, NInput, NModal, NSpace, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { createMcuDevice, deleteMcuDevice, fetchMcuDevices, updateMcuDeviceName, type McuDevice } from '@/api/hermes/mcu-devices'
+import { connectMcuDeviceRemote, createMcuDevice, deleteMcuDevice, disconnectMcuDeviceRemote, fetchMcuDevices, updateMcuDeviceName, type McuDevice } from '@/api/hermes/mcu-devices'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -13,6 +13,7 @@ const showModal = ref(false)
 const showAddModal = ref(false)
 const loading = ref(false)
 const saving = ref(false)
+const connectingDeviceId = ref(0)
 const editing = ref(false)
 const devices = ref<McuDevice[]>([])
 const form = ref({
@@ -23,6 +24,14 @@ const editForm = ref({
   id: 0,
   name: '',
 })
+
+function renderConnectionStatus(connected: boolean | undefined) {
+  return h(NTag, {
+    size: 'small',
+    type: connected ? 'success' : 'default',
+    bordered: false,
+  }, { default: () => connected ? t('mcuDevices.connected') : t('mcuDevices.disconnected') })
+}
 
 const columns = computed<DataTableColumns<McuDevice>>(() => [
   {
@@ -48,18 +57,25 @@ const columns = computed<DataTableColumns<McuDevice>>(() => [
     },
   },
   {
-    title: t('mcuDevices.createdAt'),
-    key: 'created_at',
-    width: 150,
+    title: t('mcuDevices.lanStatus'),
+    key: 'lan_connected',
+    width: 96,
     render(row) {
-      if (!row.created_at) return '-'
-      return new Date(row.created_at * 1000).toLocaleString()
+      return renderConnectionStatus(row.lan_connected)
+    },
+  },
+  {
+    title: t('mcuDevices.remoteStatus'),
+    key: 'remote_connected',
+    width: 96,
+    render(row) {
+      return renderConnectionStatus(row.remote_connected)
     },
   },
   {
     title: t('mcuDevices.actions'),
     key: 'actions',
-    width: 128,
+    width: 220,
     render(row) {
       return h(NSpace, { size: 4 }, {
         default: () => [
@@ -68,6 +84,14 @@ const columns = computed<DataTableColumns<McuDevice>>(() => [
             quaternary: true,
             onClick: () => openEditModal(row),
           }, { default: () => t('mcuDevices.edit') }),
+          h(NButton, {
+            size: 'tiny',
+            quaternary: true,
+            type: row.remote_connected ? 'warning' : 'primary',
+            loading: connectingDeviceId.value === row.id,
+            disabled: connectingDeviceId.value !== 0 || (!row.is_official && !row.remote_connected),
+            onClick: () => toggleRemoteDevice(row),
+          }, { default: () => row.remote_connected ? t('mcuDevices.remoteDisconnect') : t('mcuDevices.remoteConnect') }),
           h(NButton, {
             size: 'tiny',
             quaternary: true,
@@ -151,6 +175,21 @@ async function submitEdit() {
     message.error(error?.message || t('mcuDevices.nameUpdateFailed'))
   } finally {
     saving.value = false
+  }
+}
+
+async function toggleRemoteDevice(device: McuDevice) {
+  connectingDeviceId.value = device.id
+  try {
+    const response = device.remote_connected
+      ? await disconnectMcuDeviceRemote(device.id)
+      : await connectMcuDeviceRemote(device.id)
+    devices.value = response.devices
+    message.success(t(device.remote_connected ? 'mcuDevices.remoteDisconnected' : 'mcuDevices.remoteConnected'))
+  } catch (error: any) {
+    message.error(error?.message || t(device.remote_connected ? 'mcuDevices.remoteDisconnectFailed' : 'mcuDevices.remoteConnectFailed'))
+  } finally {
+    connectingDeviceId.value = 0
   }
 }
 
@@ -352,8 +391,8 @@ function confirmDeleteDevice(device: McuDevice) {
 }
 
 .mcu-device-dialog {
-  width: min(720px, calc(100vw - 32px));
-  height: min(560px, calc(100vh - 64px));
+  width: min(880px, calc(100vw - 48px));
+  height: min(680px, calc(100vh - 72px));
   background: var(--bg-card);
   color: var(--text-primary);
   border: 1px solid var(--border-color);

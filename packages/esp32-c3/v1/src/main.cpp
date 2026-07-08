@@ -29,6 +29,8 @@ constexpr char kMissingSttPromptPcmUrl[] =
     "/api/hermes/mcu/audio/missing-stt-24k.s16le.pcm";
 constexpr char kNoDevicePromptPcmUrl[] =
     "/api/hermes/mcu/audio/no-device-24k.s16le.pcm";
+constexpr char kTokenInvalidPromptPcmUrl[] =
+    "/api/hermes/mcu/audio/token-invalid-24k.s16le.pcm";
 constexpr int kPinI2cSda = 0;
 constexpr int kPinI2cScl = 1;
 constexpr int kPinI2sDout = 4;
@@ -57,6 +59,7 @@ constexpr int kMaxLanDevices = 8;
 constexpr int kMaxManualDevices = 8;
 constexpr uint32_t kMcuLoginTimeoutMs = 8000;
 constexpr uint32_t kMcuSocketReconnectMs = 3000;
+const char kRemoteDeviceLookupUrl[] = "https://api.hermes-studio.ai";
 constexpr int kMaxProfiles = 8;
 constexpr int kMaxMcuAudioQueue = 4;
 constexpr uint32_t kMcuInteractionIdleDelayMs = 3500;
@@ -153,6 +156,7 @@ int lastMcuLoginCode = 0;
 String lastMcuLoginDetail;
 String selectedProfile;
 String pendingProfileDeviceKey;
+bool pendingProfileRemoteSource = false;
 String activeDeviceKey;
 String activeDeviceUrl;
 String mcuAuthToken;
@@ -225,8 +229,10 @@ void connectMcuSocketClient();
 void mcuSocketLoop();
 bool waitForMcuSocketReady(uint32_t timeoutMs);
 void enqueueNoDevicePrompt(const String &interactionId);
+void enqueueTokenInvalidPromptAndClearActive(const String &interactionId, const String &url = "");
 String activeDeviceEndpoint(const __FlashStringHelper *path);
 String activeDeviceEndpoint(const char *path);
+bool mcuSocketMatchesActiveTarget();
 bool downloadAndApplyMcuFirmware(const String &url, const String &md5, int expectedSize);
 
 enum class McuOtaResult : uint8_t {
@@ -248,11 +254,13 @@ struct LanDevice {
   String agentVersion;
   String profile;
   String relayUrl;
+  String displayUrl;
   uint16_t httpPort = 0;
   uint32_t responseMs = 0;
   uint32_t lastSeenMs = 0;
   bool loggedIn = false;
   bool manualSource = false;
+  bool remoteSource = false;
   bool remoteLogin = false;
 };
 
@@ -1553,7 +1561,34 @@ String endpointLabel(const String &endpointKind, uint16_t httpPort) {
 }
 
 String lanDeviceSourceLabel(const LanDevice &device) {
-  return (device.manualSource || device.remoteLogin) ? String(F("远程获取局域网")) : String(F("局域网"));
+  if (device.manualSource) return F("手动");
+  if (device.remoteSource || device.remoteLogin) return F("远程");
+  return F("局域网");
+}
+
+bool isActiveLanDevice(const LanDevice &device) {
+  bool activeRemote = mcuSocketRelayUrl.length() > 0;
+  if (device.remoteSource != activeRemote) return false;
+  if (activeDeviceUrl.length() > 0) return device.url == activeDeviceUrl;
+  String deviceKey = device.id + F("|") + device.endpointKind + F("|") + String(device.httpPort);
+  return activeDeviceKey.length() > 0 && deviceKey == activeDeviceKey;
+}
+
+String lanDeviceDisplayUrl(const LanDevice &device) {
+  if (device.displayUrl.length() > 0) return device.displayUrl;
+  return device.url;
+}
+
+String cleanAgentVersion(String version) {
+  int upstreamIndex = version.indexOf(F(" · upstream "));
+  if (upstreamIndex < 0) upstreamIndex = version.indexOf(F(" upstream "));
+  if (upstreamIndex >= 0) version = version.substring(0, upstreamIndex);
+  version.trim();
+  return version;
+}
+
+bool shouldUseRemoteLogin(const LanDevice &device) {
+  return device.remoteSource;
 }
 
 String lanDeviceKey(const String &id, const String &endpointKind, uint16_t httpPort) {
@@ -1566,6 +1601,18 @@ String lanDeviceKey(const LanDevice &device) {
 
 String lanAddressKey(const LanDevice &device) {
   return device.ip + F("|") + device.endpointKind + F("|") + String(device.httpPort);
+}
+
+bool activeSourceMatchesDevice(const LanDevice &device, bool activeRemote) {
+  return device.remoteSource == activeRemote;
+}
+
+bool activeIdentityMatchesDevice(const LanDevice &device, const String &activeKey, const String &activeAddr,
+                                 const String &activeUrl, bool activeRemote) {
+  if (!activeSourceMatchesDevice(device, activeRemote)) return false;
+  if (activeUrl.length() > 0) return device.url == activeUrl;
+  return (activeKey.length() > 0 && activeKey == lanDeviceKey(device)) ||
+         (activeAddr.length() > 0 && activeAddr == lanAddressKey(device));
 }
 
 uint32_t fnv1a(const String &value) {
@@ -1589,79 +1636,52 @@ String passwordPrefKey(const String &deviceKey) {
   return String(F("w")) + String(fnv1a(deviceKey), HEX);
 }
 
-String savedProfileForDevice(const String &deviceKey) {
-  prefs.begin("mcu", true);
-  String profile = prefs.getString(profilePrefKey(deviceKey).c_str(), "");
-  prefs.end();
-  return profile;
-}
-
-String savedAccountForDevice(const String &deviceKey) {
-  prefs.begin("mcu", true);
-  String account = prefs.getString(accountPrefKey(deviceKey).c_str(), "");
-  prefs.end();
-  return account;
-}
-
-String savedPasswordForDevice(const String &deviceKey) {
-  prefs.begin("mcu", true);
-  String password = prefs.getString(passwordPrefKey(deviceKey).c_str(), "");
-  prefs.end();
-  return password;
-}
-
 void persistCredentialsForDevice(const String &deviceKey, const String &addressKey, const String &account,
-                                 const String &password) {
+                                 const String &password, bool activeRemote) {
   prefs.begin("mcu", false);
-  prefs.putString(accountPrefKey(deviceKey).c_str(), account);
-  prefs.putString(passwordPrefKey(deviceKey).c_str(), password);
-  prefs.putString(accountPrefKey(addressKey).c_str(), account);
-  prefs.putString(passwordPrefKey(addressKey).c_str(), password);
+  prefs.putString("active_key", deviceKey);
+  prefs.putString("active_addr", addressKey);
+  prefs.putBool("active_remote", activeRemote);
+  prefs.putString("cur_account", account);
+  prefs.putString("cur_password", password);
   prefs.end();
 }
 
 void persistProfileForDevice(const String &deviceKey, const String &addressKey, const String &profile,
-                             const String &url) {
+                             const String &url, bool activeRemote) {
   prefs.begin("mcu", false);
-  prefs.putString("last_key", deviceKey);
-  prefs.putString("last_addr", addressKey);
-  prefs.putString("last_profile", profile);
+  prefs.putString("cur_profile", profile);
   prefs.putString("active_key", deviceKey);
   prefs.putString("active_addr", addressKey);
   prefs.putString("active_url", url);
-  prefs.putString(profilePrefKey(deviceKey).c_str(), profile);
-  prefs.putString(profilePrefKey(addressKey).c_str(), profile);
+  prefs.putBool("active_remote", activeRemote);
   prefs.end();
   activeDeviceKey = deviceKey;
   activeDeviceUrl = url;
 }
 
-void clearProfileForDevice(const String &deviceKey, const String &addressKey) {
+void clearProfileForDevice(const LanDevice &device) {
+  String deviceKey = lanDeviceKey(device);
+  String addressKey = lanAddressKey(device);
   prefs.begin("mcu", false);
-  prefs.remove(profilePrefKey(deviceKey).c_str());
-  prefs.remove(profilePrefKey(addressKey).c_str());
-  prefs.remove(accountPrefKey(deviceKey).c_str());
-  prefs.remove(passwordPrefKey(deviceKey).c_str());
-  prefs.remove(accountPrefKey(addressKey).c_str());
-  prefs.remove(passwordPrefKey(addressKey).c_str());
-  String lastKey = prefs.getString("last_key", "");
-  String lastAddr = prefs.getString("last_addr", "");
-  if (lastKey == deviceKey || lastAddr == addressKey) {
-    prefs.remove("last_key");
-    prefs.remove("last_addr");
-    prefs.remove("last_profile");
-  }
   String activeKey = prefs.getString("active_key", "");
   String activeAddr = prefs.getString("active_addr", "");
-  if (activeKey == deviceKey || activeAddr == addressKey) {
+  String activeUrl = prefs.getString("active_url", "");
+  String relayUrl = prefs.getString("relay_url", "");
+  bool activeRemote = prefs.getBool("active_remote", relayUrl.length() > 0);
+  if (activeIdentityMatchesDevice(device, activeKey, activeAddr, activeUrl, activeRemote)) {
     prefs.remove("active_key");
     prefs.remove("active_addr");
     prefs.remove("active_url");
+    prefs.remove("active_remote");
     prefs.remove("relay_url");
     prefs.remove("auth_token");
+    prefs.remove("cur_account");
+    prefs.remove("cur_password");
+    prefs.remove("cur_profile");
   }
   prefs.end();
-  if (activeDeviceKey == deviceKey) {
+  if (isActiveLanDevice(device)) {
     activeDeviceKey = "";
     activeDeviceUrl = "";
     mcuSocketRelayUrl = "";
@@ -1671,19 +1691,22 @@ void clearProfileForDevice(const String &deviceKey, const String &addressKey) {
 }
 
 void applySavedProfile(LanDevice &device) {
-  String profile = savedProfileForDevice(lanDeviceKey(device));
-  if (profile.length() == 0) profile = savedProfileForDevice(lanAddressKey(device));
-  profile.trim();
-  device.profile = profile;
-  device.loggedIn = profile.length() > 0;
   prefs.begin("mcu", true);
   String activeKey = prefs.getString("active_key", "");
   String activeAddr = prefs.getString("active_addr", "");
+  String activeUrl = prefs.getString("active_url", "");
   String relayUrl = prefs.getString("relay_url", "");
+  bool activeRemote = prefs.getBool("active_remote", relayUrl.length() > 0);
+  String profile = prefs.getString("cur_profile", "");
+  if (profile.length() == 0) profile = prefs.getString("current_profile", "");
   prefs.end();
-  device.remoteLogin = relayUrl.length() > 0 && (activeKey == lanDeviceKey(device) || activeAddr == lanAddressKey(device));
+  bool isCurrent = activeIdentityMatchesDevice(device, activeKey, activeAddr, activeUrl, activeRemote);
+  profile.trim();
+  device.profile = isCurrent ? profile : "";
+  device.loggedIn = isCurrent && profile.length() > 0;
+  device.remoteLogin = activeRemote && isCurrent;
   if (activeDeviceKey.length() == 0) {
-    if (activeAddr.length() > 0 && activeAddr == lanAddressKey(device)) {
+    if (activeIdentityMatchesDevice(device, activeKey, activeAddr, activeUrl, activeRemote)) {
       activeDeviceKey = lanDeviceKey(device);
     }
   }
@@ -1692,7 +1715,7 @@ void applySavedProfile(LanDevice &device) {
 String activeDeviceLabel() {
   if (activeDeviceKey.length() == 0) return "";
   for (int i = 0; i < lanDeviceCount; ++i) {
-    if (lanDeviceKey(lanDevices[i]) == activeDeviceKey) {
+    if (isActiveLanDevice(lanDevices[i])) {
       return endpointLabel(lanDevices[i].endpointKind, lanDevices[i].httpPort) + F(" · ") +
              lanDeviceSourceLabel(lanDevices[i]) + F(" · ") + lanDevices[i].name + F(" · ") +
              lanDevices[i].profile;
@@ -1704,7 +1727,7 @@ String activeDeviceLabel() {
 int findLanDevice(const String &id, const String &endpointKind, uint16_t httpPort) {
   for (int i = 0; i < lanDeviceCount; ++i) {
     if (lanDevices[i].id == id && lanDevices[i].endpointKind == endpointKind &&
-        lanDevices[i].httpPort == httpPort) {
+        lanDevices[i].httpPort == httpPort && !lanDevices[i].remoteSource) {
       return i;
     }
   }
@@ -1714,7 +1737,17 @@ int findLanDevice(const String &id, const String &endpointKind, uint16_t httpPor
 int findLanDeviceByAddress(const String &ip, const String &endpointKind, uint16_t httpPort) {
   for (int i = 0; i < lanDeviceCount; ++i) {
     if (lanDevices[i].ip == ip && lanDevices[i].endpointKind == endpointKind &&
-        lanDevices[i].httpPort == httpPort) {
+        lanDevices[i].httpPort == httpPort && !lanDevices[i].remoteSource) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int findRemoteLanDevice(const String &id, const String &endpointKind, uint16_t httpPort) {
+  for (int i = 0; i < lanDeviceCount; ++i) {
+    if (lanDevices[i].id == id && lanDevices[i].endpointKind == endpointKind &&
+        lanDevices[i].httpPort == httpPort && lanDevices[i].remoteSource) {
       return i;
     }
   }
@@ -1730,7 +1763,7 @@ int oldestLanDeviceSlot() {
 }
 
 void rememberLanDeviceInfo(const String &json, const String &host, const String &baseUrl, uint32_t responseMs,
-                           bool requireAnnouncement, bool manualSource = false) {
+                           bool requireAnnouncement, bool manualSource = false, bool remoteSource = false) {
   if (requireAnnouncement) {
     if (jsonStringValue(json, F("type")) != F("hermes.announce")) return;
     if (jsonIntValue(json, F("version")) != 1) return;
@@ -1744,8 +1777,8 @@ void rememberLanDeviceInfo(const String &json, const String &host, const String 
     endpointKind = httpPort == 8648 ? F("web") : (httpPort == 8748 ? F("desktop") : F("custom"));
   }
 
-  int slot = findLanDevice(id, endpointKind, httpPort);
-  if (slot < 0 && host.length() > 0) {
+  int slot = remoteSource ? findRemoteLanDevice(id, endpointKind, httpPort) : findLanDevice(id, endpointKind, httpPort);
+  if (!remoteSource && slot < 0 && host.length() > 0) {
     slot = findLanDeviceByAddress(host, endpointKind, httpPort);
   }
   if (slot < 0) {
@@ -1763,9 +1796,13 @@ void rememberLanDeviceInfo(const String &json, const String &host, const String 
   device.agentVersion = jsonStringValue(json, F("hermes_agent_version"));
   device.relayUrl = jsonStringValue(json, F("relay_url"));
   device.relayUrl.trim();
+  device.displayUrl = remoteSource ? jsonStringValue(json, F("remote_http_url")) : "";
+  device.displayUrl.trim();
+  if (remoteSource && device.displayUrl.length() == 0) device.displayUrl = device.relayUrl;
   device.responseMs = responseMs;
   device.lastSeenMs = millis();
   device.manualSource = manualSource;
+  device.remoteSource = remoteSource;
   applySavedProfile(device);
 }
 
@@ -1775,6 +1812,63 @@ void rememberLanDevice(const String &json, const IPAddress &remoteIp, uint32_t r
 
 String manualDevicePrefKey(int index) {
   return String(F("manual_")) + index;
+}
+
+void cleanupMcuPreferences() {
+  prefs.begin("mcu", true);
+  String deviceCode = prefs.getString("device_code", "");
+  uint8_t volume = prefs.getUChar("volume", kDefaultOutputVolumePercent);
+  String activeKey = prefs.getString("active_key", "");
+  String activeAddr = prefs.getString("active_addr", "");
+  String activeUrl = prefs.getString("active_url", "");
+  String relayUrl = prefs.getString("relay_url", "");
+  String authToken = prefs.getString("auth_token", "");
+  bool relayReplaced = prefs.getBool("relay_replaced", false);
+  String profile = prefs.getString("cur_profile", "");
+  if (profile.length() == 0) profile = prefs.getString("current_profile", "");
+  if (profile.length() == 0) profile = prefs.getString("last_profile", "");
+  String currentAccount = prefs.getString("cur_account", "");
+  if (currentAccount.length() == 0) currentAccount = prefs.getString("current_account", "");
+  String currentPassword = prefs.getString("cur_password", "");
+  if (currentPassword.length() == 0) currentPassword = prefs.getString("current_password", "");
+  if ((currentAccount.length() == 0 || currentPassword.length() == 0) && activeKey.length() > 0) {
+    currentAccount = prefs.getString(accountPrefKey(activeKey).c_str(), currentAccount);
+    currentPassword = prefs.getString(passwordPrefKey(activeKey).c_str(), currentPassword);
+  }
+  if ((currentAccount.length() == 0 || currentPassword.length() == 0) && activeAddr.length() > 0) {
+    currentAccount = prefs.getString(accountPrefKey(activeAddr).c_str(), currentAccount);
+    currentPassword = prefs.getString(passwordPrefKey(activeAddr).c_str(), currentPassword);
+  }
+  int manualCount = prefs.getInt("manual_count", 0);
+  if (manualCount < 0) manualCount = 0;
+  if (manualCount > kMaxManualDevices) manualCount = kMaxManualDevices;
+  String manualUrls[kMaxManualDevices];
+  for (int i = 0; i < manualCount; ++i) {
+    manualUrls[i] = prefs.getString(manualDevicePrefKey(i).c_str(), "");
+  }
+  prefs.end();
+
+  prefs.begin("mcu", false);
+  prefs.clear();
+  if (deviceCode.length() > 0) prefs.putString("device_code", deviceCode);
+  prefs.putUChar("volume", volume);
+  if (activeKey.length() > 0) prefs.putString("active_key", activeKey);
+  if (activeAddr.length() > 0) prefs.putString("active_addr", activeAddr);
+  if (activeUrl.length() > 0) prefs.putString("active_url", activeUrl);
+  if (relayUrl.length() > 0) prefs.putString("relay_url", relayUrl);
+  if (authToken.length() > 0) prefs.putString("auth_token", authToken);
+  if (relayReplaced) prefs.putBool("relay_replaced", true);
+  if (profile.length() > 0) prefs.putString("cur_profile", profile);
+  if (currentAccount.length() > 0) prefs.putString("cur_account", currentAccount);
+  if (currentPassword.length() > 0) prefs.putString("cur_password", currentPassword);
+  int restoredManualCount = 0;
+  for (int i = 0; i < manualCount; ++i) {
+    if (manualUrls[i].length() == 0) continue;
+    prefs.putString(manualDevicePrefKey(restoredManualCount).c_str(), manualUrls[i]);
+    ++restoredManualCount;
+  }
+  prefs.putInt("manual_count", restoredManualCount);
+  prefs.end();
 }
 
 String normalizedManualDeviceUrl(const String &input, String *hostOut = nullptr) {
@@ -1875,7 +1969,7 @@ void rememberRemoteMachineInfo(const String &json) {
       jsonStringValue(json, F("device_public_key")).length() == 0) {
     return;
   }
-  rememberLanDeviceInfo(json, host, baseUrl, 0, false, true);
+  rememberLanDeviceInfo(json, host, baseUrl, 0, false, false, true);
 }
 
 void rememberRemoteMachineList(const String &json) {
@@ -1941,20 +2035,22 @@ void queueRelayUrl(String urls[], int *count, const String &url) {
   *count += 1;
 }
 
-void fetchRemoteDevicesFromRelay(const String &relayBaseUrl) {
-  if (mcuRemoteDiscoveryToken.length() == 0) return;
-  if (normalizedRelayBaseUrl(mcuSocketRelayUrl) != relayBaseUrl) {
-    Serial.printf("Remote machine discovery skipped relay=%s without token\n", relayBaseUrl.c_str());
-    return;
-  }
-  String endpoint = relayBaseUrl + F("/global-agent/devices/") + mcuDeviceCode() + F("/machines");
+void fetchRemoteDevicesFromRelay() {
+  String endpoint = String(kRemoteDeviceLookupUrl) + F("/global-agent/device/") + mcuDeviceCode();
   HTTPClient http;
   http.setTimeout(kMcuLoginTimeoutMs);
   if (!http.begin(endpoint)) return;
-  http.addHeader(F("Authorization"), String(F("Bearer ")) + mcuRemoteDiscoveryToken);
   int code = http.GET();
   String body = http.getString();
   http.end();
+  if (code == 404) {
+    Serial.println(F("Remote machine discovery skipped: unofficial device code"));
+    return;
+  }
+  if (code == 429) {
+    Serial.println(F("Remote machine discovery skipped: rate limited"));
+    return;
+  }
   if (code < 200 || code >= 300) {
     Serial.printf("Remote machine discovery failed code=%d body=%s\n", code, body.substring(0, 160).c_str());
     return;
@@ -1964,15 +2060,7 @@ void fetchRemoteDevicesFromRelay(const String &relayBaseUrl) {
 
 void refreshRemoteDevices() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED) return;
-  String relayUrls[kMaxLanDevices + 1];
-  int relayUrlCount = 0;
-  queueRelayUrl(relayUrls, &relayUrlCount, mcuSocketRelayUrl);
-  for (int i = 0; i < lanDeviceCount; ++i) {
-    queueRelayUrl(relayUrls, &relayUrlCount, lanDevices[i].relayUrl);
-  }
-  for (int i = 0; i < relayUrlCount; ++i) {
-    fetchRemoteDevicesFromRelay(relayUrls[i]);
-  }
+  fetchRemoteDevicesFromRelay();
 }
 
 IPAddress lanBroadcastIp() {
@@ -2020,8 +2108,40 @@ void scanLanDevices() {
     rememberLanDevice(json, lanUdp.remoteIP(), millis() - started);
   }
   lastLanDiscoveryAtMs = millis();
+}
+
+void refreshDeviceDiscovery() {
+  bool hasActiveSnapshot = false;
+  LanDevice activeSnapshot;
+  for (int i = 0; i < lanDeviceCount; ++i) {
+    if (isActiveLanDevice(lanDevices[i])) {
+      activeSnapshot = lanDevices[i];
+      hasActiveSnapshot = true;
+      break;
+    }
+  }
+
+  lanDeviceCount = 0;
+  scanLanDevices();
   refreshManualDevices();
   refreshRemoteDevices();
+
+  if (hasActiveSnapshot && activeSnapshot.remoteSource && mcuSocketRelayUrl.length() > 0) {
+    bool activeFound = false;
+    for (int i = 0; i < lanDeviceCount; ++i) {
+      if (isActiveLanDevice(lanDevices[i])) {
+        activeFound = true;
+        break;
+      }
+    }
+    if (!activeFound && lanDeviceCount < kMaxLanDevices) {
+      activeSnapshot.lastSeenMs = millis();
+      activeSnapshot.loggedIn = selectedProfile.length() > 0;
+      activeSnapshot.profile = selectedProfile;
+      activeSnapshot.remoteLogin = true;
+      lanDevices[lanDeviceCount++] = activeSnapshot;
+    }
+  }
 }
 
 bool ssidAlreadyScanned(const String &ssid) {
@@ -2189,7 +2309,6 @@ void sendStatusPage() {
   appendInfoRow(html, F("音频队列"), String(mcuAudioPlaying ? F("播放中 · ") : F("")) + String(mcuAudioCount));
   html += F("</div>");
 
-  html += F("<div class='btn-row' style='margin-top:16px'><a class='btn primary' href='/device/scan'>刷新探测</a><a class='btn' href='/wifi'>重新配置 Wi-Fi</a></div>");
   html += F("</section>");
 
   html += F("<section class='card'><h2>音频</h2>");
@@ -2207,33 +2326,40 @@ void sendStatusPage() {
   html += F("<div class='btn-row'><button class='btn primary' type='submit'>添加</button></div>");
   html += F("<p class='hint'>会请求对端公开机器信息接口并保存，已存在的机器会自动去重。</p></form></section>");
 
-  html += F("<section class='card'><h2>局域网设备</h2>");
+  html += F("<section class='card'><h2>可连接机器</h2>");
   if (lastLanDiscoveryAtMs == 0) {
-    html += F("<p class='hint'>还没有探测。点击“刷新探测”后，会向固定发现端口广播并等待 Web 端、桌面端回应。</p>");
+    html += F("<p class='hint'>正在刷新局域网广播、手动机器和远程服务器在线机器。</p>");
   } else {
     html += F("<p class='hint'>上次探测：");
     html += String((millis() - lastLanDiscoveryAtMs) / 1000UL);
-    html += F(" 秒前</p>");
+    html += F(" 秒前；已同步手动机器和远程服务器在线机器。</p>");
   }
 
-  if (lanDeviceCount == 0) {
+  int visibleDeviceCount = 0;
+  for (int i = 0; i < lanDeviceCount; ++i) {
+    if (millis() - lanDevices[i].lastSeenMs < kLanDiscoveryStaleMs) ++visibleDeviceCount;
+  }
+  if (visibleDeviceCount == 0) {
     html += F("<p class='lead'>未发现设备</p>");
   } else {
     html += F("<div class='info-grid'>");
     for (int i = 0; i < lanDeviceCount; ++i) {
       LanDevice &device = lanDevices[i];
       bool online = millis() - device.lastSeenMs < kLanDiscoveryStaleMs;
+      if (!online) continue;
+      bool isCurrent = isActiveLanDevice(device);
       html += F("<div class='info-row'><span>");
       html += endpointLabel(device.endpointKind, device.httpPort);
       html += F(" · ");
       html += lanDeviceSourceLabel(device);
-      html += online ? F(" · 在线") : F(" · 可能离线");
-      html += device.loggedIn ? F(" · 已登录") : F(" · 未登录");
-      if (lanDeviceKey(device) == activeDeviceKey) html += F(" · 当前交互");
+      if (!isCurrent) {
+        html += F(" · 在线");
+      }
+      if (isCurrent) html += F(" · 当前");
       html += F("</span><strong>");
       html += escapeHtml(device.name);
       html += F("</strong><p class='hint'>");
-      html += escapeHtml(device.url);
+      html += escapeHtml(lanDeviceDisplayUrl(device));
       if (device.profile.length() > 0) {
         html += F("<br>Profile ");
         html += escapeHtml(device.profile);
@@ -2247,15 +2373,10 @@ void sendStatusPage() {
       }
       if (device.agentVersion.length() > 0) {
         html += F(" · Agent ");
-        html += escapeHtml(device.agentVersion);
+        html += escapeHtml(cleanAgentVersion(device.agentVersion));
       }
       html += F("</p><div class='btn-row'>");
-      if (device.loggedIn) {
-        if (lanDeviceKey(device) != activeDeviceKey) {
-          html += F("<a class='btn primary' href='/device/active?i=");
-          html += i;
-          html += F("'>设为当前</a>");
-        }
+      if (isCurrent && device.loggedIn) {
         html += F("<a class='btn' href='/device/profile?i=");
         html += i;
         html += F("'>切换 Profile</a>");
@@ -2360,7 +2481,7 @@ void handleOtaCheck() {
 }
 
 void scanAndSendStatusPage() {
-  scanLanDevices();
+  refreshDeviceDiscovery();
   sendStatusPage();
 }
 
@@ -2402,7 +2523,8 @@ bool lanDeviceIndex(int index, LanDevice **device) {
   return true;
 }
 
-String mcuLoginPayload(const String &account, const String &password, bool useRemoteRelay) {
+String mcuLoginPayload(const String &account, const String &password, const String &machineId = "",
+                       bool useRemoteRelay = false) {
   String payload;
   payload.reserve(560);
   payload += F("{\"token\":\"");
@@ -2418,14 +2540,24 @@ String mcuLoginPayload(const String &account, const String &password, bool useRe
   payload += escapeJson(password);
   payload += F("\",\"relayMode\":\"");
   payload += useRemoteRelay ? F("remote") : F("lan");
+  if (machineId.length() > 0) {
+    payload += F("\",\"machine_id\":\"");
+    payload += escapeJson(machineId);
+  }
   payload += F("\"}");
   return payload;
 }
 
-bool runMcuLogin(LanDevice &device, const String &account, const String &password, bool useRemoteRelay = false) {
-  String endpoint = device.url;
+bool runMcuLogin(LanDevice &device, const String &account, const String &password, bool useRemoteLogin = false) {
+  String endpoint = useRemoteLogin ? lanDeviceDisplayUrl(device) : device.url;
   while (endpoint.endsWith("/")) endpoint.remove(endpoint.length() - 1);
-  endpoint += F("/api/auth/mcu-login");
+  if (useRemoteLogin) {
+    endpoint += F("/global-agent/device/");
+    endpoint += mcuDeviceCode();
+    endpoint += F("/login");
+  } else {
+    endpoint += F("/api/auth/mcu-login");
+  }
 
   setOledStatus(OledMode::Think, F("LOGIN"), F("MCU"), 40);
   HTTPClient http;
@@ -2439,7 +2571,7 @@ bool runMcuLogin(LanDevice &device, const String &account, const String &passwor
   http.addHeader(F("Content-Type"), F("application/json"));
   http.addHeader(F("X-Hermes-Device-Id"), deviceId());
   http.addHeader(F("X-Hermes-Device-Name"), F("HStudio ESP32-C3"));
-  int code = http.POST(mcuLoginPayload(account, password, useRemoteRelay));
+  int code = http.POST(mcuLoginPayload(account, password, useRemoteLogin ? device.id : String(""), useRemoteLogin));
   String response = http.getString();
   http.end();
 
@@ -2447,18 +2579,21 @@ bool runMcuLogin(LanDevice &device, const String &account, const String &passwor
   rememberMcuLoginResult(code, response);
   bool ok = code >= 200 && code < 300;
   if (ok) {
-    persistCredentialsForDevice(lanDeviceKey(device), lanAddressKey(device), account, password);
+    persistCredentialsForDevice(lanDeviceKey(device), lanAddressKey(device), account, password, useRemoteLogin);
     pendingProfileDeviceKey = lanDeviceKey(device);
+    pendingProfileRemoteSource = useRemoteLogin;
     activeDeviceUrl = device.url;
     mcuAuthToken = jsonStringValue(response, F("token"));
     String relayPayload = jsonObjectValue(response, F("relay"));
     String relayUrl = relayPayload.length() > 0 ? jsonStringValue(relayPayload, F("url")) : "";
     relayUrl.trim();
+    if (relayUrl.length() == 0 && useRemoteLogin) relayUrl = lanDeviceDisplayUrl(device);
     mcuSocketRelayUrl = relayUrl;
     device.remoteLogin = mcuSocketRelayUrl.length() > 0;
     mcuSocketReconnectBlocked = false;
     prefs.begin("mcu", false);
     prefs.putString("active_url", activeDeviceUrl);
+    prefs.putBool("active_remote", useRemoteLogin);
     if (mcuSocketRelayUrl.length() > 0) {
       prefs.putString("relay_url", mcuSocketRelayUrl);
     } else {
@@ -2479,12 +2614,17 @@ bool runMcuLogin(LanDevice &device, const String &account, const String &passwor
 
 bool savedCredentialsForDevice(const LanDevice &device, String *account, String *password) {
   if (!account || !password) return false;
-  *account = savedAccountForDevice(lanDeviceKey(device));
-  *password = savedPasswordForDevice(lanDeviceKey(device));
-  if (account->length() == 0 || password->length() == 0) {
-    *account = savedAccountForDevice(lanAddressKey(device));
-    *password = savedPasswordForDevice(lanAddressKey(device));
-  }
+  prefs.begin("mcu", true);
+  String activeKey = prefs.getString("active_key", "");
+  String activeAddr = prefs.getString("active_addr", "");
+  String activeUrl = prefs.getString("active_url", "");
+  String relayUrl = prefs.getString("relay_url", "");
+  bool activeRemote = prefs.getBool("active_remote", relayUrl.length() > 0);
+  *account = prefs.getString("cur_account", "");
+  *password = prefs.getString("cur_password", "");
+  prefs.end();
+  bool isCurrent = activeIdentityMatchesDevice(device, activeKey, activeAddr, activeUrl, activeRemote);
+  if (!isCurrent) return false;
   account->trim();
   return account->length() > 0 && password->length() > 0;
 }
@@ -2496,14 +2636,16 @@ bool autoLoginDevice(LanDevice &device) {
   if (!savedCredentialsForDevice(device, &account, &password)) return false;
   Serial.printf("Auto MCU login target=%s url=%s profile=%s\n",
                 lanDeviceKey(device).c_str(), device.url.c_str(), selectedProfile.c_str());
-  bool ok = runMcuLogin(device, account, password, mcuSocketRelayUrl.length() > 0);
+  bool ok = runMcuLogin(device, account, password, shouldUseRemoteLogin(device));
   if (ok && selectedProfile.length() > 0) {
     String key = lanDeviceKey(device);
     String addr = lanAddressKey(device);
-    persistProfileForDevice(key, addr, selectedProfile, device.url);
+    persistProfileForDevice(key, addr, selectedProfile, device.url, shouldUseRemoteLogin(device));
     device.profile = selectedProfile;
     device.loggedIn = true;
+    device.remoteLogin = shouldUseRemoteLogin(device);
     pendingProfileDeviceKey = key;
+    pendingProfileRemoteSource = shouldUseRemoteLogin(device);
     activeDeviceKey = key;
     activeDeviceUrl = device.url;
   }
@@ -2513,29 +2655,10 @@ bool autoLoginDevice(LanDevice &device) {
 void autoLoginSavedDevice() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED) return;
   if (selectedProfile.length() == 0) return;
-  scanLanDevices();
+  refreshDeviceDiscovery();
 
   for (int i = 0; i < lanDeviceCount; ++i) {
-    if (activeDeviceKey.length() > 0 && lanDeviceKey(lanDevices[i]) == activeDeviceKey) {
-      autoLoginDevice(lanDevices[i]);
-      return;
-    }
-  }
-
-  prefs.begin("mcu", true);
-  String activeAddr = prefs.getString("active_addr", "");
-  prefs.end();
-  for (int i = 0; i < lanDeviceCount; ++i) {
-    if (activeAddr.length() > 0 && lanAddressKey(lanDevices[i]) == activeAddr) {
-      autoLoginDevice(lanDevices[i]);
-      return;
-    }
-  }
-
-  for (int i = 0; i < lanDeviceCount; ++i) {
-    String account;
-    String password;
-    if (lanDevices[i].profile.length() > 0 && savedCredentialsForDevice(lanDevices[i], &account, &password)) {
+    if (isActiveLanDevice(lanDevices[i])) {
       autoLoginDevice(lanDevices[i]);
       return;
     }
@@ -2551,7 +2674,6 @@ void sendMcuLoginPage() {
   }
 
   String html = pageStart(F("登录设备"));
-  bool defaultRemoteLogin = device->manualSource || device->remoteLogin;
   html += F("<section class='panel'><p class='meta'>MCU LOGIN</p><h1>登录 ");
   html += escapeHtml(endpointLabel(device->endpointKind, device->httpPort));
   html += F("</h1><p class='lead'>");
@@ -2559,21 +2681,13 @@ void sendMcuLoginPage() {
   html += F(" · ");
   html += escapeHtml(lanDeviceSourceLabel(*device));
   html += F(" · ");
-  html += escapeHtml(device->url);
+  html += escapeHtml(lanDeviceDisplayUrl(*device));
   html += F("</p><form method='post' action='/device/login'><input type='hidden' name='i' value='");
   html += index;
   html += F("'><div class='field'><span class='label'>账号</span><input name='account' autocomplete='username' required></div>");
   html += F("<div class='field'><span class='label'>密码</span><input name='password' type='password' autocomplete='current-password' required></div>");
-  html += F("<div class='field'><span class='label'>连接方式</span><div class='choice-grid'>");
-  html += F("<label class='choice'><input type='radio' name='login_mode' value='lan'");
-  if (!defaultRemoteLogin) html += F(" checked");
-  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>局域网登录</span><span class='choice-copy'>直连当前 Web UI，同一 Wi-Fi 下响应最快。</span><span class='choice-meta'>LOCAL</span></span></label>");
-  html += F("<label class='choice'><input type='radio' name='login_mode' value='remote'");
-  if (defaultRemoteLogin) html += F(" checked");
-  html += F("><span class='choice-card'><span class='choice-dot'></span><span class='choice-title'>远程登录(免费测试)</span><span class='choice-copy'>通过远程服务器转发，适合跨网络使用。</span><span class='choice-meta'>REMOTE</span></span></label>");
-  html += F("</div></div>");
   html += F("<div class='btn-row'><button class='btn primary' type='submit'>登录</button><a class='btn' href='/device'>返回</a></div>");
-  html += F("<p class='hint'>局域网登录会连接当前机器；远程登录会请求当前机器返回远程转发服务地址。</p></form></section>");
+  html += F("</form></section>");
   html += pageEnd();
   server.send(200, F("text/html; charset=utf-8"), html);
 }
@@ -2628,6 +2742,7 @@ void switchProfilePage() {
     return;
   }
   pendingProfileDeviceKey = lanDeviceKey(*device);
+  pendingProfileRemoteSource = shouldUseRemoteLogin(*device);
   sendProfilePage();
 }
 
@@ -2635,9 +2750,7 @@ void handleMcuLogin() {
   int index = server.arg(F("i")).toInt();
   String account = server.arg(F("account"));
   String password = server.arg(F("password"));
-  String loginMode = server.arg(F("login_mode"));
   account.trim();
-  loginMode.trim();
   LanDevice *device = nullptr;
   if (!lanDeviceIndex(index, &device)) {
     server.send(404, F("text/plain; charset=utf-8"), F("设备不存在，请先刷新探测"));
@@ -2647,7 +2760,7 @@ void handleMcuLogin() {
     server.send(400, F("text/plain; charset=utf-8"), F("缺少账号或密码"));
     return;
   }
-  runMcuLogin(*device, account, password, loginMode == F("remote"));
+  runMcuLogin(*device, account, password, shouldUseRemoteLogin(*device));
   sendProfilePage();
 }
 
@@ -2656,11 +2769,13 @@ void saveProfile() {
   selectedProfile.trim();
   if (pendingProfileDeviceKey.length() > 0 && selectedProfile.length() > 0) {
     for (int i = 0; i < lanDeviceCount; ++i) {
-      if (lanDeviceKey(lanDevices[i]) == pendingProfileDeviceKey) {
+      if (lanDeviceKey(lanDevices[i]) == pendingProfileDeviceKey &&
+          lanDevices[i].remoteSource == pendingProfileRemoteSource) {
         persistProfileForDevice(pendingProfileDeviceKey, lanAddressKey(lanDevices[i]), selectedProfile,
-                                lanDevices[i].url);
+                                lanDevices[i].url, pendingProfileRemoteSource);
         lanDevices[i].profile = selectedProfile;
         lanDevices[i].loggedIn = true;
+        lanDevices[i].remoteLogin = pendingProfileRemoteSource;
         connectMcuSocketClient();
         break;
       }
@@ -2674,54 +2789,6 @@ void saveProfile() {
   server.send(200, F("text/html; charset=utf-8"), html);
 }
 
-void setActiveDevice() {
-  int index = server.arg(F("i")).toInt();
-  LanDevice *device = nullptr;
-  if (!lanDeviceIndex(index, &device)) {
-    server.send(404, F("text/plain; charset=utf-8"), F("设备不存在，请先刷新探测"));
-    return;
-  }
-  if (!device->loggedIn) {
-    server.sendHeader(F("Location"), String(F("/device/login?i=")) + index, true);
-    server.send(302, F("text/plain"), F(""));
-    return;
-  }
-  String account;
-  String password;
-  if (!savedCredentialsForDevice(*device, &account, &password)) {
-    server.sendHeader(F("Location"), String(F("/device/login?i=")) + index, true);
-    server.send(302, F("text/plain"), F(""));
-    return;
-  }
-
-  activeDeviceKey = lanDeviceKey(*device);
-  activeDeviceUrl = device->url;
-  mcuSocketRelayUrl = "";
-  mcuSocketReconnectBlocked = false;
-  device->remoteLogin = false;
-  selectedProfile = device->profile;
-  mcuAuthToken = "";
-  disconnectMcuSocketClient();
-  prefs.begin("mcu", false);
-  prefs.putString("active_key", activeDeviceKey);
-  prefs.putString("active_addr", lanAddressKey(*device));
-  prefs.putString("active_url", activeDeviceUrl);
-  prefs.putString("last_key", activeDeviceKey);
-  prefs.putString("last_profile", selectedProfile);
-  prefs.remove("relay_url");
-  prefs.remove("auth_token");
-  prefs.remove("relay_replaced");
-  prefs.end();
-
-  if (!runMcuLogin(*device, account, password)) {
-    sendProfilePage();
-    return;
-  }
-
-  server.sendHeader(F("Location"), F("/device"), true);
-  server.send(302, F("text/plain"), F(""));
-}
-
 void logoutDevice() {
   int index = server.arg(F("i")).toInt();
   LanDevice *device = nullptr;
@@ -2730,18 +2797,13 @@ void logoutDevice() {
     return;
   }
   String key = lanDeviceKey(*device);
-  clearProfileForDevice(key, lanAddressKey(*device));
+  bool wasCurrent = isActiveLanDevice(*device);
+  clearProfileForDevice(*device);
   device->profile = "";
   device->loggedIn = false;
   device->remoteLogin = false;
-  if (pendingProfileDeviceKey == key) pendingProfileDeviceKey = "";
-  if (activeDeviceKey == key) activeDeviceKey = "";
-  String lastKey;
-  prefs.begin("mcu", true);
-  lastKey = prefs.getString("last_key", "");
-  selectedProfile = prefs.getString("last_profile", "");
-  prefs.end();
-  if (lastKey.length() == 0) selectedProfile = "";
+  if (pendingProfileDeviceKey == key && pendingProfileRemoteSource == device->remoteSource) pendingProfileDeviceKey = "";
+  if (wasCurrent) selectedProfile = "";
   connectMcuSocketClient();
   server.sendHeader(F("Location"), F("/device"), true);
   server.send(302, F("text/plain"), F(""));
@@ -3909,6 +3971,12 @@ void handleMcuWebSocketText(uint8_t clientId, const String &message) {
     handleMcuSessionCleared(clientId, message);
     return;
   }
+  if (type == F("auth.invalid")) {
+    String interactionId = jsonStringValue(message, F("interactionId"));
+    String url = jsonStringValue(message, F("url"));
+    enqueueTokenInvalidPromptAndClearActive(interactionId, url);
+    return;
+  }
   if (type == F("audio.enqueue")) {
     handleMcuAudioEnqueue(clientId, message);
     return;
@@ -3948,6 +4016,50 @@ void enqueueNoDevicePrompt(const String &interactionId) {
   segment.channels = 1;
   segment.sampleRate = kMcuAudioDefaultSampleRate;
   enqueueMcuAudio(segment);
+}
+
+void clearActiveDeviceState() {
+  prefs.begin("mcu", false);
+  prefs.remove("active_key");
+  prefs.remove("active_addr");
+  prefs.remove("active_url");
+  prefs.remove("relay_url");
+  prefs.remove("auth_token");
+  prefs.remove("cur_account");
+  prefs.remove("cur_password");
+  prefs.remove("cur_profile");
+  prefs.remove("active_remote");
+  prefs.remove("relay_replaced");
+  prefs.end();
+  pendingProfileDeviceKey = "";
+  pendingProfileRemoteSource = false;
+  activeDeviceKey = "";
+  activeDeviceUrl = "";
+  selectedProfile = "";
+  mcuAuthToken = "";
+  mcuSocketRelayUrl = "";
+  mcuSocketReconnectBlocked = false;
+  disconnectMcuSocketClient();
+}
+
+void enqueueTokenInvalidPromptAndClearActive(const String &interactionId, const String &url) {
+  String promptUrl = url;
+  promptUrl.trim();
+  if (promptUrl.length() == 0) promptUrl = activeDeviceEndpoint(kTokenInvalidPromptPcmUrl);
+  if (promptUrl.length() == 0) promptUrl = kTokenInvalidPromptPcmUrl;
+  clearMcuAudioQueue();
+  McuAudioSegment segment;
+  segment.interactionId = interactionId.length() > 0 ? interactionId : String(F("token-invalid"));
+  segment.segmentId = String(F("token-invalid-")) + millis();
+  segment.text = F("当前token验证失败，请重新登录");
+  segment.url = promptUrl;
+  segment.mimeType = F("audio/x-pcm");
+  segment.channels = 1;
+  segment.sampleRate = kMcuAudioDefaultSampleRate;
+  enqueueMcuAudio(segment);
+  markMcuInteraction(segment.interactionId, F("failed"), segment.text);
+  clearActiveDeviceState();
+  broadcastMcuStatus();
 }
 
 bool hasMcuSocketTarget() {
@@ -4893,6 +5005,22 @@ String activeMcuSocketUrl() {
   return activeDeviceUrl;
 }
 
+String expectedMcuSocketTargetKey() {
+  String scheme;
+  String host;
+  uint16_t port = 0;
+  String path;
+  String socketUrl = activeMcuSocketUrl();
+  if (!parseAudioUrl(socketUrl, &scheme, &host, &port, &path)) return "";
+  return scheme + F("://") + host + F(":") + String(port) + F("|") + selectedProfile + F("|") + mcuAuthToken;
+}
+
+bool mcuSocketMatchesActiveTarget() {
+  if (!wsReady || !mcuSocketNamespaceReady) return false;
+  String expected = expectedMcuSocketTargetKey();
+  return expected.length() > 0 && mcuSocketTargetKey == expected;
+}
+
 void connectMcuSocketClient() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED || activeDeviceUrl.length() == 0 || mcuAuthToken.length() == 0) {
     disconnectMcuSocketClient();
@@ -5070,8 +5198,10 @@ void saveWifi() {
 
 void clearWifi() {
   prefs.begin("net", false);
-  prefs.clear();
+  prefs.remove("ssid");
+  prefs.remove("pass");
   prefs.end();
+  WiFi.disconnect(true, true);
   setOledStatus(OledMode::Think, F("WIFI"), F("CLEAR"), 40);
   server.send(200, F("text/html; charset=utf-8"),
               F("<!doctype html><meta charset='utf-8'><p>已清除，设备正在重启并回到热点模式...</p>"));
@@ -5219,7 +5349,7 @@ void setupRoutes() {
   server.on(F("/connecttest.txt"), HTTP_GET, handleWindowsConnectCheck);
   server.on(F("/ncsi.txt"), HTTP_GET, handleWindowsNcsiCheck);
   server.on(F("/favicon.ico"), HTTP_GET, handleNoContent);
-  server.on(F("/device"), HTTP_GET, sendStatusPage);
+  server.on(F("/device"), HTTP_GET, scanAndSendStatusPage);
   server.on(F("/device/scan"), HTTP_GET, scanAndSendStatusPage);
   server.on(F("/device/audio"), HTTP_POST, handleDeviceAudio);
   server.on(F("/device/manual"), HTTP_POST, addManualDevice);
@@ -5227,7 +5357,6 @@ void setupRoutes() {
   server.on(F("/device/login"), HTTP_POST, handleMcuLogin);
   server.on(F("/device/profile"), HTTP_GET, switchProfilePage);
   server.on(F("/device/profile"), HTTP_POST, saveProfile);
-  server.on(F("/device/active"), HTTP_GET, setActiveDevice);
   server.on(F("/device/logout"), HTTP_GET, logoutDevice);
   server.on(F("/ota"), HTTP_GET, []() { sendOtaPage(); });
   server.on(F("/ota/check"), HTTP_POST, handleOtaCheck);
@@ -5258,14 +5387,17 @@ void setup() {
   initOledDisplay();
   loadAudioPreferences();
   initAudioHardware();
+  cleanupMcuPreferences();
   prefs.begin("mcu", true);
-  pendingProfileDeviceKey = prefs.getString("last_key", "");
+  pendingProfileDeviceKey = prefs.getString("active_key", "");
   activeDeviceKey = prefs.getString("active_key", "");
   activeDeviceUrl = prefs.getString("active_url", "");
   mcuSocketRelayUrl = prefs.getString("relay_url", "");
+  pendingProfileRemoteSource = prefs.getBool("active_remote", mcuSocketRelayUrl.length() > 0);
   mcuAuthToken = prefs.getString("auth_token", "");
   mcuSocketReconnectBlocked = prefs.getBool("relay_replaced", false);
-  selectedProfile = prefs.getString("last_profile", "");
+  selectedProfile = prefs.getString("cur_profile", "");
+  if (selectedProfile.length() == 0) selectedProfile = prefs.getString("current_profile", "");
   prefs.end();
   setOledStatus(OledMode::Boot, F("BOOT"), F("WIFI ONLY"), 15);
   if (kForceSetupAp || !connectSavedWifi()) {

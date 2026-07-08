@@ -39,6 +39,17 @@ export function listMcuDevices(): McuDeviceRecord[] {
   return rows.map(rowToRecord)
 }
 
+export function getMcuDevice(id: number): McuDeviceRecord | null {
+  const db = getDb()
+  if (!db) {
+    const row = jsonGetAll(MCU_DEVICES_TABLE)[String(id)]
+    return row ? rowToRecord(row) : null
+  }
+
+  const row = db.prepare(`SELECT * FROM ${MCU_DEVICES_TABLE} WHERE id = ?`).get(id) as unknown as StoredMcuDeviceRow | undefined
+  return row ? rowToRecord(row) : null
+}
+
 export function createMcuDevice(input: {
   name: string
   deviceCode: string

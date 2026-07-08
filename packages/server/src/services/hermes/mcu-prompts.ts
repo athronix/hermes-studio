@@ -5,7 +5,7 @@ import { config } from '../../config'
 
 export const MCU_TTS_SAMPLE_RATE = 24_000
 
-export type McuPromptId = 'missing-stt' | 'stt-failed' | 'tts-failed' | 'no-device'
+export type McuPromptId = 'missing-stt' | 'stt-failed' | 'tts-failed' | 'no-device' | 'token-invalid'
 
 interface McuPromptDefinition {
   fileName: string
@@ -28,6 +28,10 @@ export const MCU_PROMPTS: Record<McuPromptId, McuPromptDefinition> = {
   'no-device': {
     fileName: 'no-device-24k.s16le.pcm',
     text: '你当前没有连接的设备哦，请到网页上连接设备',
+  },
+  'token-invalid': {
+    fileName: 'token-invalid-24k.s16le.pcm',
+    text: '当前token验证失败，请重新登录',
   },
 }
 

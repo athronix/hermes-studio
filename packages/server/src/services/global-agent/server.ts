@@ -474,6 +474,21 @@ export class GlobalAgentServer {
     return Array.from(this.clients.keys())
   }
 
+  hasMcuDeviceCode(deviceCode: string): boolean {
+    const expected = deviceCode.trim()
+    if (!expected) return false
+    for (const socket of this.clients.values()) {
+      const auth = socket.handshake.auth || {}
+      const raw = typeof auth.deviceCode === 'string'
+        ? auth.deviceCode
+        : typeof auth.device_code === 'string'
+          ? auth.device_code
+          : ''
+      if (raw.trim() === expected) return true
+    }
+    return false
+  }
+
   async httpRequest(request: RelayHttpRequest, options: GlobalAgentRequestOptions = {}): Promise<RelayHttpResponse> {
     const socket = this.resolveClient(options.clientId)
     if (!socket) {
@@ -1137,6 +1152,15 @@ export class GlobalAgentServer {
     const providedToken = this.mcuApiToken(payload)
     if (!socket || !expectedToken || !providedToken || providedToken !== expectedToken) {
       logger.warn({ clientId, event }, '[global-agent] rejected MCU event with invalid API token')
+      this.emitMcuEvent({
+        type: 'auth.invalid',
+        event,
+        text: mcuPromptText('token-invalid'),
+        url: mcuPromptUrl('token-invalid'),
+        mimeType: 'audio/x-pcm',
+        channels: 1,
+        sampleRate: MCU_TTS_SAMPLE_RATE,
+      }, { clientId })
       return false
     }
 
