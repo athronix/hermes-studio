@@ -119,6 +119,8 @@ describe('Database Schema Synchronization', () => {
         WORKFLOW_RUNS_SCHEMA,
         WORKFLOW_RUN_NODE_SESSIONS_TABLE,
         WORKFLOW_RUN_NODE_SESSIONS_SCHEMA,
+        MCU_DEVICES_TABLE,
+        MCU_DEVICES_SCHEMA,
       } =
         await import('../../packages/server/src/db/hermes/schemas')
 
@@ -177,6 +179,22 @@ describe('Database Schema Synchronization', () => {
       expect(workflowRunNodeSessionCols.has('session_id')).toBe(true)
       expect(workflowRunNodeSessionCols.has('status')).toBe(true)
       expect(workflowRunNodeSessionCols.has('agent')).toBe(true)
+
+      expect(tableExists(db, MCU_DEVICES_TABLE)).toBe(true)
+      const mcuDeviceCols = getTableColumns(db, MCU_DEVICES_TABLE)
+      expect(mcuDeviceCols.size).toBe(Object.keys(MCU_DEVICES_SCHEMA).length)
+      expect(mcuDeviceCols.has('id')).toBe(true)
+      expect(mcuDeviceCols.has('name')).toBe(true)
+      expect(mcuDeviceCols.has('device_code')).toBe(true)
+      expect(mcuDeviceCols.has('is_official')).toBe(true)
+      expect(mcuDeviceCols.has('created_at')).toBe(true)
+
+      db.prepare(`INSERT INTO "${MCU_DEVICES_TABLE}" (name, device_code, is_official) VALUES (?, ?, ?)`)
+        .run('MCU 1', 'device-code-1', 1)
+      expect(() => {
+        db.prepare(`INSERT INTO "${MCU_DEVICES_TABLE}" (name, device_code, is_official) VALUES (?, ?, ?)`)
+          .run('MCU Duplicate', 'device-code-1', 0)
+      }).toThrow()
     })
   })
 

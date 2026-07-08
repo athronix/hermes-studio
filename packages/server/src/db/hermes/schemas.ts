@@ -311,6 +311,24 @@ export const DEVICES_INDEXES = {
   idx_devices_last_seen: 'CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen_at)',
 }
 
+// ============================================================================
+// MCU Devices
+// ============================================================================
+
+export const MCU_DEVICES_TABLE = 'mcu_devices'
+
+export const MCU_DEVICES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  name: "TEXT NOT NULL DEFAULT ''",
+  device_code: 'TEXT NOT NULL UNIQUE',
+  is_official: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+export const MCU_DEVICES_INDEXES = {
+  idx_mcu_devices_created_at: 'CREATE INDEX IF NOT EXISTS idx_mcu_devices_created_at ON mcu_devices(created_at)',
+}
+
 export const STT_PROVIDER_SETTINGS_TABLE = 'stt_provider_settings'
 
 export const STT_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
@@ -817,6 +835,12 @@ export function initAllHermesTables(): void {
     syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {
       indexes: DEVICES_INDEXES,
     })
+
+    // MCU devices
+    syncTable(MCU_DEVICES_TABLE, MCU_DEVICES_SCHEMA, {
+      indexes: MCU_DEVICES_INDEXES,
+    })
+
     syncTable(STT_PROVIDER_SETTINGS_TABLE, STT_PROVIDER_SETTINGS_SCHEMA, {
       indexes: STT_PROVIDER_SETTINGS_INDEXES,
     })

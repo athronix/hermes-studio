@@ -1,0 +1,11 @@
+import Router from '@koa/router'
+import { requireSuperAdmin } from '../middleware/user-auth'
+import * as ctrl from '../controllers/mcu-devices'
+
+export const mcuDeviceRoutes = new Router()
+
+mcuDeviceRoutes.use(requireSuperAdmin)
+mcuDeviceRoutes.get('/api/mcu-devices', ctrl.listMcuDevicesController)
+mcuDeviceRoutes.post('/api/mcu-devices', ctrl.createMcuDeviceController)
+mcuDeviceRoutes.patch('/api/mcu-devices/:id', ctrl.updateMcuDeviceController)
+mcuDeviceRoutes.delete('/api/mcu-devices/:id', ctrl.deleteMcuDeviceController)
