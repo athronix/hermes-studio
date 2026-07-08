@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { mockIo, mockSocket, sockets, socketHandlers, mockWebSockets, MockWebSocket, resetMockSockets } = vi.hoisted(() => {
-  function createMockSocket(id: string) {
+  function createMockSocket(id: string, url = '') {
     const handlers = new Map<string, (...args: any[]) => void>()
     const anyHandlers: Array<(event: string, ...args: any[]) => void> = []
     const socket: any = {
       id,
+      __url: url,
       connected: false,
       io: { opts: {} },
       __handlers: handlers,
@@ -34,8 +35,9 @@ const { mockIo, mockSocket, sockets, socketHandlers, mockWebSockets, MockWebSock
   const sockets: any[] = []
   const mockSocket: any = createMockSocket('socket-1')
   const socketHandlers = mockSocket.__handlers as Map<string, (...args: any[]) => void>
-  const mockIo = vi.fn(() => {
-    const socket = sockets.length === 0 ? mockSocket : createMockSocket(`socket-${sockets.length + 1}`)
+  const mockIo = vi.fn((url = '') => {
+    const socket = sockets.length === 0 ? mockSocket : createMockSocket(`socket-${sockets.length + 1}`, url)
+    socket.__url = url
     sockets.push(socket)
     return socket
   })
@@ -98,8 +100,11 @@ describe('outbound relay client', () => {
   }
 
   function emitRemote(socket: any, event: string, payload: unknown) {
+    const authorizedPayload = payload && typeof payload === 'object' && !Array.isArray(payload) && event !== 'mcu.auth.ok' && event !== 'relay.replaced'
+      ? { apiToken: 'user-jwt', ...(payload as Record<string, unknown>) }
+      : payload
     for (const handler of socket.__anyHandlers) {
-      handler(event, payload)
+      handler(event, authorizedPayload)
     }
   }
 
@@ -108,6 +113,10 @@ describe('outbound relay client', () => {
       .filter(([eventName]: [string]) => eventName === event)
       .map(([, payload]: [string, any]) => payload)
       .find(predicate)
+  }
+
+  function socketForUrl(url: string) {
+    return sockets.find(socket => socket.__url === url)
   }
 
   it('stays disabled when no relay url is passed explicitly', async () => {
@@ -502,9 +511,9 @@ describe('outbound relay client', () => {
     })
 
     await vi.waitFor(() => {
-      expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
+      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
     })
-    const localSocket = sockets.at(-1)
+    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
     localSocket.__handlers.get('run.completed')?.({})
@@ -563,9 +572,9 @@ describe('outbound relay client', () => {
     })
 
     await vi.waitFor(() => {
-      expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
+      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
     })
-    const localSocket = sockets.at(-1)
+    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
     localSocket.__handlers.get('run.completed')?.({})
@@ -635,9 +644,9 @@ describe('outbound relay client', () => {
     })
 
     await vi.waitFor(() => {
-      expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.any(Object))
+      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
     })
-    const localSocket = sockets.at(-1)
+    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。' })
 

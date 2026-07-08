@@ -82,13 +82,43 @@ function createMockNamespace() {
 
 function createMockSocket(id: string, auth: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
   const handlers = new Map<string, (...args: any[]) => void>()
+  const mcuEventsRequiringApiToken = new Set([
+    'mcu.ready',
+    'mcu.status',
+    'mcu.interrupt',
+    'mcu.session.clear',
+    'mcu.session.cleared',
+    'voice.stream.start',
+    'voice.stream.chunk',
+    'voice.stream.end',
+    'voice.stream.abort',
+    'voice.recorded',
+    'interaction.status',
+    'tool.started',
+    'tool.completed',
+    'tool.failed',
+    'audio.started',
+    'audio.done',
+    'audio.interrupted',
+    'audio.queued',
+    'audio.dropped',
+    'audio.cleared',
+  ])
   const socket: any = {
     id,
     data: {},
     handshake: { auth, headers },
     broadcast: { emit: vi.fn() },
     on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-      handlers.set(event, handler)
+      handlers.set(event, (...args: any[]) => {
+        if (mcuEventsRequiringApiToken.has(event) && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) {
+          args[0] = {
+            apiToken: socket.data.userToken || socket.handshake.auth?.token,
+            ...args[0],
+          }
+        }
+        return handler(...args)
+      })
       return socket
     }),
     emit: vi.fn((_event: string, payload: unknown, ack?: (response: unknown) => void) => {
@@ -1191,7 +1221,12 @@ describe('GlobalAgentServer', () => {
     const server = new GlobalAgentServer(io as any)
     server.init()
 
-    const agentSocket = createMockSocket('agent-socket', { token: server.getAuthToken(), instanceId: 'device-1' })
+    const agentSocket = createMockSocket('agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
     await new Promise<void>((resolve, reject) => {
       nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
     })
@@ -1241,7 +1276,12 @@ describe('GlobalAgentServer', () => {
       const server = new GlobalAgentServer(io as any)
       server.init()
 
-      const agentSocket = createMockSocket('agent-socket', { token: server.getAuthToken(), instanceId: 'device-1' })
+      const agentSocket = createMockSocket('agent-socket', {
+        token: 'user-jwt',
+        role: 'hermes-studio',
+        instanceId: 'device-1',
+        profile: 'research',
+      })
       await new Promise<void>((resolve, reject) => {
         nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
       })
@@ -1290,7 +1330,12 @@ describe('GlobalAgentServer', () => {
     const server = new GlobalAgentServer(io as any)
     server.init()
 
-    const agentSocket = createMockSocket('agent-socket', { token: server.getAuthToken(), instanceId: 'device-1' })
+    const agentSocket = createMockSocket('agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
     await new Promise<void>((resolve, reject) => {
       nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
     })
