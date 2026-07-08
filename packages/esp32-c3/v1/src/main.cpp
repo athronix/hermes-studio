@@ -544,6 +544,7 @@ void drawEye(int x, int y, bool blink, bool thinking, bool error) {
 String interactionStatusLabel() {
   if (mcuInteractionStatus == F("transcribing")) return F("STT");
   if (mcuInteractionStatus == F("thinking")) return F("THINK");
+  if (mcuInteractionStatus == F("clearing")) return F("CLEAR");
   if (mcuInteractionStatus == F("tool")) return F("TOOL");
   if (mcuInteractionStatus == F("speaking")) return F("SPEAK");
   if (mcuInteractionStatus == F("completed")) return F("DONE");
@@ -2082,6 +2083,9 @@ String pageEnd() {
 
 void sendWifiPage() {
   String savedSsid = prefString("ssid");
+  if (savedSsid.length() == 0 && wifiReady && WiFi.status() == WL_CONNECTED) {
+    savedSsid = WiFi.SSID();
+  }
   bool savedInScan = false;
   for (int i = 0; i < scannedNetworkCount; ++i) {
     if (scannedSsids[i] == savedSsid) {
@@ -3817,7 +3821,7 @@ void clearMcuSessionByButton() {
     broadcastMcuStatus();
     return;
   }
-  markMcuInteraction(interactionId, F("thinking"), F("SESSION CLEAR"));
+  markMcuInteraction(interactionId, F("clearing"), F("SESSION CLEAR"));
   broadcastMcuStatus();
 }
 
@@ -5023,11 +5027,18 @@ void saveWifi() {
     server.send(400, F("text/plain; charset=utf-8"), F("缺少 SSID"));
     return;
   }
-  prefs.begin("net", false);
-  prefs.putString("ssid", ssid);
-  prefs.putString("pass", pass);
-  prefs.end();
+
+  String savedSsid = prefString("ssid");
+  String savedPass = prefString("pass");
+  if (pass.length() == 0 && ssid == savedSsid) {
+    pass = savedPass;
+  }
+
   if (connectWifiCredentials(ssid, pass, WIFI_AP_STA)) {
+    prefs.begin("net", false);
+    prefs.putString("ssid", ssid);
+    prefs.putString("pass", pass);
+    prefs.end();
     sendConnectSuccessPage(ssid, WiFi.localIP());
     restartPending = true;
     restartAtMs = millis() + kProvisionRestartDelayMs;

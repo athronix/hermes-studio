@@ -7,6 +7,7 @@ export type McuInteractionStatus =
   | 'listening'
   | 'transcribing'
   | 'thinking'
+  | 'clearing'
   | 'tool'
   | 'speaking'
   | 'completed'

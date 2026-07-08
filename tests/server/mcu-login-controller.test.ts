@@ -188,6 +188,7 @@ describe('MCU login controller', () => {
   })
 
   it('uses the fixed remote relay when remote login is requested', async () => {
+    const remoteRelayUrl = 'https://api.hermes-studio.ai'
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })))
     startOutboundRelayClientMock.mockReturnValue({ start: vi.fn() })
     const { ctrl, users } = await loadModules()
@@ -214,11 +215,11 @@ describe('MCU login controller', () => {
       connected: true,
       id: 'mcu-1',
       remote: true,
-      url: 'http://192.168.10.103:8077',
+      url: remoteRelayUrl,
     })
     expect(startOutboundRelayClientMock).toHaveBeenCalledWith({
       connectionId: 'mcu-1',
-      relayUrl: 'http://192.168.10.103:8077',
+      relayUrl: remoteRelayUrl,
       relayToken: 'relay-token',
       userToken: ctx.body.token,
       instanceId: 'mcu-1',
