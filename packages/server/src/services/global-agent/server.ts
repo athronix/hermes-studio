@@ -1119,12 +1119,52 @@ export class GlobalAgentServer {
     return socket.id
   }
 
+  private mcuApiToken(payload: Record<string, unknown>): string {
+    const raw = typeof payload.apiToken === 'string'
+      ? payload.apiToken
+      : typeof payload.api_token === 'string'
+        ? payload.api_token
+        : typeof payload.authorization === 'string'
+          ? payload.authorization
+          : ''
+    const trimmed = raw.trim()
+    return trimmed.toLowerCase().startsWith('bearer ') ? trimmed.slice(7).trim() : trimmed
+  }
+
+  private authorizeMcuEvent(clientId: string, event: string, payload: Record<string, unknown>): boolean {
+    const socket = this.clients.get(clientId)
+    const expectedToken = String(socket?.data.userToken || '')
+    const providedToken = this.mcuApiToken(payload)
+    if (!socket || !expectedToken || !providedToken || providedToken !== expectedToken) {
+      logger.warn({ clientId, event }, '[global-agent] rejected MCU event with invalid API token')
+      return false
+    }
+
+    const profile = typeof payload.profile === 'string' ? payload.profile.trim() : ''
+    const user = socket.data.user as AuthenticatedUser | undefined
+    if (profile && user && !this.canAccessProfile(user, profile)) {
+      logger.warn({ clientId, event, profile, userId: user.id }, '[global-agent] rejected MCU event for inaccessible profile')
+      return false
+    }
+
+    return true
+  }
+
+  private redactMcuAuthPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    const redacted = { ...payload }
+    delete redacted.apiToken
+    delete redacted.api_token
+    delete redacted.authorization
+    return redacted
+  }
+
   private forwardMcuEvent(clientId: string, event: string, payload: unknown): void {
     const body = isRecord(payload)
       ? { ...payload, type: typeof payload.type === 'string' && payload.type ? payload.type : event }
       : { type: event, payload }
+    if (!this.authorizeMcuEvent(clientId, event, body)) return
     this.handleMcuClientEvent(clientId, event, body)
-    this.emitFrontendBridgeEvent(clientId, body)
+    this.emitFrontendBridgeEvent(clientId, this.redactMcuAuthPayload(body))
   }
 
   private mcuSessionId(clientId: string | undefined, profile: string): string {

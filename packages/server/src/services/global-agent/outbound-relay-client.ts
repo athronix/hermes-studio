@@ -401,6 +401,32 @@ class McuSocketIoRelayClient {
     }
   }
 
+  private remoteMcuApiToken(event: Record<string, unknown>): string {
+    const raw = typeof event.apiToken === 'string'
+      ? event.apiToken
+      : typeof event.api_token === 'string'
+        ? event.api_token
+        : typeof event.authorization === 'string'
+          ? event.authorization
+          : ''
+    const trimmed = raw.trim()
+    return trimmed.toLowerCase().startsWith('bearer ') ? trimmed.slice(7).trim() : trimmed
+  }
+
+  private authorizeRemoteMcuEvent(event: Record<string, unknown>): boolean {
+    const expectedToken = this.options.userToken || ''
+    const providedToken = this.remoteMcuApiToken(event)
+    if (!expectedToken || !providedToken || providedToken !== expectedToken) {
+      logger.warn({
+        relayUrl: this.redactedRelayUrl(),
+        type: typeof event.type === 'string' ? event.type : undefined,
+        interactionId: typeof event.interactionId === 'string' ? event.interactionId : undefined,
+      }, '[outbound-relay:mcu-sio] rejected remote MCU event with invalid API token')
+      return false
+    }
+    return true
+  }
+
   private handleRemoteEvent(eventName: string, payload: unknown): void {
     const event: Record<string, unknown> = isRecord(payload)
       ? { ...payload, type: typeof payload.type === 'string' && payload.type ? payload.type : eventName }
@@ -437,6 +463,7 @@ class McuSocketIoRelayClient {
       this.rejectAudioWaiters(new Error('remote relay connection replaced'))
       return
     }
+    if (!this.authorizeRemoteMcuEvent(event)) return
     if (event.type === 'voice.recorded') {
       this.pendingVoice = {
         interactionId: typeof event.interactionId === 'string' && event.interactionId.trim() ? event.interactionId.trim() : `mcu-voice-${Date.now()}`,

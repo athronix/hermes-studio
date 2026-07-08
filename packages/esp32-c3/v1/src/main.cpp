@@ -107,6 +107,10 @@ WiFiUDP lanUdp;
 WiFiClient mcuWsPlainClient;
 WiFiClientSecure mcuWsSecureClient;
 WiFiClient *mcuWsClient = &mcuWsPlainClient;
+WiFiClient mcuAudioPlainClient;
+WiFiClientSecure mcuAudioSecureClient;
+uint8_t mcuAdpcmInputBuffer[kMcuAdpcmReadChunkBytes];
+int16_t mcuAdpcmStereoBuffer[kMcuAdpcmOutputFrames * 2];
 bool wifiReady = false;
 bool setupApMode = false;
 bool oledFound = false;
@@ -2835,15 +2839,29 @@ bool sendRawWsText(const String &payload) {
   return sendRawWsFrame(0x1, reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
 }
 
+String mcuSocketPayloadWithApiToken(const String &json) {
+  if (mcuAuthToken.length() == 0 || json.length() == 0 || json[0] != '{' || json.indexOf(F("\"apiToken\"")) >= 0) {
+    return json;
+  }
+  String out;
+  out.reserve(json.length() + mcuAuthToken.length() + 20);
+  out += F("{\"apiToken\":\"");
+  out += escapeJson(mcuAuthToken);
+  out += F("\",");
+  out += json.substring(1);
+  return out;
+}
+
 bool sendMcuSocketEvent(const String &event, const String &json) {
   if (!wsReady || !mcuSocketNamespaceReady || event.length() == 0) return false;
   if (mcuSocketReconnectBlocked && event != F("mcu.ready")) return false;
+  String securedJson = mcuSocketPayloadWithApiToken(json.length() > 0 ? json : String(F("{}")));
   String payload;
-  payload.reserve(json.length() + event.length() + 28);
+  payload.reserve(securedJson.length() + event.length() + 28);
   payload += F("42/global-agent,[\"");
   payload += escapeJson(event);
   payload += F("\",");
-  payload += json.length() > 0 ? json : String(F("{}"));
+  payload += securedJson;
   payload += F("]");
   return sendRawWsText(payload);
 }
@@ -3333,8 +3351,8 @@ bool playAdpcmStream(WiFiClient *stream, int contentLength, uint32_t fallbackSam
   es8311UpdateBits(0x31, 0x60, 0x00);
   setI2sSampleRate(sampleRate);
 
-  uint8_t input[kMcuAdpcmReadChunkBytes];
-  int16_t stereo[kMcuAdpcmOutputFrames * 2];
+  uint8_t *input = mcuAdpcmInputBuffer;
+  int16_t *stereo = mcuAdpcmStereoBuffer;
   size_t frames = 0;
   uint32_t streamBytes = kMcuAdpcmHeaderBytes;
   uint32_t playedBytes = 0;
@@ -3500,12 +3518,12 @@ bool playPcmUrl(const String &url, uint8_t channels, uint32_t sampleRate) {
   };
 
   releaseSocketForAudio();
-  WiFiClient plainClient;
-  WiFiClientSecure secureClient;
-  WiFiClient *client = &plainClient;
+  mcuAudioPlainClient.stop();
+  mcuAudioSecureClient.stop();
+  WiFiClient *client = &mcuAudioPlainClient;
   if (scheme == F("https")) {
-    secureClient.setInsecure();
-    client = &secureClient;
+    mcuAudioSecureClient.setInsecure();
+    client = &mcuAudioSecureClient;
   }
   client->setTimeout(kMcuAudioHttpTimeoutMs / 1000);
   if (!client->connect(host.c_str(), port)) {
@@ -4200,9 +4218,11 @@ bool broadcastMcuVoiceStreamChunk(const String &interactionId, const uint8_t *da
     return false;
   }
   String payload;
-  payload.reserve(280);
+  payload.reserve(300 + mcuAuthToken.length());
   payload += F("451-/global-agent,[\"voice.stream.chunk\",{\"type\":\"voice.stream.chunk\",\"interactionId\":\"");
   payload += escapeJson(interactionId);
+  payload += F("\",\"apiToken\":\"");
+  payload += escapeJson(mcuAuthToken);
   payload += F("\",\"offset\":");
   payload += offset;
   payload += F(",\"bytes\":");
