@@ -167,6 +167,16 @@ export async function deleteWorkflowRun(id: string, runId: string): Promise<void
   )
 }
 
+export async function approveWorkflowNode(id: string, runId: string, nodeId: string, approved: boolean): Promise<void> {
+  await request<{ ok: true }>(
+    `/api/hermes/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/approval`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ approved }),
+    },
+  )
+}
+
 export async function runWorkflowNow(id: string, input: WorkflowRunNowRequest = {}): Promise<WorkflowRunStartResult> {
   return request<WorkflowRunStartResult>(`/api/hermes/workflows/${encodeURIComponent(id)}/run`, {
     method: 'POST',

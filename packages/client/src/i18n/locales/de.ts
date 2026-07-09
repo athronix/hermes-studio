@@ -2024,6 +2024,15 @@ jobTriggered: 'Job ausgelost',
     otherSkills: 'Andere Skills',
   },
 
+  workflow: {
+    node: {
+      approvalRequired: 'Freigabe nach Lauf',
+    },
+    status: {
+      pending_approval: 'Wartet auf Freigabe',
+    },
+  },
+
   // Anderungsprotokoll
   changelog: {
     new_0_6_27_1: 'Diese Version umfasst alle nach 0.6.26 gemergten PRs, einschliesslich Desktop-Start-Fallback, Windows-Runtime-Fixes, Remote-MCU-Relay, Gruppenchat-Workspaces, Feinschliff am Standard-Workspace und Filterung leerer Diffs',

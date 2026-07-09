@@ -2024,6 +2024,15 @@ jobTriggered: 'Job acionado',
     otherSkills: 'Outras habs.',
   },
 
+  workflow: {
+    node: {
+      approvalRequired: 'Aprovacao apos no',
+    },
+    status: {
+      pending_approval: 'Aguardando aprovacao',
+    },
+  },
+
   // Registro de alteracoes
   changelog: {
     new_0_6_27_1: 'Esta versão cobre todos os PRs mesclados após a 0.6.26, incluindo fallback de inicialização do desktop, correções do runtime no Windows, relay remoto do MCU, workspaces no chat em grupo, ajustes do workspace padrão e filtro de diffs vazios',

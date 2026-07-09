@@ -214,6 +214,48 @@ export async function deleteRun(ctx: Context) {
   ctx.body = { ok: true }
 }
 
+export async function approveNode(ctx: Context) {
+  const id = requiredId(ctx)
+  if (!id) return
+  const runId = typeof ctx.params?.runId === 'string' ? ctx.params.runId.trim() : ''
+  const nodeId = typeof ctx.params?.nodeId === 'string' ? ctx.params.nodeId.trim() : ''
+  if (!runId) {
+    ctx.status = 400
+    ctx.body = { error: 'runId is required' }
+    return
+  }
+  if (!nodeId) {
+    ctx.status = 400
+    ctx.body = { error: 'nodeId is required' }
+    return
+  }
+
+  const workflow = getWorkflowManager().get(id)
+  if (!workflow) {
+    ctx.status = 404
+    ctx.body = { error: 'workflow not found' }
+    return
+  }
+  if (denyProfileAccess(ctx, workflow.profile)) return
+
+  const body = bodyRecord(ctx)
+  const approved = optionalBoolean(body.approved, 'approved')
+  if (rejectBadRequest(ctx, approved.error)) return
+
+  const manager = getWorkflowManager()
+  const approvedValue = approved.value ?? true
+  const accepted = manager.approveNode(id, runId, nodeId, approvedValue)
+  if (!accepted) {
+    ctx.status = 409
+    ctx.body = { error: 'workflow node approval is not pending' }
+    return
+  }
+  if (!approvedValue) {
+    await manager.stopRun(id, runId, 'Workflow node approval rejected')
+  }
+  ctx.body = { ok: true }
+}
+
 export async function rerunFromNode(ctx: Context) {
   const id = requiredId(ctx)
   if (!id) return

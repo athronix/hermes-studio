@@ -2023,6 +2023,15 @@ export default {
     otherSkills: '기타',
   },
 
+  workflow: {
+    node: {
+      approvalRequired: '완료 후 승인',
+    },
+    status: {
+      pending_approval: '승인 대기',
+    },
+  },
+
   // 변경 이력
   changelog: {
     new_0_6_27_1: '이번 릴리스는 0.6.26 이후 병합된 모든 PR을 반영하며 데스크톱 시작 fallback, Windows runtime 수정, remote MCU relay, 그룹 채팅 workspace, 기본 workspace 개선, 빈 diff 필터링을 포함합니다',

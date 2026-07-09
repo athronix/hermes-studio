@@ -24,6 +24,7 @@ import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { uploadRuntimeFiles } from '@/api/hermes/files'
 import {
+  approveWorkflowNode,
   batchDeleteWorkflows,
   createWorkflow as createWorkflowApi,
   deleteWorkflowRun,
@@ -153,7 +154,9 @@ const autoSelectRunningWorkflowIds = ref<Set<string>>(new Set())
 const workflowChatPanelVisible = ref(false)
 const workflowChatPanelLoading = ref(false)
 const workflowChatPanelTitle = ref('')
+const workflowChatPanelNodeId = ref<string | null>(null)
 const workflowChatPanelSessionId = ref<string | null>(null)
+const workflowApprovalSubmitting = ref(false)
 const workflowChatPanelWidth = ref(loadWorkflowChatPanelWidth())
 const workflowChatResizeStart = ref<{ x: number; width: number } | null>(null)
 const skillOptionsByKey = ref<Record<string, WorkflowSelectOption[]>>({})
@@ -163,6 +166,7 @@ const runtimeStatusByWorkflowId = ref<Record<string, WorkflowRuntimeStatus>>({})
 let removeWorkflowStatusListener: (() => void) | null = null
 let mobileQuery: MediaQueryList | null = null
 let applyingWorkflow = false
+let workflowRunsLoadSeq = 0
 
 const agentOptions = computed<WorkflowSelectOption[]>(() => [
   { label: 'Hermes', value: 'hermes' },
@@ -351,6 +355,7 @@ function makeNode(
       input: data.input || '',
       skills: data.skills || [],
       images: data.images || [],
+      approvalRequired: data.approvalRequired === true,
       status: data.status || 'idle',
       agentOptions: agentOptions.value,
       skillOptions: skillOptionsForAgent(data.agent || agentOptions.value[0]?.value || 'hermes'),
@@ -385,6 +390,13 @@ const selectedWorkflowRun = computed(() =>
     ? workflowRuns.value.find(run => run.id === selectedWorkflowRunId.value) || null
     : null,
 )
+
+const workflowChatPanelPendingApproval = computed(() => {
+  const run = selectedWorkflowRun.value
+  const nodeId = workflowChatPanelNodeId.value
+  if (!run || !nodeId) return false
+  return workflowNodeStatusFromRun(run, nodeId) === 'pending_approval'
+})
 
 watch([agentOptions, modelGroups], () => {
   nodes.value = nodes.value.map<WorkflowNode>(node => ({
@@ -492,6 +504,7 @@ function startWorkflowChatResize(event: PointerEvent) {
 
 function closeWorkflowChatPanel() {
   workflowChatPanelVisible.value = false
+  workflowChatPanelNodeId.value = null
   workflowChatPanelSessionId.value = null
   workflowChatPanelTitle.value = ''
 }
@@ -562,6 +575,7 @@ function serializeWorkflowNodes(source: WorkflowNode[]): unknown[] {
       input: node.data.input,
       skills: [...node.data.skills],
       images: [...node.data.images],
+      approvalRequired: node.data.approvalRequired === true,
     },
   }))
 }
@@ -607,6 +621,7 @@ function normalizeStoredNode(raw: unknown, index: number): WorkflowNode {
       input: data.input,
       skills: Array.isArray(data.skills) ? data.skills.filter(item => typeof item === 'string') : [],
       images: Array.isArray(data.images) ? data.images.filter(item => typeof item === 'string') : [],
+      approvalRequired: data.approvalRequired === true,
       status: 'idle',
     },
   )
@@ -713,6 +728,7 @@ function workflowNodeStatusFromRuntime(status?: WorkflowRuntimeStatus, nodeId?: 
   switch (currentStatus) {
     case 'queued':
     case 'running':
+    case 'pending_approval':
     case 'completed':
     case 'failed':
     case 'canceled':
@@ -809,6 +825,7 @@ async function openWorkflowNodeSession(nodeId: string) {
   }
 
   workflowChatPanelTitle.value = t('workflow.runs.nodeSessionTitle', { node: node?.data.title || nodeId })
+  workflowChatPanelNodeId.value = nodeId
   workflowChatPanelSessionId.value = nodeSession.session_id
   workflowChatPanelVisible.value = true
   workflowChatPanelLoading.value = true
@@ -828,21 +845,44 @@ async function openWorkflowNodeSession(nodeId: string) {
   }
 }
 
-async function loadWorkflowRuns(workflowId = activeWorkflowId.value, selectRunId?: string | null) {
+async function respondWorkflowNodeApproval(approved: boolean) {
+  const workflowId = activeWorkflowId.value
+  const runId = selectedWorkflowRunId.value
+  const nodeId = workflowChatPanelNodeId.value
+  if (!workflowId || !runId || !nodeId || workflowApprovalSubmitting.value) return
+  workflowApprovalSubmitting.value = true
+  try {
+    await approveWorkflowNode(workflowId, runId, nodeId, approved)
+  } catch (err: any) {
+    message.error(err?.message || t('workflow.actions.executionFailed'))
+  } finally {
+    workflowApprovalSubmitting.value = false
+  }
+}
+
+async function loadWorkflowRuns(
+  workflowId = activeWorkflowId.value,
+  selectRunId?: string | null,
+  options: { silent?: boolean; applySelectedSnapshot?: boolean } = {},
+) {
   if (!workflowId) {
     workflowRuns.value = []
     return
   }
-  workflowRunsLoading.value = true
+  const requestSeq = ++workflowRunsLoadSeq
+  if (!options.silent) workflowRunsLoading.value = true
   try {
     const runs = await listWorkflowRuns(workflowId, 100)
+    if (requestSeq !== workflowRunsLoadSeq) return
     workflowRuns.value = runs
     const nextSelectedRunId = selectRunId || selectedWorkflowRunId.value
     if (nextSelectedRunId) {
       const selectedRun = runs.find(run => run.id === nextSelectedRunId)
       if (selectedRun) {
         selectedWorkflowRunId.value = selectedRun.id
-        await applyWorkflowRunSnapshot(selectedRun)
+        if (options.applySelectedSnapshot !== false) {
+          await applyWorkflowRunSnapshot(selectedRun)
+        }
       } else if (selectedWorkflowRunId.value === nextSelectedRunId) {
         selectedWorkflowRunId.value = null
       }
@@ -850,7 +890,7 @@ async function loadWorkflowRuns(workflowId = activeWorkflowId.value, selectRunId
   } catch (err) {
     console.error('Failed to load workflow runs:', err)
   } finally {
-    workflowRunsLoading.value = false
+    if (requestSeq === workflowRunsLoadSeq && !options.silent) workflowRunsLoading.value = false
   }
 }
 
@@ -988,12 +1028,22 @@ function handleWorkflowRuntimeStatus(status: WorkflowRuntimeStatus) {
       !manuallyDeselectedWorkflowRunIds.value.has(status.runId)
     if (shouldAutoSelect) {
       showWorkflowRunsPanel.value = true
+      const wasSelected = selectedWorkflowRunId.value === status.runId
       selectedWorkflowRunId.value = status.runId
-      void loadWorkflowRuns(status.workflowId, status.runId)
+      void loadWorkflowRuns(status.workflowId, status.runId, {
+        silent: true,
+        applySelectedSnapshot: !wasSelected,
+      })
     } else if (selectedWorkflowRunId.value === status.runId) {
-      void loadWorkflowRuns(status.workflowId, status.runId)
+      void loadWorkflowRuns(status.workflowId, status.runId, {
+        silent: true,
+        applySelectedSnapshot: false,
+      })
     } else if (showWorkflowRunsPanel.value) {
-      void loadWorkflowRuns(status.workflowId, null)
+      void loadWorkflowRuns(status.workflowId, null, {
+        silent: true,
+        applySelectedSnapshot: false,
+      })
     }
   }
   if (!selectedWorkflowRunId.value || selectedWorkflowRunId.value !== status.runId) return
@@ -1594,6 +1644,7 @@ async function uploadNodeImages(_nodeId: string, files: File[]) {
 function nodeColor(node: { data: WorkflowAgentNodeData }) {
   if (node.data.status === 'queued') return '#64748b'
   if (node.data.status === 'running') return '#2563eb'
+  if (node.data.status === 'pending_approval') return '#d97706'
   if (node.data.status === 'completed') return '#16a34a'
   if (node.data.status === 'failed') return '#dc2626'
   if (node.data.status === 'canceled') return '#f97316'
@@ -1915,6 +1966,28 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
               {{ t('common.loading') }}
             </div>
             <template v-else-if="workflowChatPanelSessionId">
+              <div v-if="workflowChatPanelPendingApproval" class="workflow-node-approval-panel">
+                <div class="workflow-node-approval-title">
+                  {{ t('workflow.status.pending_approval') }}
+                </div>
+                <div class="workflow-node-approval-actions">
+                  <NButton
+                    size="small"
+                    :disabled="workflowApprovalSubmitting"
+                    @click="respondWorkflowNodeApproval(false)"
+                  >
+                    {{ t('common.cancel') }}
+                  </NButton>
+                  <NButton
+                    type="primary"
+                    size="small"
+                    :loading="workflowApprovalSubmitting"
+                    @click="respondWorkflowNodeApproval(true)"
+                  >
+                    {{ t('common.confirm') }}
+                  </NButton>
+                </div>
+              </div>
               <MessageList />
               <ChatInput />
             </template>
@@ -2539,6 +2612,32 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   justify-content: center;
   color: $text-muted;
   font-size: 13px;
+}
+
+.workflow-node-approval-panel {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid $border-color;
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.workflow-node-approval-title {
+  min-width: 0;
+  color: $text-primary;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.workflow-node-approval-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .workflow-runs-header {

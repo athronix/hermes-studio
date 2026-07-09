@@ -1,4 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+const chatRunMock = vi.hoisted(() => ({
+  runAndWait: vi.fn(),
+  abortSession: vi.fn(),
+}))
+
+vi.mock('../../packages/server/src/routes/hermes/chat-run', () => ({
+  getChatRunServer: () => chatRunMock,
+}))
+
+vi.mock('../../packages/server/src/db/hermes/session-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../packages/server/src/db/hermes/session-store')>()
+  return {
+    ...actual,
+    getSession: vi.fn(() => null),
+    getSessionDetail: vi.fn((sessionId: string) => ({
+      messages: [{ role: 'assistant', content: `output:${sessionId}` }],
+    })),
+    deleteSession: vi.fn(),
+  }
+})
 
 describe('workflow manager', () => {
   it('returns a server-wide singleton instance', async () => {
@@ -65,5 +86,68 @@ describe('workflow manager', () => {
       source: 'workflow',
       agent: 'hermes',
     })
+  })
+
+  it('requires workflow node approval only when explicitly enabled', async () => {
+    const { workflowNodeRequiresApproval } = await import('../../packages/server/src/services/workflow-manager')
+
+    expect(workflowNodeRequiresApproval({ data: { approvalRequired: true } })).toBe(true)
+    expect(workflowNodeRequiresApproval({ data: { approvalRequired: false } })).toBe(false)
+    expect(workflowNodeRequiresApproval({ data: {} })).toBe(false)
+  })
+
+  it('pauses downstream nodes until an approval-required node is approved', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.abortSession.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'done' })
+
+    const workflow = manager.create({
+      name: `Approval gate ${Date.now()}`,
+      profile: 'default',
+      nodes: [
+        {
+          id: 'first',
+          type: 'agent',
+          data: {
+            title: 'First',
+            agent: 'hermes',
+            input: 'first task',
+            approvalRequired: true,
+          },
+        },
+        {
+          id: 'second',
+          type: 'agent',
+          data: {
+            title: 'Second',
+            agent: 'hermes',
+            input: 'second task',
+          },
+        },
+      ],
+      edges: [{ id: 'first-second', source: 'first', target: 'second' }],
+    })
+
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => {
+        expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.first).toBe('pending_approval')
+      })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+
+      const runId = manager.getRuntimeStatus(workflow.id).runId
+      expect(runId).toBeTruthy()
+      expect(manager.approveNode(workflow.id, runId!, 'first', true)).toBe(true)
+
+      await expect(runPromise).resolves.toMatchObject({
+        run: { status: 'completed' },
+      })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.second).toBe('completed')
+    } finally {
+      await manager.delete(workflow.id)
+    }
   })
 })

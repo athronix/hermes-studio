@@ -2023,6 +2023,15 @@ export default {
     otherSkills: 'その他',
   },
 
+  workflow: {
+    node: {
+      approvalRequired: '完了後承認',
+    },
+    status: {
+      pending_approval: '承認待ち',
+    },
+  },
+
   // 更新履歴
   changelog: {
     new_0_6_27_1: 'このリリースは 0.6.26 以降にマージされたすべての PR を反映し、デスクトップ起動フォールバック、Windows runtime 修正、remote MCU relay、グループチャット workspace、default workspace の調整、空 diff の除外を含みます',

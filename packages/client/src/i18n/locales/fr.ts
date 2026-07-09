@@ -2024,6 +2024,15 @@ jobTriggered: 'Job declenche',
     otherSkills: 'Autres comp.',
   },
 
+  workflow: {
+    node: {
+      approvalRequired: 'Approbation apres noeud',
+    },
+    status: {
+      pending_approval: 'En attente d\'approbation',
+    },
+  },
+
   // Journal des modifications
   changelog: {
     new_0_6_27_1: 'Cette version couvre tous les PR fusionnés après la 0.6.26, avec le fallback de démarrage desktop, les correctifs du runtime Windows, le relay MCU distant, les workspaces de chat de groupe, les ajustements du workspace par défaut et le filtrage des diffs vides',
