@@ -892,7 +892,7 @@ describe('GlobalAgentServer', () => {
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
     localSocket.__handlers.get('connect')?.()
-    localSocket.__handlers.get('message.delta')?.({ delta: '好嘞，这就去查。' })
+    localSocket.__handlers.get('message.delta')?.({ delta: '好嘞，这就去查。\n' })
     await waitForMockCalls(fetchImpl, 1)
     expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({
       text: '好嘞，这就去查。',
@@ -909,7 +909,7 @@ describe('GlobalAgentServer', () => {
     }))
     localSocket.__handlers.get('tool.completed')?.({ tool: 'weather' })
     localSocket.__handlers.get('message.delta')?.({ delta: '结果如下：\n| 名称 | 值 |\n' })
-    localSocket.__handlers.get('message.delta')?.({ delta: '| --- | --- |\n| foo | 1 |\n请确认。' })
+    localSocket.__handlers.get('message.delta')?.({ delta: '| --- | --- |\n| foo | 1 |\n请确认。\n' })
     localSocket.__handlers.get('run.completed')?.({})
 
     await waitForMockCalls(fetchImpl, 2)
@@ -994,9 +994,9 @@ describe('GlobalAgentServer', () => {
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
     localSocket.__handlers.get('connect')?.()
-    localSocket.__handlers.get('message.delta')?.({ delta: '第一句。' })
+    localSocket.__handlers.get('message.delta')?.({ delta: '第一句。\n' })
     await waitForMockCalls(fetchImpl, 1)
-    localSocket.__handlers.get('message.delta')?.({ delta: '第二句。' })
+    localSocket.__handlers.get('message.delta')?.({ delta: '第二句。\n' })
     localSocket.__handlers.get('run.completed')?.({})
     await waitForMockCalls(fetchImpl, 2)
 
@@ -1080,7 +1080,7 @@ describe('GlobalAgentServer', () => {
     })
     const localSocket = clientSocketMocks.localSockets.at(-1)
     localSocket.__handlers.get('connect')?.()
-    localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。' })
+    localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。\n' })
 
     await waitForMockCalls(fetchImpl, 1)
     expect(ttsSignal?.aborted).toBe(false)

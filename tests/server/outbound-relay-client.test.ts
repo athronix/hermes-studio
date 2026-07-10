@@ -648,7 +648,7 @@ describe('outbound relay client', () => {
     })
     const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
     localSocket.__handlers.get('connect')?.()
-    localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。' })
+    localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。\n' })
 
     await vi.waitFor(() => {
       expect(ttsSignal).toBeDefined()

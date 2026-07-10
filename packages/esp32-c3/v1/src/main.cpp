@@ -2745,6 +2745,45 @@ bool autoLoginDevice(LanDevice &device) {
   return ok;
 }
 
+void persistRelayReplaced(bool replaced) {
+  prefs.begin("mcu", false);
+  if (replaced) {
+    prefs.putBool("relay_replaced", true);
+  } else {
+    prefs.remove("relay_replaced");
+  }
+  prefs.end();
+  mcuSocketReconnectBlocked = replaced;
+}
+
+bool reauthActiveDevice(const String &reason = "", const String &machineId = "") {
+  if (!wifiReady || WiFi.status() != WL_CONNECTED) return false;
+  if (activeDeviceUrl.length() == 0) return false;
+
+  bool wasBlocked = mcuSocketReconnectBlocked;
+  if (mcuSocketReconnectBlocked) persistRelayReplaced(false);
+  Serial.printf("Reauth active MCU device reason=%s machine=%s active=%s\n",
+                reason.c_str(), machineId.c_str(), activeDeviceUrl.c_str());
+  setOledStatus(OledMode::Think, F("LOGIN"), F("REAUTH"), 35);
+  refreshDeviceDiscovery();
+
+  for (int i = 0; i < lanDeviceCount; ++i) {
+    if (!isActiveLanDevice(lanDevices[i])) continue;
+    if (machineId.length() > 0 && lanDevices[i].id != machineId) {
+      Serial.printf("Skip reauth for non-active machine event=%s active=%s\n",
+                    machineId.c_str(), lanDevices[i].id.c_str());
+      if (wasBlocked) persistRelayReplaced(true);
+      return false;
+    }
+    bool ok = autoLoginDevice(lanDevices[i]);
+    if (!ok && wasBlocked) persistRelayReplaced(true);
+    return ok;
+  }
+
+  if (wasBlocked) persistRelayReplaced(true);
+  return false;
+}
+
 void autoLoginSavedDevice() {
   if (!wifiReady || WiFi.status() != WL_CONNECTED) return;
   if (selectedProfile.length() == 0) return;
@@ -4064,9 +4103,22 @@ void handleMcuWebSocketText(uint8_t clientId, const String &message) {
     handleMcuSessionCleared(clientId, message);
     return;
   }
+  if (type == F("mcu.reauth.required")) {
+    String machineId = jsonStringValue(message, F("machineId"));
+    String reason = jsonStringValue(message, F("reason"));
+    if (!reauthActiveDevice(reason.length() > 0 ? reason : String(F("remote")), machineId)) {
+      lastAudioDetail = F("远程重登失败");
+      setOledStatus(OledMode::Error, F("LOGIN"), F("REAUTH FAIL"), 0);
+    }
+    return;
+  }
   if (type == F("auth.invalid")) {
     String interactionId = jsonStringValue(message, F("interactionId"));
     String url = jsonStringValue(message, F("url"));
+    if (reauthActiveDevice(F("auth.invalid"))) {
+      broadcastMcuStatus();
+      return;
+    }
     enqueueTokenInvalidPromptAndClearActive(interactionId, url);
     return;
   }
@@ -4986,10 +5038,9 @@ void handleSocketIoText(const String &message) {
     if (parseSocketIoEvent(message, &event, &json)) {
       Serial.printf("Socket.IO event %s %s\n", event.c_str(), json.c_str());
       if (event == F("relay.replaced") || jsonStringValue(json, F("type")) == F("relay.replaced")) {
-        mcuSocketReconnectBlocked = true;
-        prefs.begin("mcu", false);
-        prefs.putBool("relay_replaced", true);
-        prefs.end();
+        String role = jsonStringValue(json, F("role"));
+        if (role.length() > 0 && role != F("mcu")) return;
+        persistRelayReplaced(true);
         lastAudioDetail = F("远程连接已被其他设备接管");
         setOledStatus(OledMode::Error, F("SOCKET"), F("REPLACED"), 0);
         return;
