@@ -48,6 +48,8 @@ constexpr uint8_t kAltOledAddr = 0x3D;
 constexpr int kOledWidth = 128;
 constexpr int kOledHeight = 64;
 constexpr uint32_t kOledRefreshIntervalMs = 160;
+constexpr uint32_t kOledSuccessReturnDelayMs = 2500;
+constexpr uint32_t kOledErrorReturnDelayMs = 6000;
 constexpr uint32_t kProvisionRestartDelayMs = 2500;
 constexpr uint32_t kProvisionRedirectDelayMs = 6500;
 constexpr int kMaxScannedNetworks = 20;
@@ -137,6 +139,7 @@ bool bootClickPending = false;
 bool bootSecondClickStarted = false;
 bool bootInputArmed = false;
 uint32_t lastOledAtMs = 0;
+uint32_t oledStatusReturnAtMs = 0;
 uint32_t restartAtMs = 0;
 uint32_t lastLanDiscoveryAtMs = 0;
 uint32_t lastMcuLoginAtMs = 0;
@@ -658,8 +661,30 @@ void setOledStatus(OledMode mode, const String &title, const String &hint, uint8
   oledTitle = nextTitle;
   oledHint = nextHint;
   oledProgress = progress > 100 ? 100 : progress;
+  oledStatusReturnAtMs = 0;
+  bool isLanIpStatus = nextTitle == F("IP");
+  if (!isLanIpStatus && wifiReady && WiFi.status() == WL_CONNECTED &&
+      (mode == OledMode::Ready || mode == OledMode::Error)) {
+    uint32_t delayMs = mode == OledMode::Error ? kOledErrorReturnDelayMs : kOledSuccessReturnDelayMs;
+    oledStatusReturnAtMs = millis() + delayMs;
+  }
   oledDirty = true;
   refreshOled(true);
+}
+
+void showLanIpOnOled() {
+  if (!wifiReady || WiFi.status() != WL_CONNECTED) return;
+  setOledStatus(OledMode::Ready, F("IP"), WiFi.localIP().toString(), 0);
+}
+
+void tickOledStatusReturn() {
+  if (oledStatusReturnAtMs == 0 || static_cast<int32_t>(millis() - oledStatusReturnAtMs) < 0) return;
+  if (!wifiReady || WiFi.status() != WL_CONNECTED) {
+    oledStatusReturnAtMs = 0;
+    return;
+  }
+  if (mcuInteractionActive || mcuAudioPlaying || audioBusy) return;
+  showLanIpOnOled();
 }
 
 void initOledDisplay() {
@@ -5377,7 +5402,7 @@ bool connectWifiCredentials(const String &ssid, const String &pass, wifi_mode_t 
     wifiDisconnectedSinceMs = 0;
     if (mode == WIFI_STA) setupApMode = false;
     connectMcuSocketClient();
-    setOledStatus(OledMode::Ready, F("ONLINE"), WiFi.localIP().toString(), 100);
+    showLanIpOnOled();
     Serial.printf("WiFi connected ssid=%s ip=%s\n", ssid.c_str(), WiFi.localIP().toString().c_str());
     esp_rom_printf("WiFi connected ssid=%s ip=%s\n", ssid.c_str(), WiFi.localIP().toString().c_str());
   } else {
@@ -5563,7 +5588,7 @@ void tickMcuInteraction() {
     mcuToolPreview = "";
     mcuToolStatus = "";
     if (wifiReady && WiFi.status() == WL_CONNECTED) {
-      setOledStatus(OledMode::Ready, F("ONLINE"), WiFi.localIP().toString(), 100);
+      showLanIpOnOled();
     } else {
       setOledStatus(OledMode::Ready, F("READY"), F(""), 0);
     }
@@ -5670,6 +5695,7 @@ void loop() {
   server.handleClient();
   if (wsReady) mcuSocketLoop();
   tickMcuInteraction();
+  tickOledStatusReturn();
   refreshOled();
   handleBootButton();
   if (kAutoOtaEnabled && static_cast<int32_t>(millis() - nextMcuOtaCheckAtMs) >= 0) {
