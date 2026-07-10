@@ -2,9 +2,11 @@ import type { AgentOutputMessage } from '../model/messages'
 import type { AgentToolCall, ModelUsage } from '../model/types'
 import type { AgentToolResult } from '../tools/types'
 import type { AgentRuntimeContextEstimate } from './types'
+import type { MemoryContextDiagnostics } from '../memory/types'
 
 export type AgentRuntimeEvent =
   | { type: 'run.started'; runId: string; maxSteps: number }
+  | { type: 'memory.retrieved'; runId: string; diagnostics: MemoryContextDiagnostics; memoryIds: string[] }
   | { type: 'model.started'; runId: string; step: number }
   | { type: 'context.estimated'; runId: string; step: number; estimate: AgentRuntimeContextEstimate }
   | { type: 'model.retry'; runId: string; step: number; retry: number; maxRetries: number; error: string }

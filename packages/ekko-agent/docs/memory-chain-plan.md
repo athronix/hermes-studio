@@ -18,6 +18,14 @@
 - 第一版不让模型直接修改不可追溯的全局记忆。
 - 第一版不把所有历史总结成一个不可审计的大摘要。
 
+## 第一版实现约束
+
+- Ekko Agent 自主管理 SQLite 数据库，不复用 server 的业务数据库。
+- 数据目录固定在 `HERMES_WEB_UI_HOME/ekko`，默认是 `~/.hermes-web-ui/ekko`。
+- 数据库使用通用名称 `ekko.db`，不命名为 `memory.db`，便于后续容纳 Ekko Agent 的其他持久化组件。
+- `src/database.ts` 专门管理目录创建、连接、事务和按组件版本迁移；记忆模块通过 `SqliteMemoryStore` 使用数据库。
+- 数据库初始化失败时，记忆能力降级关闭，但不能阻断 Agent 正常回复。
+
 ## 记忆分层
 
 ### 1. 原始消息日志
@@ -694,20 +702,20 @@ status = active
 
 ### 文件位置
 
-建议根据记忆 scope 分开落盘：
+第一版统一存放在 Web UI 状态目录：
 
 ```txt
-workspace scope: <workspace>/.ekko/memory.db
-user scope:      ~/.ekko/memory.db
-session scope:   可以存入 workspace db，也可以存入服务端会话库
-global scope:    随包发布的只读 seed 数据，或服务端同步
+HERMES_WEB_UI_HOME/ekko/ekko.db
 ```
 
-如果第一版只做 workspace 本地记忆，可以先统一使用：
+没有配置状态目录时，默认路径是：
 
 ```txt
-<workspace>/.ekko/memory.db
+~/.hermes-web-ui/ekko/ekko.db
 ```
+
+scope 通过表字段隔离，不按 workspace 或 user 拆分数据库文件。`ekko.db`
+是 Ekko Agent 的通用数据库，由 `src/database.ts` 统一管理连接、事务和组件迁移。
 
 ### 表结构
 
@@ -1267,8 +1275,7 @@ packages/ekko-agent/src/memory/
 
 ## 开放问题
 
-- 记忆存储落在哪里：服务端数据库、workspace 文件，还是用户级 profile。
 - 哪些记忆需要用户可见和可编辑。
-- 是否允许 agent 自动写入 user-scope 长期记忆。
+- 除明确用户意图外，是否允许模型抽取器自动写入更多 user-scope 长期记忆。
 - 记忆抽取使用哪个模型和预算。
 - 是否需要多租户隔离和加密。

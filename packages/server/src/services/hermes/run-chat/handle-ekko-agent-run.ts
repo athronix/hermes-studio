@@ -618,6 +618,7 @@ export async function handleEkkoAgentRun(
 
   try {
     logger.info('[chat-run-socket] starting ekko-agent run for session %s', sessionId)
+    const authenticatedUserId = socket.data?.user?.id == null ? undefined : String(socket.data.user.id)
     const result = await agent.run({
       modelClient,
       model: modelConfig.model,
@@ -630,6 +631,8 @@ export async function handleEkkoAgentRun(
       toolContext: {
         cwd: workspace,
         workspaceRoot: workspace,
+        workspaceId: workspace,
+        userId: authenticatedUserId,
         sessionId,
         browserSessionId: sessionId,
         mcpServers,
@@ -638,6 +641,8 @@ export async function handleEkkoAgentRun(
       },
       metadata: {
         session_id: sessionId,
+        workspace_id: workspace,
+        user_id: authenticatedUserId,
         profile,
       },
     })

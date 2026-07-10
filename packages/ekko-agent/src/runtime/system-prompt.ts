@@ -5,6 +5,7 @@ export interface SystemPromptInput {
   runtimeInstructions?: string[]
   userSystemMessages?: string[]
   skills?: AgentSkill[]
+  memoryContext?: string
   context?: {
     cwd?: string
     workspaceRoot?: string
@@ -35,6 +36,10 @@ export function buildSystemPrompt(input: SystemPromptInput = {}): string {
       skill.description ? `Description: ${skill.description}` : '',
       skill.instructions,
     ].filter(Boolean).join('\n')).join('\n\n')))
+  }
+
+  if (input.memoryContext?.trim()) {
+    sections.push(input.memoryContext.trim())
   }
 
   if (input.userSystemMessages?.length) {

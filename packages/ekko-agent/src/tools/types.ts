@@ -3,6 +3,8 @@ import type { AgentToolDefinition } from '../model/types'
 export interface AgentToolContext {
   cwd?: string
   workspaceRoot?: string
+  workspaceId?: string
+  userId?: string
   sessionId?: string
   browserSessionId?: string
   mcpServers?: Record<string, unknown>

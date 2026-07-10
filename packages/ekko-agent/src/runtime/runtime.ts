@@ -15,6 +15,9 @@ import type { AgentToolContext, AgentToolResult } from '../tools/types'
 import type { AgentRuntimeEvent } from './events'
 import { buildSystemPrompt } from './system-prompt'
 import type { AgentRuntimeContextEstimate, AgentRuntimeOptions, AgentRuntimeRunInput, AgentRuntimeRunResult, AgentRuntimeStep } from './types'
+import type { MemoryContext, MemoryRuntimeIdentity } from '../memory/types'
+import type { MemoryCaptureMessage } from '../memory/service'
+import { createMemoryTools } from '../memory/tools'
 
 export const DEFAULT_AGENT_MAX_STEPS = 90
 export const DEFAULT_AGENT_MODEL_MAX_RETRIES = 3
@@ -39,6 +42,7 @@ export class AgentRuntime {
   private readonly maxConsecutiveToolFailures: number
   private readonly toolDelayMs: number
   private readonly defaultContextKey?: string
+  private readonly memory?: AgentRuntimeOptions['memory']
   private readonly modelContexts = new Map<string, unknown>()
 
   constructor(options: AgentRuntimeOptions) {
@@ -54,7 +58,9 @@ export class AgentRuntime {
     this.maxConsecutiveToolFailures = options.maxConsecutiveToolFailures ?? DEFAULT_AGENT_MAX_CONSECUTIVE_TOOL_FAILURES
     this.toolDelayMs = options.toolDelayMs ?? DEFAULT_AGENT_TOOL_DELAY_MS
     this.defaultContextKey = options.contextKey
+    this.memory = options.memory
     this.registerSkillTools(this.skills)
+    if (this.memory) this.tools.registerMany(createMemoryTools(this.memory))
   }
 
   registerSkill(skill: AgentSkill): void {
@@ -91,7 +97,17 @@ export class AgentRuntime {
 
     const runSkills = [...this.skills, ...(input.skills ?? [])]
     this.registerSkillTools(input.skills ?? [])
-    const messages = this.prepareMessages(input, runSkills)
+    const memoryIdentity = this.memoryIdentityFor(input)
+    const memoryContext = await this.prepareMemory(input, memoryIdentity)
+    if (memoryContext) {
+      emit({
+        type: 'memory.retrieved',
+        runId,
+        diagnostics: memoryContext.diagnostics,
+        memoryIds: memoryContext.usedMemoryIds,
+      })
+    }
+    const messages = this.prepareMessages(input, runSkills, memoryContext ? this.memory?.contextPrompt(memoryContext) : undefined)
     let output: AgentOutputMessage = {
       role: 'assistant',
       content: '',
@@ -134,7 +150,8 @@ export class AgentRuntime {
         if (toolCalls.length === 0) {
           const context = contextKey ? this.modelContexts.get(contextKey) : assistantMessage.context
           emit({ type: 'run.completed', runId, output, steps: step, context, contextEstimate })
-          return { runId, messages, output, steps, events, context, contextEstimate }
+          this.completeMemory(memoryIdentity, messages)
+          return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
         }
 
         for (const toolCall of toolCalls) {
@@ -160,7 +177,8 @@ export class AgentRuntime {
             }
             const context = contextKey ? this.modelContexts.get(contextKey) : undefined
             emit({ type: 'run.completed', runId, output, steps: step, context, contextEstimate })
-            return { runId, messages, output, steps, events, context, contextEstimate }
+            this.completeMemory(memoryIdentity, messages)
+            return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
           }
           await delay(toolDelayMs, input.signal)
         }
@@ -174,7 +192,8 @@ export class AgentRuntime {
       }
       const context = contextKey ? this.modelContexts.get(contextKey) : undefined
       emit({ type: 'run.completed', runId, output, steps: maxSteps, context, contextEstimate })
-      return { runId, messages, output, steps, events, context, contextEstimate }
+      this.completeMemory(memoryIdentity, messages)
+      return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       emit({ type: 'run.failed', runId, error: message, steps: steps.length })
@@ -259,7 +278,7 @@ export class AgentRuntime {
     }
   }
 
-  private prepareMessages(input: AgentRuntimeRunInput, skills: AgentSkill[]): AgentMessage[] {
+  private prepareMessages(input: AgentRuntimeRunInput, skills: AgentSkill[], memoryContext?: string): AgentMessage[] {
     const normalized = normalizeAgentMessages(input.messages)
     const userSystemMessages = normalized.filter(message => message.role === 'system').map(message => message.content)
     const nonSystemMessages = normalized.filter(message => message.role !== 'system')
@@ -268,6 +287,7 @@ export class AgentRuntime {
       runtimeInstructions: this.runtimeInstructions,
       userSystemMessages,
       skills,
+      memoryContext,
       context: input.toolContext ?? this.toolContext,
     })
 
@@ -275,6 +295,40 @@ export class AgentRuntime {
       createSystemMessage(systemPrompt),
       ...nonSystemMessages,
     ]
+  }
+
+  private memoryIdentityFor(input: AgentRuntimeRunInput): MemoryRuntimeIdentity | undefined {
+    if (!this.memory || input.memoryEnabled === false) return undefined
+    const sessionId = this.contextKeyFor(input)
+    if (!sessionId) return undefined
+    const context = input.toolContext ?? this.toolContext
+    return {
+      sessionId,
+      workspaceId: stringMetadata(input.metadata?.workspace_id) || context?.workspaceId || context?.workspaceRoot || context?.cwd,
+      userId: stringMetadata(input.metadata?.user_id) || context?.userId,
+    }
+  }
+
+  private async prepareMemory(
+    input: AgentRuntimeRunInput,
+    identity: MemoryRuntimeIdentity | undefined,
+  ): Promise<MemoryContext | undefined> {
+    if (!this.memory || !identity) return undefined
+    await this.memory.drain()
+    const normalized = normalizeAgentMessages(input.messages)
+      .filter(message => message.role !== 'system')
+      .map(toMemoryCaptureMessage)
+    await this.memory.captureMessages(identity, normalized)
+    const queryText = [...normalized].reverse().find(message => message.role === 'user')?.content
+    return this.memory.retrieve(identity, queryText)
+  }
+
+  private completeMemory(identity: MemoryRuntimeIdentity | undefined, messages: AgentMessage[]): void {
+    if (!this.memory || !identity) return
+    this.memory.scheduleRunCompletion(
+      identity,
+      messages.filter(message => message.role !== 'system').map(toMemoryCaptureMessage),
+    )
   }
 
   private modelRequest(
@@ -480,4 +534,15 @@ function hasPathologicalRun(text: string): boolean {
     }
   }
   return false
+}
+
+function toMemoryCaptureMessage(message: AgentMessage): MemoryCaptureMessage {
+  return {
+    role: message.role,
+    content: message.content,
+  }
+}
+
+function stringMetadata(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }

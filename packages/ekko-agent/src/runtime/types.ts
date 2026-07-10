@@ -4,6 +4,8 @@ import type { AgentSkill } from '../skills/types'
 import type { AgentToolRegistry } from '../tools/registry'
 import type { AgentToolContext, AgentToolResult } from '../tools/types'
 import type { AgentRuntimeEvent } from './events'
+import type { MemoryContext } from '../memory/types'
+import type { MemoryService } from '../memory/service'
 
 export interface AgentRuntimeContextEstimate {
   contextTokens: number
@@ -29,6 +31,7 @@ export interface AgentRuntimeOptions {
   toolContext?: AgentToolContext
   modelDefaults?: Omit<ModelRequest, 'messages' | 'tools' | 'stream'>
   contextKey?: string
+  memory?: MemoryService
 }
 
 export interface AgentRuntimeRunInput {
@@ -49,6 +52,7 @@ export interface AgentRuntimeRunInput {
   modelDefaults?: Omit<ModelRequest, 'messages' | 'tools' | 'stream'>
   contextKey?: string
   context?: unknown
+  memoryEnabled?: boolean
   onEvent?: (event: AgentRuntimeEvent) => void
 }
 
@@ -64,4 +68,5 @@ export interface AgentRuntimeRunResult {
   events: AgentRuntimeEvent[]
   context?: unknown
   contextEstimate?: AgentRuntimeContextEstimate
+  memoryContext?: MemoryContext
 }
