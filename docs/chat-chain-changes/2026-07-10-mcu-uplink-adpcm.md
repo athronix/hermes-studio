@@ -1,6 +1,6 @@
 ---
 date: 2026-07-10
-pr: pending
+pr: 2024
 feature: MCU uplink IMA-ADPCM
 impact: ESP32-C3 voice streams now use independently framed IMA-ADPCM chunks that the Global Agent server decodes to PCM before the existing STT flow.
 ---
