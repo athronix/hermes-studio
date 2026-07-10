@@ -623,7 +623,7 @@ class McuSocketIoRelayClient {
       this.pendingVoice = null
       this.pendingVoiceStream = {
         interactionId: typeof event.interactionId === 'string' && event.interactionId.trim() ? event.interactionId.trim() : `mcu-voice-${Date.now()}`,
-        mimeType: 'audio/wav',
+        mimeType: typeof event.mimeType === 'string' && event.mimeType.trim() ? event.mimeType.trim() : 'audio/pcm',
         bytes: 0,
         profile: typeof event.profile === 'string' && event.profile.trim() ? event.profile.trim() : 'default',
         sampleRate: Number.isFinite(Number(event.sampleRate)) ? Number(event.sampleRate) : MCU_TTS_SAMPLE_RATE,

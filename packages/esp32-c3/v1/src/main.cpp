@@ -86,9 +86,9 @@ constexpr uint32_t kWifiDisconnectGraceMs = 8000;
 constexpr uint32_t kBatteryReadIntervalMs = 5000;
 constexpr bool kAutoOtaEnabled = false;
 constexpr uint32_t kVoiceRecordMs = 4000;
-constexpr uint32_t kVoiceStreamRecordMs = 30000;
+constexpr uint32_t kVoiceStreamRecordMs = 120000;
 constexpr uint32_t kVoiceRecordMinMs = 300;
-constexpr uint32_t kVoiceRecordHardTimeoutMs = 35000;
+constexpr uint32_t kVoiceRecordHardTimeoutMs = 125000;
 constexpr uint32_t kVoiceVadRmsStart = 190;
 constexpr uint32_t kVoiceVadPeakStart = 480;
 constexpr uint32_t kVoiceVadActiveThreshold = 260;
@@ -98,6 +98,7 @@ constexpr int kAudioSampleRate = 24000;
 constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
 constexpr size_t kVoiceStreamChunkFrames = 4096;
+constexpr size_t kVoiceStreamAdpcmMaxBytes = kMcuAdpcmHeaderBytes + ((kVoiceStreamChunkFrames + 1) / 2);
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
 constexpr uint8_t kDefaultOutputVolumePercent = 70;
@@ -212,6 +213,7 @@ struct VoiceStreamChunk {
   uint32_t offset = 0;
   size_t bytes = 0;
   int16_t samples[kVoiceStreamChunkFrames] = {};
+  uint8_t adpcm[kVoiceStreamAdpcmMaxBytes] = {};
 };
 
 McuAudioSegment mcuAudioQueue[kMaxMcuAudioQueue];
@@ -3445,6 +3447,77 @@ int16_t decodeImaAdpcmNibble(uint8_t nibble, int *predictor, int *index) {
   return static_cast<int16_t>(*predictor);
 }
 
+uint8_t encodeImaAdpcmNibble(int16_t sample, int *predictor, int *index) {
+  int step = kImaAdpcmStepTable[*index];
+  int diff = static_cast<int>(sample) - *predictor;
+  uint8_t nibble = 0;
+  if (diff < 0) {
+    nibble = 8;
+    diff = -diff;
+  }
+
+  int delta = step >> 3;
+  if (diff >= step) {
+    nibble |= 4;
+    diff -= step;
+    delta += step;
+  }
+  if (diff >= (step >> 1)) {
+    nibble |= 2;
+    diff -= step >> 1;
+    delta += step >> 1;
+  }
+  if (diff >= (step >> 2)) {
+    nibble |= 1;
+    delta += step >> 2;
+  }
+
+  *predictor += (nibble & 8) ? -delta : delta;
+  if (*predictor > 32767) *predictor = 32767;
+  if (*predictor < -32768) *predictor = -32768;
+  *index += kImaAdpcmIndexTable[nibble & 0x0f];
+  if (*index < 0) *index = 0;
+  if (*index > 88) *index = 88;
+  return nibble;
+}
+
+size_t encodeVoiceAdpcmChunk(const int16_t *samples,
+                             size_t sampleCount,
+                             int *streamIndex,
+                             uint8_t *output,
+                             size_t outputCapacity) {
+  if (!samples || !streamIndex || !output || sampleCount == 0) return 0;
+  const size_t payloadBytes = sampleCount / 2;
+  const size_t encodedBytes = kMcuAdpcmHeaderBytes + payloadBytes;
+  if (outputCapacity < encodedBytes) return 0;
+
+  memset(output, 0, encodedBytes);
+  memcpy(output, "HADP", 4);
+  output[4] = 1;
+  output[5] = 1;
+  putLe32(output + 8, kVoiceInputSampleRate);
+  putLe32(output + 12, static_cast<uint32_t>(sampleCount));
+  putLe16(output + 16, static_cast<uint16_t>(samples[0]));
+
+  int predictor = samples[0];
+  int index = *streamIndex;
+  if (index < 0) index = 0;
+  if (index > 88) index = 88;
+  output[18] = static_cast<uint8_t>(index);
+  for (size_t i = 1; i < sampleCount; ++i) {
+    const uint8_t nibble = encodeImaAdpcmNibble(samples[i], &predictor, &index);
+    const size_t nibbleOffset = i - 1;
+    const size_t byteOffset = kMcuAdpcmHeaderBytes + (nibbleOffset >> 1);
+    if ((nibbleOffset & 1) == 0) {
+      output[byteOffset] = nibble;
+    } else {
+      output[byteOffset] |= static_cast<uint8_t>(nibble << 4);
+    }
+  }
+  *streamIndex = index;
+  return encodedBytes;
+}
+
 bool flushAdpcmStereo(int16_t *stereo, size_t *frames, uint32_t *playedBytes) {
   if (!stereo || !frames || !playedBytes || *frames == 0) return true;
   size_t bytesToWrite = *frames * 2 * sizeof(int16_t);
@@ -4427,7 +4500,7 @@ bool broadcastMcuVoiceStreamStart(const String &interactionId) {
   json.reserve(280);
   json += F("{\"type\":\"voice.stream.start\",\"interactionId\":\"");
   json += escapeJson(interactionId);
-  json += F("\",\"mimeType\":\"audio/pcm\",\"sampleRate\":");
+  json += F("\",\"mimeType\":\"audio/x-ima-adpcm\",\"frameFormat\":\"hadp-chunk-v1\",\"sampleRate\":");
   json += kVoiceInputSampleRate;
   json += F(",\"channels\":1,\"bitsPerSample\":16,\"profile\":\"");
   json += escapeJson(selectedProfile);
@@ -4539,6 +4612,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   uint64_t monoSquares = 0;
   uint32_t activeSamples = 0;
   uint32_t queuedBytes = 0;
+  int adpcmIndex = 0;
   auto abortVoiceStream = [&](const String &reason) {
     broadcastMcuVoiceStreamAbort(interactionId, reason, queuedBytes);
   };
@@ -4565,16 +4639,21 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   uint32_t lastRecordOledAtMs = startedAt;
   uint8_t lastRecordProgress = 0;
 
-  auto queuePcmChunk = [&]() -> bool {
+  auto queueVoiceChunk = [&]() -> bool {
     if (pcmChunkFrames == 0) return true;
-    size_t bytes = pcmChunkFrames * sizeof(int16_t);
+    const size_t encodedBytes = encodeVoiceAdpcmChunk(pcmChunk->samples,
+                                                      pcmChunkFrames,
+                                                      &adpcmIndex,
+                                                      pcmChunk->adpcm,
+                                                      sizeof(pcmChunk->adpcm));
+    if (encodedBytes == 0) return false;
     if (!broadcastMcuVoiceStreamChunk(interactionId,
-                                      reinterpret_cast<const uint8_t *>(pcmChunk->samples),
-                                      bytes,
+                                      pcmChunk->adpcm,
+                                      encodedBytes,
                                       queuedBytes)) {
       return false;
     }
-    queuedBytes += static_cast<uint32_t>(bytes);
+    queuedBytes += static_cast<uint32_t>(encodedBytes);
     pcmChunkFrames = 0;
     return true;
   };
@@ -4633,7 +4712,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
       pcmChunk->samples[pcmChunkFrames++] = mono;
       ++framesDone;
 
-      if (pcmChunkFrames >= kVoiceStreamChunkFrames && !queuePcmChunk()) {
+      if (pcmChunkFrames >= kVoiceStreamChunkFrames && !queueVoiceChunk()) {
         audioBusy = false;
         free(pcmChunk);
         lastAudioDetail = F("voice stream chunk send failed");
@@ -4652,7 +4731,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
     yield();
   }
 
-  if (!queuePcmChunk()) {
+  if (!queueVoiceChunk()) {
     audioBusy = false;
     free(pcmChunk);
     lastAudioDetail = F("voice stream final send failed");
@@ -4675,13 +4754,15 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   voiceRecordHeardSpeech = voiceRecordRms >= kVoiceVadRmsStart &&
                             voiceRecordPeak >= kVoiceVadPeakStart &&
                             voiceRecordActiveSamples >= kVoiceVadMinActiveSamples;
-  lastAudioDetail = String(F("voice pcm bytes=")) + String(queuedBytes) +
+  lastAudioDetail = String(F("voice adpcm bytes=")) + String(queuedBytes) +
+                    F(", pcm bytes=") + String(framesDone * sizeof(int16_t)) +
                     F(", frames=") + String(framesDone) +
                     F(", rms=") + String(voiceRecordRms) +
                     F(", peak=") + String(voiceRecordPeak) +
                     F(", active=") + String(voiceRecordActiveSamples);
-  Serial.printf("Voice stream frames=%lu bytes=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu vad=%s\n",
-                static_cast<unsigned long>(framesDone), static_cast<unsigned long>(queuedBytes), stopReason,
+  Serial.printf("Voice stream frames=%lu adpcm=%lu pcm=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu vad=%s\n",
+                static_cast<unsigned long>(framesDone), static_cast<unsigned long>(queuedBytes),
+                static_cast<unsigned long>(framesDone * sizeof(int16_t)), stopReason,
                 leftPeak, rightPeak, monoPeak, static_cast<unsigned long>(voiceRecordRms),
                 static_cast<unsigned long>(voiceRecordActiveSamples), voiceRecordHeardSpeech ? "true" : "false");
   broadcastMcuVoiceStreamEnd(interactionId, queuedBytes);

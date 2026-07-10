@@ -9,7 +9,7 @@ import { userCanAccessProfile } from '../../db/hermes/users-store'
 import { config } from '../../config'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
 import { transcodeToPcmS16le } from '../hermes/stt-providers/audio-convert'
-import { encodeMcuImaAdpcm } from '../hermes/mcu-adpcm'
+import { decodeMcuImaAdpcm, encodeMcuImaAdpcm } from '../hermes/mcu-adpcm'
 import { MCU_TTS_SAMPLE_RATE, mcuPromptText, mcuPromptUrl } from '../hermes/mcu-prompts'
 import { createMcuSpeechSegmenter, normalizeMcuSpeechText } from './mcu-speech-segmenter'
 import type {
@@ -171,6 +171,7 @@ type McuSpeechSynthesisResult =
 interface McuVoiceStreamState {
   interactionId: string
   profile: string
+  mimeType: string
   sampleRate: number
   channels: number
   bitsPerSample: number
@@ -1551,6 +1552,9 @@ export class GlobalAgentServer {
     this.mcuVoiceStreams.set(clientId, {
       interactionId,
       profile: typeof payload.profile === 'string' && payload.profile.trim() ? payload.profile.trim() : this.frontendProfile(socket) || 'default',
+      mimeType: typeof payload.mimeType === 'string' && payload.mimeType.trim()
+        ? payload.mimeType.trim().toLowerCase()
+        : 'audio/pcm',
       sampleRate: Number.isFinite(Number(payload.sampleRate)) ? Number(payload.sampleRate) : MCU_TTS_SAMPLE_RATE,
       channels: Number(payload.channels) === 1 ? 1 : 2,
       bitsPerSample: Number(payload.bitsPerSample) === 16 ? 16 : 16,
@@ -1699,18 +1703,18 @@ export class GlobalAgentServer {
       }
       expectedOffset += part.chunk.byteLength
     }
-    const pcm = Buffer.concat(sortedChunks.map(part => part.chunk), stream.bytes)
     logger.info({
       clientId,
-      bytes: pcm.length,
+      bytes: stream.bytes,
       expectedBytes,
       interactionId: stream.interactionId,
+      mimeType: stream.mimeType,
     }, '[global-agent] MCU voice stream completed')
-    if (Number.isFinite(expectedBytes) && expectedBytes >= 0 && pcm.length !== expectedBytes) {
+    if (Number.isFinite(expectedBytes) && expectedBytes >= 0 && stream.bytes !== expectedBytes) {
       logger.warn({
         clientId,
         interactionId: stream.interactionId,
-        bytes: pcm.length,
+        bytes: stream.bytes,
         expectedBytes,
       }, '[global-agent] MCU voice stream byte count mismatch')
       this.emitMcuEvent({
@@ -1721,12 +1725,39 @@ export class GlobalAgentServer {
       }, { clientId })
       return
     }
-    if (!pcm.length) {
+    if (!stream.bytes) {
       this.emitMcuEvent({
         type: 'interaction.status',
         interactionId: stream.interactionId,
         status: 'failed',
         text: 'empty voice stream',
+      }, { clientId })
+      return
+    }
+    let pcm: Buffer
+    try {
+      if (stream.mimeType === 'audio/x-ima-adpcm' || stream.mimeType === 'audio/ima-adpcm') {
+        const decodedChunks = sortedChunks.map(({ chunk }) => {
+          const decoded = decodeMcuImaAdpcm(chunk)
+          if (decoded.sampleRate !== stream.sampleRate) {
+            throw new Error(`IMA-ADPCM sample rate ${decoded.sampleRate} does not match stream rate ${stream.sampleRate}`)
+          }
+          if (decoded.channels !== stream.channels) {
+            throw new Error(`IMA-ADPCM channels ${decoded.channels} do not match stream channels ${stream.channels}`)
+          }
+          return decoded.pcm
+        })
+        pcm = Buffer.concat(decodedChunks)
+      } else {
+        pcm = Buffer.concat(sortedChunks.map(part => part.chunk), stream.bytes)
+      }
+    } catch (err) {
+      logger.warn({ err, clientId, interactionId: stream.interactionId }, '[global-agent] MCU voice stream decode failed')
+      this.emitMcuEvent({
+        type: 'interaction.status',
+        interactionId: stream.interactionId,
+        status: 'failed',
+        text: err instanceof Error ? err.message : 'voice stream decode failed',
       }, { clientId })
       return
     }

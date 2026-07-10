@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  decodeMcuImaAdpcm,
+  encodeMcuImaAdpcm,
+} from '../../packages/server/src/services/hermes/mcu-adpcm'
 
 const authMocks = vi.hoisted(() => ({
   authenticateUserToken: vi.fn(),
@@ -576,6 +580,75 @@ describe('GlobalAgentServer', () => {
     const wav = Buffer.from(request.body as Uint8Array)
     expect(wav.readUInt32LE(40)).toBe(pcm.byteLength)
     expect(wav.subarray(44)).toEqual(Buffer.from(pcm))
+  })
+
+  it('decodes chunk-framed MCU IMA-ADPCM streams before STT', async () => {
+    authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
+    authMocks.userCanAccessProfile.mockReturnValue(true)
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const nsp = createMockNamespace()
+    const io = { of: vi.fn(() => nsp) }
+    const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
+
+    const server = new GlobalAgentServer(io as any, {
+      fetchImpl: fetchImpl as any,
+      localBaseUrl: 'http://127.0.0.1:8647',
+    })
+    server.init()
+
+    const agentSocket = createMockSocket('jwt-agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
+    await new Promise<void>((resolve, reject) => {
+      nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
+    })
+    nsp.__handlers.get('connection')?.(agentSocket)
+
+    const firstPcm = Buffer.from([0, 0, 232, 3, 208, 7, 232, 3])
+    const secondPcm = Buffer.from([0, 0, 24, 252, 48, 248, 24, 252])
+    const first = encodeMcuImaAdpcm(firstPcm, 16000)
+    const second = encodeMcuImaAdpcm(secondPcm, 16000)
+    agentSocket.__handlers.get('voice.stream.start')?.({
+      interactionId: 'voice-adpcm',
+      mimeType: 'audio/x-ima-adpcm',
+      frameFormat: 'hadp-chunk-v1',
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16,
+    })
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-adpcm',
+      offset: 0,
+      bytes: first.length,
+      data: first,
+    })
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-adpcm',
+      offset: first.length,
+      bytes: second.length,
+      data: second,
+    })
+    agentSocket.__handlers.get('voice.stream.end')?.({
+      interactionId: 'voice-adpcm',
+      bytes: first.length + second.length,
+    })
+
+    await waitForMockCalls(fetchImpl, 1)
+    const request = fetchImpl.mock.calls[0][1] as RequestInit
+    const wav = Buffer.from(request.body as Uint8Array)
+    const expectedPcm = Buffer.concat([
+      decodeMcuImaAdpcm(first).pcm,
+      decodeMcuImaAdpcm(second).pcm,
+    ])
+    expect(request.headers).toEqual(expect.objectContaining({ 'Content-Type': 'audio/wav' }))
+    expect(wav.readUInt32LE(40)).toBe(expectedPcm.length)
+    expect(wav.subarray(44)).toEqual(expectedPcm)
   })
 
   it('ignores stale MCU voice stream chunks and ends from previous interactions', async () => {

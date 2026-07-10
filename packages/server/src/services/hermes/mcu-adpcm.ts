@@ -89,3 +89,49 @@ export function encodeMcuImaAdpcm(pcm: Buffer, sampleRate: number): Buffer {
 
   return Buffer.concat([header, encoded])
 }
+
+export interface DecodedMcuImaAdpcm {
+  pcm: Buffer
+  sampleRate: number
+  channels: 1
+}
+
+export function decodeMcuImaAdpcm(encoded: Buffer): DecodedMcuImaAdpcm {
+  if (encoded.length < 20) throw new Error('IMA-ADPCM chunk is missing its HADP header')
+  if (encoded.toString('ascii', 0, 4) !== 'HADP') throw new Error('IMA-ADPCM chunk has invalid magic')
+  if (encoded.readUInt8(4) !== 1) throw new Error('IMA-ADPCM chunk uses an unsupported HADP version')
+  if (encoded.readUInt8(5) !== 1) throw new Error('IMA-ADPCM chunk must be mono')
+
+  const sampleRate = encoded.readUInt32LE(8)
+  const sampleCount = encoded.readUInt32LE(12)
+  const payloadBytes = Math.ceil(Math.max(0, sampleCount - 1) / 2)
+  if (encoded.length !== 20 + payloadBytes) {
+    throw new Error('IMA-ADPCM chunk size does not match its sample count')
+  }
+  if (sampleCount === 0) return { pcm: Buffer.alloc(0), sampleRate, channels: 1 }
+
+  const pcm = Buffer.allocUnsafe(sampleCount * 2)
+  const state = {
+    predictor: encoded.readInt16LE(16),
+    index: encoded.readUInt8(18),
+  }
+  if (state.index > 88) throw new Error('IMA-ADPCM chunk has an invalid step index')
+  pcm.writeInt16LE(state.predictor, 0)
+
+  for (let sample = 1; sample < sampleCount; sample += 1) {
+    const nibbleOffset = sample - 1
+    const packed = encoded.readUInt8(20 + (nibbleOffset >> 1))
+    const nibble = (nibbleOffset & 1) === 0 ? packed & 0x0f : packed >> 4
+    const step = STEP_TABLE[state.index]
+    let delta = step >> 3
+    if (nibble & 1) delta += step >> 2
+    if (nibble & 2) delta += step >> 1
+    if (nibble & 4) delta += step
+
+    state.predictor = clampSample((nibble & 8) ? state.predictor - delta : state.predictor + delta)
+    state.index = clampIndex(state.index + INDEX_TABLE[nibble])
+    pcm.writeInt16LE(state.predictor, sample * 2)
+  }
+
+  return { pcm, sampleRate, channels: 1 }
+}

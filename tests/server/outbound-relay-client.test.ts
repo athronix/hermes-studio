@@ -309,6 +309,8 @@ describe('outbound relay client', () => {
     emitRemote(remoteSocket, 'voice.stream.start', {
       type: 'voice.stream.start',
       interactionId: 'voice-stream-1',
+      mimeType: 'audio/x-ima-adpcm',
+      frameFormat: 'hadp-chunk-v1',
       sampleRate: 24000,
       channels: 1,
       bitsPerSample: 16,
@@ -327,6 +329,8 @@ describe('outbound relay client', () => {
     expect(localGlobalAgentSocket.emit).toHaveBeenCalledWith('voice.stream.start', expect.objectContaining({
       type: 'voice.stream.start',
       interactionId: 'voice-stream-1',
+      mimeType: 'audio/x-ima-adpcm',
+      frameFormat: 'hadp-chunk-v1',
       profile: 'default',
     }))
     expect(localGlobalAgentSocket.emit).toHaveBeenCalledWith('voice.stream.chunk', expect.objectContaining({
