@@ -261,8 +261,8 @@ h3 {
 h1 {
   max-width: 590px;
   margin-bottom: 26px;
-  font-size: clamp(4rem, 6.2vw, 6.6rem);
-  line-height: 0.91;
+  font-size: clamp(3.5rem, 5.4vw, 5.5rem);
+  line-height: 0.94;
 }
 
 h1 em {
@@ -275,7 +275,7 @@ h1 em {
   max-width: 27rem;
   margin-bottom: 30px;
   color: var(--copy);
-  font-size: 18px;
+  font-size: 17px;
   line-height: 1.62;
 }
 
@@ -447,7 +447,7 @@ h1 em {
 .purchase-section {
   width: min(calc(100% - 48px), var(--max-width));
   margin: 0 auto;
-  padding: 128px 0;
+  padding: 96px 0;
 }
 
 .section-intro,
@@ -467,8 +467,8 @@ h1 em {
 .faq-heading h2,
 .purchase-copy h2 {
   margin-bottom: 18px;
-  font-size: clamp(2.9rem, 5vw, 5.1rem);
-  line-height: 0.98;
+  font-size: clamp(2.25rem, 3.6vw, 3.5rem);
+  line-height: 1.08;
 }
 
 .section-intro p,
@@ -479,11 +479,21 @@ h1 em {
   max-width: 52ch;
   margin-bottom: 0;
   color: var(--copy);
-  font-size: 17px;
+  font-size: 16px;
 }
 
 .signal-section {
   border-top: 1px solid var(--line);
+}
+
+.signal-section .section-intro {
+  max-width: 860px;
+}
+
+.signal-section .section-intro h2 {
+  font-size: clamp(2rem, 3vw, 2.75rem);
+  line-height: 1.14;
+  letter-spacing: -0.035em;
 }
 
 .signal-grid {
@@ -533,7 +543,7 @@ h1 em {
   gap: clamp(52px, 9vw, 140px);
   width: min(calc(100% - 48px), 1180px);
   margin: 0 auto;
-  padding: 116px 0;
+  padding: 96px 0;
 }
 
 .feature-section--button {
@@ -595,15 +605,15 @@ h1 em {
 
 .feature-copy h2 {
   margin-bottom: 22px;
-  font-size: clamp(3.1rem, 5.4vw, 5.8rem);
-  line-height: 0.95;
+  font-size: clamp(2.4rem, 4vw, 3.65rem);
+  line-height: 1.04;
 }
 
 .feature-copy p:last-child {
   max-width: 42ch;
   margin: 0;
   color: var(--copy);
-  font-size: 17px;
+  font-size: 16px;
 }
 
 .colors-section {
@@ -674,24 +684,138 @@ h1 em {
   border-top: 1px solid var(--line);
 }
 
+.connection-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
+  align-items: start;
+  gap: clamp(54px, 8vw, 120px);
+}
+
+.connection-heading {
+  position: sticky;
+  top: 116px;
+  max-width: 470px;
+}
+
+.connection-kicker {
+  margin: 0 0 20px;
+  color: var(--teal);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+
+.connection-heading h2 {
+  font-size: clamp(2.35rem, 3.6vw, 3.25rem);
+  line-height: 1.06;
+}
+
+.connection-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 18px;
+  margin-top: 28px;
+  color: var(--copy);
+  font-size: 12px;
+}
+
+.connection-facts span,
+.connection-panel-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.connection-facts i,
+.connection-panel-status i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+
+.connection-docs-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  transition: color 180ms var(--ease), border-color 180ms var(--ease);
+}
+
+.connection-docs-link:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.connection-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(49, 56, 49, 0.07);
+}
+
+.connection-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 48px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.connection-panel-title {
+  color: var(--quiet);
+}
+
+.connection-panel-status {
+  color: var(--teal);
+  white-space: nowrap;
+}
+
 .system-map {
   display: grid;
-  grid-template-columns: 1fr minmax(48px, 0.35fr) 1fr minmax(48px, 0.35fr) 1fr;
-  align-items: center;
-  gap: 18px;
-  margin-top: 68px;
-  padding: 34px 0;
-  border-top: 1px solid var(--line);
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.9fr) minmax(0, 1fr);
+  align-items: stretch;
   border-bottom: 1px solid var(--line);
 }
 
 .system-node {
   display: grid;
-  gap: 7px;
+  align-content: center;
+  gap: 8px;
+  min-height: 250px;
+  padding: 30px;
+}
+
+.system-node--device {
+  border-right: 1px solid var(--line);
+}
+
+.system-node--studio {
+  border-left: 1px solid var(--line);
+}
+
+.system-node-index {
+  margin-bottom: 14px;
+  color: var(--quiet);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
 }
 
 .system-node strong {
-  font-size: 20px;
+  font-size: 18px;
   letter-spacing: -0.03em;
 }
 
@@ -708,7 +832,7 @@ h1 em {
   height: 35px;
   margin-bottom: 7px;
   border: 1px solid var(--ink);
-  border-radius: 9px;
+  border-radius: var(--radius);
 }
 
 .system-icon--box::after {
@@ -762,13 +886,45 @@ h1 em {
   border-radius: 50%;
 }
 
-.system-line {
-  position: relative;
-  height: 1px;
-  background: var(--line);
+.system-transport {
+  display: grid;
+  align-content: center;
+  gap: 17px;
+  padding: 28px 18px;
+  background: var(--canvas);
+  text-align: center;
 }
 
-.system-line::after {
+.transport-name {
+  color: var(--ink);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.transport-lane {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--quiet);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.transport-lane--inbound {
+  grid-template-columns: 1fr auto;
+}
+
+.transport-lane i {
+  position: relative;
+  display: block;
+  height: 1px;
+  background: var(--teal);
+}
+
+.transport-lane i::after {
   content: "";
   position: absolute;
   right: 0;
@@ -778,6 +934,55 @@ h1 em {
   border-top: 1px solid var(--teal);
   border-right: 1px solid var(--teal);
   transform: rotate(45deg);
+}
+
+.transport-lane--inbound i::after {
+  right: auto;
+  left: 0;
+  transform: rotate(-135deg);
+}
+
+.system-transport > small {
+  color: var(--quiet);
+  font-size: 9px;
+}
+
+.connection-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connection-steps li {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  min-height: 154px;
+  padding: 22px 20px 24px;
+  border-right: 1px solid var(--line);
+}
+
+.connection-steps li:last-child {
+  border-right: 0;
+}
+
+.connection-steps span {
+  color: var(--teal);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.connection-steps strong {
+  font-size: 15px;
+}
+
+.connection-steps small {
+  color: var(--copy);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .specs-section {
@@ -1049,7 +1254,7 @@ code {
   }
 
   h1 {
-    font-size: clamp(4.1rem, 8vw, 7rem);
+    font-size: clamp(3.5rem, 6vw, 5.5rem);
   }
 
   .color-rail {
@@ -1176,8 +1381,8 @@ code {
   h1 {
     max-width: 100%;
     margin-bottom: 20px;
-    font-size: clamp(3.6rem, 17vw, 5.2rem);
-    line-height: 0.94;
+    font-size: clamp(3rem, 14vw, 4rem);
+    line-height: 0.96;
   }
 
   .hero-intro {
@@ -1218,7 +1423,7 @@ code {
   .notice-section,
   .faq-section,
   .purchase-section {
-    padding: 78px 0;
+    padding: 64px 0;
   }
 
   .section-intro h2,
@@ -1229,7 +1434,8 @@ code {
   .faq-heading h2,
   .purchase-copy h2 {
     margin-bottom: 15px;
-    font-size: clamp(2.8rem, 12.5vw, 4rem);
+    font-size: clamp(2rem, 9vw, 2.5rem);
+    line-height: 1.08;
   }
 
   .section-intro p,
@@ -1245,6 +1451,11 @@ code {
   .signal-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-top: 44px;
+  }
+
+  .signal-section .section-intro h2 {
+    font-size: clamp(1.9rem, 8vw, 2.25rem);
+    line-height: 1.16;
   }
 
   .signal-item,
@@ -1269,7 +1480,7 @@ code {
     align-items: stretch;
     gap: 45px;
     width: min(calc(100% - 40px), 600px);
-    padding: 78px 0;
+    padding: 64px 0;
   }
 
   .feature-section--button .feature-copy {
@@ -1296,7 +1507,8 @@ code {
 
   .feature-copy h2 {
     margin-bottom: 16px;
-    font-size: clamp(2.9rem, 13vw, 4rem);
+    font-size: clamp(2.15rem, 9.5vw, 2.7rem);
+    line-height: 1.08;
   }
 
   .color-rail {
@@ -1311,34 +1523,58 @@ code {
 
   .system-map {
     grid-template-columns: 1fr;
-    gap: 0;
-    margin-top: 44px;
-    padding: 0;
+  }
+
+  .connection-layout {
+    grid-template-columns: 1fr;
+    gap: 42px;
+  }
+
+  .connection-heading {
+    position: static;
+    max-width: 600px;
+  }
+
+  .connection-heading h2 {
+    font-size: clamp(2.1rem, 9vw, 2.6rem);
+  }
+
+  .connection-panel-header {
+    padding: 0 16px;
   }
 
   .system-node {
-    grid-template-columns: 45px 1fr;
-    column-gap: 14px;
-    align-items: center;
-    padding: 21px 0;
+    min-height: 0;
+    padding: 27px 24px;
   }
 
-  .system-icon {
-    grid-row: span 2;
-    margin: 0;
+  .system-node--device {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 
-  .system-line {
-    width: 1px;
-    height: 30px;
-    margin-left: 17px;
+  .system-node--studio {
+    border-top: 1px solid var(--line);
+    border-left: 0;
   }
 
-  .system-line::after {
-    right: -2px;
-    top: auto;
-    bottom: 0;
-    transform: rotate(135deg);
+  .system-transport {
+    padding: 24px;
+  }
+
+  .connection-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .connection-steps li {
+    min-height: 0;
+    padding: 20px 24px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .connection-steps li:last-child {
+    border-bottom: 0;
   }
 
   .spec-columns,

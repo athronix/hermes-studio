@@ -247,27 +247,72 @@
       </section>
 
       <section class="connection-section" id="connection" aria-labelledby="connection-title">
-        <div class="connection-heading reveal">
-          <h2 id="connection-title">硬件在桌面，AI 在 Hermes Studio。</h2>
-          <p>小方盒负责交互，电脑或云服务器负责模型、语音识别和语音合成。</p>
-        </div>
-        <div class="system-map reveal" aria-label="设备与 Hermes Studio 的连接路径">
-          <div class="system-node system-node--device">
-            <span class="system-icon system-icon--box" aria-hidden="true"></span>
-            <strong>小方盒</strong>
-            <small>ESP32-C3 / 屏幕 / 按键</small>
+        <div class="connection-layout">
+          <div class="connection-heading reveal">
+            <p class="connection-kicker">CONNECTION / 连接方式</p>
+            <h2 id="connection-title">硬件在桌面，<br />AI 在 Studio。</h2>
+            <p>小方盒负责听见、显示与播放；电脑或云服务器上的 Hermes Studio 负责模型、语音识别和语音合成。</p>
+            <div class="connection-facts" aria-label="连接要求">
+              <span><i aria-hidden="true"></i> 2.4GHz Wi-Fi</span>
+              <span><i aria-hidden="true"></i> Hermes Studio 在线</span>
+            </div>
+            <a class="connection-docs-link" href="https://hermes-studio.ai/#/docs/esp32" target="_blank" rel="noreferrer">
+              查看配对说明 <span aria-hidden="true">↗</span>
+            </a>
           </div>
-          <span class="system-line" aria-hidden="true"></span>
-          <div class="system-node">
-            <span class="system-icon system-icon--wifi" aria-hidden="true"></span>
-            <strong>2.4GHz 局域网 / 远程服务器</strong>
-            <small>同网直连或远程服务</small>
-          </div>
-          <span class="system-line" aria-hidden="true"></span>
-          <div class="system-node system-node--studio">
-            <span class="system-icon system-icon--studio" aria-hidden="true"></span>
-            <strong>Hermes Studio</strong>
-            <small>模型 / STT / TTS</small>
+
+          <div class="connection-panel reveal reveal-delay">
+            <div class="connection-panel-header">
+              <span class="connection-panel-title">DEVICE ROUTE / 设备链路</span>
+              <span class="connection-panel-status"><i aria-hidden="true"></i> 双向通信</span>
+            </div>
+
+            <div class="system-map" aria-label="设备与 Hermes Studio 的双向连接路径">
+              <div class="system-node system-node--device">
+                <span class="system-node-index">01 / DEVICE</span>
+                <span class="system-icon system-icon--box" aria-hidden="true"></span>
+                <strong>Hermes 小方盒</strong>
+                <small>麦克风 · 屏幕 · 扬声器 · 按键</small>
+              </div>
+
+              <div class="system-transport" aria-label="通过网络双向传输">
+                <span class="transport-name">2.4GHz Wi-Fi / Internet</span>
+                <div class="transport-lane transport-lane--outbound">
+                  <span>语音与按键事件</span>
+                  <i aria-hidden="true"></i>
+                </div>
+                <div class="transport-lane transport-lane--inbound">
+                  <i aria-hidden="true"></i>
+                  <span>语音与屏幕状态</span>
+                </div>
+                <small>局域网直连或远程服务</small>
+              </div>
+
+              <div class="system-node system-node--studio">
+                <span class="system-node-index">02 / RUNTIME</span>
+                <span class="system-icon system-icon--studio" aria-hidden="true"></span>
+                <strong>Hermes Studio</strong>
+                <small>Agent · 模型 · STT · TTS</small>
+              </div>
+            </div>
+
+            <ol class="connection-steps" aria-label="连接设备的三个步骤">
+              <li>
+                <span>01</span>
+                <strong>启动 Studio</strong>
+                <small>在电脑或服务器运行 Hermes Studio。</small>
+              </li>
+              <li>
+                <span>02</span>
+                <strong>接入网络</strong>
+                <small>让设备连上可访问 Studio 的 2.4GHz Wi-Fi。</small>
+              </li>
+              <li>
+                <span>03</span>
+                <strong>完成配对</strong>
+                <small>在设备页输入配对码，之后即可开始对话。</small>
+              </li>
+            </ol>
           </div>
         </div>
       </section>
