@@ -2074,6 +2074,8 @@ export default {
     estimatedCost: 'Примерная стоимость',
     cacheHitRate: 'Попадания в кэш',
     modelBreakdown: 'Распределение по моделям',
+    agentBreakdown: 'Распределение по агентам',
+    agents: { hermes: 'Hermes Agent', claudeCode: 'Claude Code', codex: 'Codex', ekkoAgent: 'Ekko Agent', unknown: 'Неизвестно' },
     dailyTrend: 'Ежедневная динамика',
     date: 'Дата',
     tokens: 'Токены',

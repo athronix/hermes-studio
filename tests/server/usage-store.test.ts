@@ -24,6 +24,7 @@ import {
   getUsage,
   getUsageBatch,
   deleteUsage,
+  getRecordedUsageSessionIds,
 } from '../../packages/server/src/db/hermes/usage-store'
 
 describe('Usage Store (JSON fallback)', () => {
@@ -112,6 +113,16 @@ describe('Usage Store (JSON fallback)', () => {
     deleteUsage('session-1')
     expect(mockJsonDelete).toHaveBeenCalledWith('session_usage', 'session-1')
   })
+
+  it('lists JSON usage session ids for the requested profile', () => {
+    mockJsonGetAll.mockReturnValue({
+      'default-1': { profile: 'default' },
+      'default-legacy': {},
+      'research-1': { profile: 'research' },
+    })
+    expect(getRecordedUsageSessionIds('default')).toEqual(['default-1', 'default-legacy'])
+    expect(getRecordedUsageSessionIds('research')).toEqual(['research-1'])
+  })
 })
 
 // Test with SQLite available (mocked)
@@ -136,7 +147,7 @@ describe('Usage Store (SQLite path)', () => {
         prepare: vi.fn((sql: string) => {
           if (sql.includes('INSERT') || sql.includes('UPDATE')) return { run: runMock }
           if (sql.includes('SELECT') && sql.includes('WHERE session_id = ?')) return { get: getMock }
-          if (sql.includes('SELECT') && sql.includes('IN')) return { all: allMock }
+          if (sql.includes('SELECT') && sql.includes(' IN (')) return { all: allMock }
           if (sql.includes('DELETE')) return { run: deleteMock }
           return { run: runMock, get: getMock, all: allMock }
         }),
@@ -155,6 +166,7 @@ describe('Usage Store (SQLite path)', () => {
       's1',
       '', // runId
       '', // source
+      '', // agent
       'run', // usageScope
       0, // apiCalls
       500,
@@ -183,6 +195,7 @@ describe('Usage Store (SQLite path)', () => {
       's1',
       '', // runId
       '', // source
+      '', // agent
       'run', // usageScope
       0, // apiCalls
       500,
@@ -243,5 +256,53 @@ describe('Usage Store (SQLite path)', () => {
     const { deleteUsage } = await import('../../packages/server/src/db/hermes/usage-store')
     deleteUsage('s1')
     expect(deleteMock).toHaveBeenCalledWith('s1')
+  })
+
+  it('aggregates local ledger usage and lists recorded session ids', async () => {
+    getMock.mockReturnValue({
+      input_tokens: 100,
+      output_tokens: 40,
+      cache_read_tokens: 30,
+      cache_write_tokens: 5,
+      reasoning_tokens: 8,
+      total_api_calls: 3,
+      sessions: 2,
+    })
+    allMock
+      .mockReturnValueOnce([
+        { model: 'gpt-test', input_tokens: 100, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 5, reasoning_tokens: 8, sessions: 2 },
+      ])
+      .mockReturnValueOnce([
+        { agent: 'coding_agent', input_tokens: 100, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 5, reasoning_tokens: 8, sessions: 2 },
+      ])
+      .mockReturnValueOnce([
+        { date: '2026-07-11', input_tokens: 100, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 5, sessions: 2 },
+      ])
+      .mockReturnValueOnce([
+        { session_id: 'session-1' },
+        { session_id: 'session-2' },
+      ])
+
+    const { getLocalUsageStats, getRecordedUsageSessionIds } = await import('../../packages/server/src/db/hermes/usage-store')
+    expect(getLocalUsageStats('default', 7)).toEqual({
+      input_tokens: 100,
+      output_tokens: 40,
+      cache_read_tokens: 30,
+      cache_write_tokens: 5,
+      reasoning_tokens: 8,
+      sessions: 2,
+      by_model: [
+        { model: 'gpt-test', input_tokens: 100, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 5, reasoning_tokens: 8, sessions: 2 },
+      ],
+      by_agent: [
+        { agent: 'coding_agent', input_tokens: 100, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 5, reasoning_tokens: 8, sessions: 2 },
+      ],
+      by_day: [
+        { date: '2026-07-11', input_tokens: 100, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 5, sessions: 2, errors: 0, cost: 0 },
+      ],
+      cost: 0,
+      total_api_calls: 3,
+    })
+    expect(getRecordedUsageSessionIds('default')).toEqual(['session-1', 'session-2'])
   })
 })

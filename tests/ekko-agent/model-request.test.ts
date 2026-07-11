@@ -139,7 +139,7 @@ describe('ekko-agent model requests', () => {
       content: 'Done.',
       finishReason: 'tool_calls',
       usage: {
-        inputTokens: 10,
+        inputTokens: 3,
         outputTokens: 5,
         totalTokens: 15,
         cacheReadTokens: 7,

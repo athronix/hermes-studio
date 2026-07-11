@@ -567,6 +567,7 @@ export async function handleEkkoAgentRun(
         sessionId,
         runId: `${event.runId}:step:${event.step}:call:${usageCallIndex}`,
         source: 'ekko_agent',
+        agent: 'ekko_agent',
         usageScope: 'model_call',
         apiCalls: 1,
         usage: event.usage,

@@ -399,7 +399,7 @@ describe('coding agent run state', () => {
     })
 
     expect(getRecordedUsageTotals(chatSessionId, 'coding_agent')).toEqual({
-      inputTokens: 120,
+      inputTokens: 90,
       outputTokens: 7,
       cacheReadTokens: 30,
       cacheWriteTokens: 0,

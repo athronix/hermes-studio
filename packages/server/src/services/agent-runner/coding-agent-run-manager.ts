@@ -587,7 +587,9 @@ export class CodingAgentRunManager {
     if (!run || run.launch.mode !== 'scoped') return
     const final = (event.data as any).response || event.data
     if (!final?.usage) return
-    const usage = normalizeTokenUsage(final.usage)
+    const usage = normalizeTokenUsage(final.usage, {}, {
+      inputIncludesCache: run.launch.apiMode !== 'anthropic_messages',
+    })
     if (usage.isEstimated) {
       logger.warn({
         runId: run.id,
@@ -602,9 +604,10 @@ export class CodingAgentRunManager {
       sessionId: run.launch.sessionId,
       runId: final?.id,
       source: 'coding_agent',
+      agent: run.launch.agentId === 'codex' ? 'codex' : 'claude_code',
       usageScope: 'model_call',
       apiCalls: 1,
-      usage: final.usage,
+      usage,
       profile: run.launch.profile,
       model: final?.model || run.launch.model,
       provider: run.launch.provider,
@@ -666,6 +669,7 @@ export class CodingAgentRunManager {
             sessionId: run.launch.sessionId,
             runId: final?.id || run.printResponseId || run.runMarker,
             source: 'coding_agent',
+            agent: run.launch.agentId === 'codex' ? 'codex' : 'claude_code',
             usageScope: 'run',
             usage: final.usage,
             profile: run.launch.profile,

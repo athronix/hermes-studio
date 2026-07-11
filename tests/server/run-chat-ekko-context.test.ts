@@ -191,6 +191,7 @@ describe('ekko-agent context usage events', () => {
       sessionId: 'session-1',
       runId: 'run-1:step:2:call:1',
       source: 'ekko_agent',
+      agent: 'ekko_agent',
       usageScope: 'model_call',
       apiCalls: 1,
       usage: {

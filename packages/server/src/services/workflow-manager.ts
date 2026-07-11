@@ -25,7 +25,6 @@ import {
   type WorkflowRunRecord,
 } from '../db/hermes/workflow-run-store'
 import { deleteSession, getSession, getSessionDetail } from '../db/hermes/session-store'
-import { deleteUsage } from '../db/hermes/usage-store'
 import { getChatRunServer } from '../routes/hermes/chat-run'
 import type { ContentBlock } from './hermes/run-chat'
 import type { AuthenticatedUser } from '../middleware/user-auth'
@@ -353,7 +352,6 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
     if (existing) {
       deleteSession(sessionId)
-      deleteUsage(sessionId)
     }
   }
 

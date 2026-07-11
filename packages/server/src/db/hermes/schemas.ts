@@ -14,6 +14,7 @@ export const USAGE_SCHEMA: Record<string, string> = {
   session_id: 'TEXT NOT NULL',
   run_id: "TEXT NOT NULL DEFAULT ''",
   source: "TEXT NOT NULL DEFAULT ''",
+  agent: "TEXT NOT NULL DEFAULT ''",
   usage_scope: "TEXT NOT NULL DEFAULT 'run'",
   api_calls: 'INTEGER NOT NULL DEFAULT 0',
   input_tokens: 'INTEGER NOT NULL DEFAULT 0',

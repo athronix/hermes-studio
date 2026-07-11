@@ -2,7 +2,6 @@ import { io, Socket } from 'socket.io-client'
 import { createHash, randomBytes } from 'crypto'
 import { getToken } from '../../../services/auth'
 import { logger } from '../../../services/logger'
-import { recordSessionUsage } from '../../../services/usage-recorder'
 import { countTokens } from '../../../lib/context-compressor'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
 import { convertContentBlocksForAgent, isContentBlockArray } from '../run-chat/content-blocks'
@@ -835,7 +834,6 @@ class AgentClient {
                 await stopStaleStartedRun?.()
                 return
             }
-            recordBridgeUsage(roomId, this.profile, lastChunk)
             logger.debug(`[AgentClients] ${this.name}: bridge response completed, content length=${totalContent.length}`)
             if (currentContent) {
                 if (!this.replySessionIsCurrent(roomId, sessionId, replyInterruptVersion)) {
@@ -1179,20 +1177,6 @@ function extractBridgeFinalText(chunk: AgentBridgeOutput | null): string {
     const result = chunk?.result as any
     const output = result?.final_response || chunk?.output || ''
     return typeof output === 'string' ? output.trim() : ''
-}
-
-function recordBridgeUsage(roomId: string, profile: string, chunk: AgentBridgeOutput | null): void {
-    const payload = chunk?.result as any
-    const usage = payload?.usage || payload?.response?.usage
-    if (!usage) return
-    recordSessionUsage({
-        sessionId: roomId,
-        runId: chunk?.run_id,
-        source: 'group_chat',
-        usage,
-        model: payload?.model || payload?.response?.model || '',
-        profile,
-    })
 }
 
 // ─── AgentClients (roomId -> agents) ──────────────────────────

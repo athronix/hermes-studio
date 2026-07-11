@@ -2327,6 +2327,8 @@ export default {
     estimatedCost: '预估费用',
     cacheHitRate: '缓存命中率',
     modelBreakdown: '模型分布',
+    agentBreakdown: 'Agent 分布',
+    agents: { hermes: 'Hermes Agent', claudeCode: 'Claude Code', codex: 'Codex', ekkoAgent: 'Ekko Agent', unknown: '未知' },
     dailyTrend: '每日用量',
     date: '日期',
     tokens: 'Token',

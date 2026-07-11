@@ -12,7 +12,8 @@ export interface NormalizedTokenUsage {
 export interface RecordSessionUsageInput {
   sessionId: string
   runId?: string | null
-  source: 'hermes' | 'coding_agent' | 'ekko_agent' | 'group_chat' | 'context_engine'
+  source: 'hermes' | 'coding_agent' | 'ekko_agent'
+  agent: 'hermes' | 'claude_code' | 'codex' | 'ekko_agent'
   profile?: string | null
   model?: string | null
   provider?: string | null
@@ -51,6 +52,7 @@ function usagePayload(value: unknown): Record<string, any> {
 export function normalizeTokenUsage(
   value: unknown,
   fallback: Partial<NormalizedTokenUsage> = {},
+  options: { inputIncludesCache?: boolean } = {},
 ): NormalizedTokenUsage & { isEstimated: boolean } {
   const usage = usagePayload(value)
   const inputDetails = asRecord(usage.input_tokens_details)
@@ -88,11 +90,17 @@ export function normalizeTokenUsage(
     outputDetails.reasoningTokens,
   )
 
+  const inputTokens = rawInput ?? finiteToken(fallback.inputTokens) ?? 0
+  const cacheReadTokens = rawCacheRead ?? finiteToken(fallback.cacheReadTokens) ?? 0
+  const cacheWriteTokens = rawCacheWrite ?? finiteToken(fallback.cacheWriteTokens) ?? 0
+
   return {
-    inputTokens: rawInput ?? finiteToken(fallback.inputTokens) ?? 0,
+    inputTokens: options.inputIncludesCache
+      ? Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens)
+      : inputTokens,
     outputTokens: rawOutput ?? finiteToken(fallback.outputTokens) ?? 0,
-    cacheReadTokens: rawCacheRead ?? finiteToken(fallback.cacheReadTokens) ?? 0,
-    cacheWriteTokens: rawCacheWrite ?? finiteToken(fallback.cacheWriteTokens) ?? 0,
+    cacheReadTokens,
+    cacheWriteTokens,
     reasoningTokens: rawReasoning ?? finiteToken(fallback.reasoningTokens) ?? 0,
     isEstimated: rawInput == null || rawOutput == null,
   }
@@ -104,6 +112,7 @@ export function recordSessionUsage(input: RecordSessionUsageInput): NormalizedTo
     updateUsage(input.sessionId, {
       runId: input.runId || '',
       source: input.source,
+      agent: input.agent,
       usageScope: input.usageScope,
       apiCalls: input.apiCalls,
       inputTokens: usage.inputTokens,

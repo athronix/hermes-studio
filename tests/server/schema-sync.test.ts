@@ -224,6 +224,7 @@ describe('Database Schema Synchronization', () => {
       expect(cols.has('cache_write_tokens')).toBe(true)
       expect(cols.has('run_id')).toBe(true)
       expect(cols.has('source')).toBe(true)
+      expect(cols.has('agent')).toBe(true)
       expect(cols.has('provider')).toBe(true)
       expect(cols.has('is_estimated')).toBe(true)
 

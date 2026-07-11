@@ -2325,6 +2325,8 @@ export default {
     estimatedCost: 'Est. Cost',
     cacheHitRate: 'Cache Hit Rate',
     modelBreakdown: 'Model Breakdown',
+    agentBreakdown: 'Agent Breakdown',
+    agents: { hermes: 'Hermes Agent', claudeCode: 'Claude Code', codex: 'Codex', ekkoAgent: 'Ekko Agent', unknown: 'Unknown' },
     dailyTrend: 'Daily Usage',
     date: 'Date',
     tokens: 'Tokens',

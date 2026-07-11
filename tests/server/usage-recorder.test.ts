@@ -77,11 +77,27 @@ describe('usage recorder', () => {
     })
   })
 
+  it('splits cached tokens from provider input totals when requested', () => {
+    expect(normalizeTokenUsage({
+      input_tokens: 120,
+      output_tokens: 7,
+      input_tokens_details: { cached_tokens: 30 },
+    }, {}, { inputIncludesCache: true })).toEqual({
+      inputTokens: 90,
+      outputTokens: 7,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      isEstimated: false,
+    })
+  })
+
   it('persists normalized metadata through the shared store entrypoint', () => {
     recordSessionUsage({
       sessionId: 'session-1',
       runId: 'run-1',
       source: 'coding_agent',
+      agent: 'codex',
       profile: 'work',
       model: 'gpt-5',
       provider: 'openai',
@@ -91,6 +107,7 @@ describe('usage recorder', () => {
     expect(updateUsageMock).toHaveBeenCalledWith('session-1', {
       runId: 'run-1',
       source: 'coding_agent',
+      agent: 'codex',
       usageScope: undefined,
       apiCalls: undefined,
       inputTokens: 10,

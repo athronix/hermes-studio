@@ -1297,6 +1297,7 @@ export async function getUsageStatsFromDb(
   days = 30,
   nowSeconds = Math.floor(Date.now() / 1000),
   profile?: string,
+  excludedSessionIds: Iterable<string> = [],
 ): Promise<HermesUsageStats> {
   const empty: HermesUsageStats = {
     input_tokens: 0,
@@ -1306,6 +1307,7 @@ export async function getUsageStatsFromDb(
     reasoning_tokens: 0,
     sessions: 0,
     by_model: [],
+    by_agent: [],
     by_day: [],
     cost: 0,
     total_api_calls: 0,
@@ -1314,6 +1316,11 @@ export async function getUsageStatsFromDb(
   const normalizedDays = Number.isFinite(days) ? days : 30
   const safeDays = Math.max(1, Math.floor(normalizedDays))
   const since = nowSeconds - safeDays * 24 * 60 * 60
+  const excludedIds = [...new Set([...excludedSessionIds].map(id => String(id || '').trim()).filter(Boolean))]
+  const exclusionClause = excludedIds.length > 0
+    ? ` AND id NOT IN (SELECT value FROM json_each(?))`
+    : ''
+  const queryParams = excludedIds.length > 0 ? [since, JSON.stringify(excludedIds)] : [since]
   const db = await openSessionDb(profile)
 
   try {
@@ -1331,8 +1338,8 @@ export async function getUsageStatsFromDb(
         COUNT(*) AS sessions,
         ${apiCallsExpr} AS total_api_calls
       FROM sessions
-      WHERE started_at > ?
-    `).get(since) as Record<string, unknown> | undefined
+      WHERE started_at > ?${exclusionClause}
+    `).get(...queryParams) as Record<string, unknown> | undefined
 
     if (!totals) return empty
 
@@ -1346,10 +1353,10 @@ export async function getUsageStatsFromDb(
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COUNT(*) AS sessions
       FROM sessions
-      WHERE started_at > ? AND model IS NOT NULL
+      WHERE started_at > ? AND model IS NOT NULL${exclusionClause}
       GROUP BY model
       ORDER BY COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) DESC
-    `).all(since).map(row => ({
+    `).all(...queryParams).map(row => ({
       model: String(row.model || ''),
       input_tokens: normalizeNumber(row.input_tokens),
       output_tokens: normalizeNumber(row.output_tokens),
@@ -1369,10 +1376,10 @@ export async function getUsageStatsFromDb(
         COUNT(*) AS sessions,
         COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0) AS cost
       FROM sessions
-      WHERE started_at > ?
+      WHERE started_at > ?${exclusionClause}
       GROUP BY date
       ORDER BY date ASC
-    `).all(since).map(row => ({
+    `).all(...queryParams).map(row => ({
       date: String(row.date || ''),
       input_tokens: normalizeNumber(row.input_tokens),
       output_tokens: normalizeNumber(row.output_tokens),
@@ -1391,6 +1398,17 @@ export async function getUsageStatsFromDb(
       reasoning_tokens: normalizeNumber(totals.reasoning_tokens),
       sessions: normalizeNumber(totals.sessions),
       by_model: byModel,
+      by_agent: normalizeNumber(totals.sessions) > 0
+        ? [{
+            agent: 'hermes',
+            input_tokens: normalizeNumber(totals.input_tokens),
+            output_tokens: normalizeNumber(totals.output_tokens),
+            cache_read_tokens: normalizeNumber(totals.cache_read_tokens),
+            cache_write_tokens: normalizeNumber(totals.cache_write_tokens),
+            reasoning_tokens: normalizeNumber(totals.reasoning_tokens),
+            sessions: normalizeNumber(totals.sessions),
+          }]
+        : [],
       by_day: byDay,
       cost: normalizeNumber(totals.cost),
       total_api_calls: normalizeNumber(totals.total_api_calls),

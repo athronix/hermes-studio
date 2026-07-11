@@ -14,8 +14,8 @@ import {
   updateSessionStats as localUpdateSessionStats,
 } from '../../db/hermes/session-store'
 import { ExportCompressor } from '../../lib/context-compressor/export-compressor'
-import { deleteUsage, getUsage, getUsageBatch } from '../../db/hermes/usage-store'
-import type { UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
+import { getLocalUsageStats, getRecordedUsageSessionIds, getUsage, getUsageBatch } from '../../db/hermes/usage-store'
+import type { UsageStatsAgentRow, UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
 import { deleteWorkspaceRunChangesForSession, getWorkspaceRunChangeFile as getWorkspaceRunChangeFileFromDb, listWorkspaceRunChangesForSession } from '../../db/hermes/workspace-run-changes-store'
 import { getModelContextLength } from '../../services/hermes/model-context'
 import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
@@ -919,7 +919,6 @@ export async function remove(ctx: any) {
     ctx.body = { error: 'Failed to delete session' }
     return
   }
-  deleteUsage(sessionId)
   deleteWorkspaceRunChangesForSession(sessionId)
   ctx.body = { ok: true, deleted: Boolean(existing), hermes }
 }
@@ -995,7 +994,6 @@ export async function batchRemove(ctx: any) {
     if (shouldDeleteLocal) {
       const ok = localDeleteSession(id)
       if (ok) {
-        deleteUsage(id)
         deleteWorkspaceRunChangesForSession(id)
         results.deleted++
       } else {
@@ -1173,7 +1171,10 @@ export async function contextLength(ctx: any) {
 export async function usageStats(ctx: any) {
   const rawDays = parseInt(String(ctx.query?.days ?? '30'), 10)
   const days = Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 30
-  const profile = requestedProfile(ctx)
+  const profile = requestedProfile(ctx) || getActiveProfileName()
+
+  const local = getLocalUsageStats(profile, days)
+  const localSessionIds = getRecordedUsageSessionIds(profile)
 
   let hermes = {
     input_tokens: 0,
@@ -1183,15 +1184,58 @@ export async function usageStats(ctx: any) {
     reasoning_tokens: 0,
     sessions: 0,
     by_model: [] as UsageStatsModelRow[],
+    by_agent: [] as UsageStatsAgentRow[],
     by_day: [] as UsageStatsDailyRow[],
     cost: 0,
     total_api_calls: 0,
   }
 
   try {
-    hermes = profile ? await getUsageStatsFromDb(days, undefined, profile) : await getUsageStatsFromDb(days)
+    hermes = await getUsageStatsFromDb(days, undefined, profile, localSessionIds)
   } catch (err) {
     logger.warn(err, 'usageStats: failed to load Hermes usage analytics from state.db')
+  }
+
+  const modelMap = new Map<string, UsageStatsModelRow>()
+  for (const row of [...local.by_model, ...hermes.by_model]) {
+    const model = row.model.trim()
+    const current = modelMap.get(model) || {
+      model,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      sessions: 0,
+    }
+    current.input_tokens += row.input_tokens
+    current.output_tokens += row.output_tokens
+    current.cache_read_tokens += row.cache_read_tokens
+    current.cache_write_tokens += row.cache_write_tokens
+    current.reasoning_tokens += row.reasoning_tokens
+    current.sessions += row.sessions
+    modelMap.set(model, current)
+  }
+
+  const agentMap = new Map<string, UsageStatsAgentRow>()
+  for (const row of [...(local.by_agent || []), ...(hermes.by_agent || [])]) {
+    const agent = row.agent.trim() || 'hermes'
+    const current = agentMap.get(agent) || {
+      agent,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      sessions: 0,
+    }
+    current.input_tokens += row.input_tokens
+    current.output_tokens += row.output_tokens
+    current.cache_read_tokens += row.cache_read_tokens
+    current.cache_write_tokens += row.cache_write_tokens
+    current.reasoning_tokens += row.reasoning_tokens
+    current.sessions += row.sessions
+    agentMap.set(agent, current)
   }
 
   const dayMap = new Map<string, UsageStatsDailyRow>()
@@ -1202,7 +1246,7 @@ export async function usageStats(ctx: any) {
     const key = d.toISOString().slice(0, 10)
     dayMap.set(key, { date: key, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, sessions: 0, errors: 0, cost: 0 })
   }
-  for (const d of hermes.by_day) {
+  for (const d of [...local.by_day, ...hermes.by_day]) {
     const existing = dayMap.get(d.date)
     if (existing) {
       existing.input_tokens += d.input_tokens; existing.output_tokens += d.output_tokens
@@ -1212,16 +1256,17 @@ export async function usageStats(ctx: any) {
   }
 
   ctx.body = {
-    total_input_tokens: hermes.input_tokens,
-    total_output_tokens: hermes.output_tokens,
-    total_cache_read_tokens: hermes.cache_read_tokens,
-    total_cache_write_tokens: hermes.cache_write_tokens,
-    total_reasoning_tokens: hermes.reasoning_tokens,
-    total_sessions: hermes.sessions,
-    total_cost: hermes.cost,
-    total_api_calls: hermes.total_api_calls,
+    total_input_tokens: local.input_tokens + hermes.input_tokens,
+    total_output_tokens: local.output_tokens + hermes.output_tokens,
+    total_cache_read_tokens: local.cache_read_tokens + hermes.cache_read_tokens,
+    total_cache_write_tokens: local.cache_write_tokens + hermes.cache_write_tokens,
+    total_reasoning_tokens: local.reasoning_tokens + hermes.reasoning_tokens,
+    total_sessions: local.sessions + hermes.sessions,
+    total_cost: local.cost + hermes.cost,
+    total_api_calls: local.total_api_calls + hermes.total_api_calls,
     period_days: days,
-    model_usage: hermes.by_model.sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
+    model_usage: [...modelMap.values()].sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
+    agent_usage: [...agentMap.values()].sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
     daily_usage: [...dayMap.values()],
   }
 }

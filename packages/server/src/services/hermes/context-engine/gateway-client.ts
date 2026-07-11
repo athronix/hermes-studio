@@ -5,7 +5,6 @@ import {
     buildIncrementalUpdatePrompt,
 } from './prompt'
 import { logger } from '../../logger'
-import { recordSessionUsage } from '../../usage-recorder'
 import { AgentBridgeClient, type AgentBridgeRunResult } from '../agent-bridge'
 
 /**
@@ -70,17 +69,6 @@ export class GatewaySummarizer implements GatewayCaller {
             const output = String(payload?.final_response || result.output || '').trim()
             if (!output) throw new Error('Empty summarization response')
 
-            const usage = payload?.usage || payload?.response?.usage
-            if (usage) {
-                recordSessionUsage({
-                    sessionId: roomId,
-                    runId: result.run_id,
-                    source: 'context_engine',
-                    usage,
-                    model: payload?.model || payload?.response?.model || '',
-                    profile,
-                })
-            }
             logger.debug(`[GatewaySummarizer] Bridge compression completed for room ${roomId} (profile=${profile})`)
             return { summary: output, sessionId }
         } finally {

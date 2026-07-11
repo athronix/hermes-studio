@@ -26,6 +26,7 @@ const localAddMessagesMock = vi.fn()
 const localUpdateSessionStatsMock = vi.fn()
 const getGroupChatServerMock = vi.fn()
 const getLocalUsageStatsMock = vi.fn()
+const getRecordedUsageSessionIdsMock = vi.fn()
 const getActiveProfileNameMock = vi.fn()
 const loggerWarnMock = vi.fn()
 const getCompressionSnapshotMock = vi.fn()
@@ -94,6 +95,7 @@ vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
   getUsage: vi.fn(),
   getUsageBatch: vi.fn(),
   getLocalUsageStats: getLocalUsageStatsMock,
+  getRecordedUsageSessionIds: getRecordedUsageSessionIdsMock,
 }))
 
 vi.mock('../../packages/server/src/routes/hermes/group-chat', () => ({
@@ -170,6 +172,21 @@ describe('session conversations controller', () => {
     getGroupChatServerMock.mockReset()
     getGroupChatServerMock.mockReturnValue(null)
     getLocalUsageStatsMock.mockReset()
+    getLocalUsageStatsMock.mockReturnValue({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      sessions: 0,
+      by_model: [],
+      by_agent: [],
+      by_day: [],
+      cost: 0,
+      total_api_calls: 0,
+    })
+    getRecordedUsageSessionIdsMock.mockReset()
+    getRecordedUsageSessionIdsMock.mockReturnValue([])
     getActiveProfileNameMock.mockReset()
     getActiveProfileNameMock.mockReturnValue('default')
     loggerWarnMock.mockReset()
@@ -1127,7 +1144,7 @@ describe('session conversations controller', () => {
     expect(ctx.body).toEqual({ error: 'Session not found' })
   })
 
-  it('returns native state.db usage analytics for the requested period', async () => {
+  it('merges local usage with only state.db sessions missing from the local ledger', async () => {
     const today = new Date().toISOString().slice(0, 10)
     getLocalUsageStatsMock.mockReturnValue({
       input_tokens: 10,
@@ -1139,10 +1156,16 @@ describe('session conversations controller', () => {
       by_model: [
         { model: 'local-model', input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, reasoning_tokens: 3, sessions: 1 },
       ],
+      by_agent: [
+        { agent: 'codex', input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, reasoning_tokens: 3, sessions: 1 },
+      ],
       by_day: [
         { date: today, input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, sessions: 1, errors: 0, cost: 0 },
       ],
+      cost: 0,
+      total_api_calls: 2,
     })
+    getRecordedUsageSessionIdsMock.mockReturnValue(['local-session'])
     getUsageStatsFromDbMock.mockResolvedValue({
       input_tokens: 20,
       output_tokens: 10,
@@ -1155,6 +1178,9 @@ describe('session conversations controller', () => {
       by_model: [
         { model: 'hermes-model', input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, reasoning_tokens: 6, sessions: 2 },
       ],
+      by_agent: [
+        { agent: 'hermes', input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, reasoning_tokens: 6, sessions: 2 },
+      ],
       by_day: [
         { date: today, input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, sessions: 2, errors: 0, cost: 0.02 },
       ],
@@ -1164,28 +1190,34 @@ describe('session conversations controller', () => {
     const ctx: any = { query: { days: '2' }, body: null }
     await mod.usageStats(ctx)
 
-    expect(getLocalUsageStatsMock).not.toHaveBeenCalled()
-    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(2)
+    expect(getLocalUsageStatsMock).toHaveBeenCalledWith('default', 2)
+    expect(getRecordedUsageSessionIdsMock).toHaveBeenCalledWith('default')
+    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(2, undefined, 'default', ['local-session'])
     expect(ctx.body).toMatchObject({
-      total_input_tokens: 20,
-      total_output_tokens: 10,
-      total_cache_read_tokens: 4,
-      total_cache_write_tokens: 2,
-      total_reasoning_tokens: 6,
-      total_sessions: 2,
+      total_input_tokens: 30,
+      total_output_tokens: 15,
+      total_cache_read_tokens: 6,
+      total_cache_write_tokens: 3,
+      total_reasoning_tokens: 9,
+      total_sessions: 3,
       total_cost: 0.02,
-      total_api_calls: 7,
+      total_api_calls: 9,
       period_days: 2,
     })
     expect(ctx.body.model_usage).toEqual([
       { model: 'hermes-model', input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, reasoning_tokens: 6, sessions: 2 },
+      { model: 'local-model', input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, reasoning_tokens: 3, sessions: 1 },
+    ])
+    expect(ctx.body.agent_usage).toEqual([
+      { agent: 'hermes', input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, reasoning_tokens: 6, sessions: 2 },
+      { agent: 'codex', input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, reasoning_tokens: 3, sessions: 1 },
     ])
     expect(ctx.body.daily_usage.find((row: any) => row.date === today)).toMatchObject({
-      input_tokens: 20,
-      output_tokens: 10,
-      cache_read_tokens: 4,
-      cache_write_tokens: 2,
-      sessions: 2,
+      input_tokens: 30,
+      output_tokens: 15,
+      cache_read_tokens: 6,
+      cache_write_tokens: 3,
+      sessions: 3,
       cost: 0.02,
     })
   })
@@ -1210,7 +1242,9 @@ describe('session conversations controller', () => {
     const ctx: any = { query: { days: '2' }, state: { profile: { name: 'research' } }, body: null }
     await mod.usageStats(ctx)
 
-    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(2, undefined, 'research')
+    expect(getLocalUsageStatsMock).toHaveBeenCalledWith('research', 2)
+    expect(getRecordedUsageSessionIdsMock).toHaveBeenCalledWith('research')
+    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(2, undefined, 'research', [])
     expect(ctx.body).toMatchObject({
       total_input_tokens: 12,
       total_output_tokens: 6,
@@ -1235,6 +1269,8 @@ describe('session conversations controller', () => {
         { model: '', input_tokens: 3, output_tokens: 1, cache_read_tokens: 2, cache_write_tokens: 0, reasoning_tokens: 0, sessions: 1 },
       ],
       by_day: [],
+      cost: 0,
+      total_api_calls: 1,
     })
     getUsageStatsFromDbMock.mockResolvedValue({
       input_tokens: 2,
@@ -1256,7 +1292,7 @@ describe('session conversations controller', () => {
     await mod.usageStats(ctx)
 
     expect(ctx.body.model_usage).toEqual([
-      { model: ' ', input_tokens: 2, output_tokens: 1, cache_read_tokens: 1, cache_write_tokens: 1, reasoning_tokens: 0, sessions: 1 },
+      { model: '', input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 1, reasoning_tokens: 0, sessions: 2 },
     ])
   })
 
