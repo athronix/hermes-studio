@@ -91,6 +91,10 @@ vi.mock('naive-ui', async () => {
     NButton: {
       template: '<button v-bind="$attrs"><slot /></button>',
     },
+    NModal: {
+      props: ['show'],
+      template: '<div v-if="show" class="n-modal-stub"><slot /></div>',
+    },
     NSelect: {
       template: '<div />',
     },
@@ -182,9 +186,10 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.devices')
   })
 
-  it('shows Docker upgrade guidance even when npm update checks are disabled', () => {
+  it('uses the regular update button to open Docker upgrade guidance', async () => {
     mockAppStore.isDocker = true
-    mockAppStore.updateAvailable = false
+    mockAppStore.updateAvailable = true
+    mockAppStore.latestVersion = '0.6.29'
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -196,7 +201,12 @@ describe('AppSidebar navigation', () => {
       },
     })
 
-    const button = wrapper.get('.docker-update-btn')
-    expect(button.text()).toContain('sidebar.dockerUpdateTitle')
+    const button = wrapper.get('.update-btn')
+    expect(button.classes()).not.toContain('docker-update-btn')
+    expect(button.text()).toContain('sidebar.updateVersion')
+
+    await button.trigger('click')
+
+    expect(wrapper.text()).toContain('sidebar.dockerUpdateGuide')
   })
 })

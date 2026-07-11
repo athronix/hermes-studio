@@ -172,8 +172,11 @@ describe('health controller version metadata', () => {
     await expect(checkLatestVersion()).resolves.toBeUndefined()
   })
 
-  it('reports Docker and skips npm version checks inside a container', async () => {
-    const fetchMock = vi.fn()
+  it('reports Docker while retaining version checks for upgrade guidance', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ version: '0.6.29' }),
+    })
     vi.stubGlobal('fetch', fetchMock)
     const { checkLatestVersion, healthCheck } = await loadHealthController({
       injectedVersion: '0.6.28',
@@ -184,11 +187,11 @@ describe('health controller version metadata', () => {
     const ctx = createMockCtx()
     await healthCheck(ctx)
 
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledOnce()
     expect(ctx.body).toEqual(expect.objectContaining({
       is_docker: true,
-      webui_latest: '',
-      webui_update_available: false,
+      webui_latest: '0.6.29',
+      webui_update_available: true,
     }))
   })
 

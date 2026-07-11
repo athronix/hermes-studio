@@ -31,6 +31,7 @@ const isDesktopShell = computed(() =>
 const showChangelog = ref(false);
 const showVersionManagement = ref(false);
 const showDockerUpdateTip = ref(false);
+const isDockerRuntime = computed(() => appStore.isDocker);
 
 function hasRoute(name: string): boolean {
   return router.hasRoute(name);
@@ -92,6 +93,14 @@ function openVersionManagement() {
 
 function handleDockerUpdateTip() {
   showDockerUpdateTip.value = true;
+}
+
+function handleUpdateClick() {
+  if (isDockerRuntime.value) {
+    handleDockerUpdateTip();
+    return;
+  }
+  void handleUpdate();
 }
 </script>
 
@@ -377,19 +386,18 @@ function handleDockerUpdateTip() {
       <NButton v-if="appStore.clientOutdated" type="warning" size="tiny" block class="update-btn" @click="handleReloadClient">
         {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
       </NButton>
-      <!-- Docker 环境下引导用户使用 docker pull 升级 -->
       <NButton
-        v-else-if="appStore.isDocker"
+        v-else-if="appStore.updateAvailable"
         type="primary"
         size="tiny"
         block
-        class="update-btn docker-update-btn"
-        @click="handleDockerUpdateTip"
+        class="update-btn"
+        :loading="!isDockerRuntime && appStore.updating"
+        @click="handleUpdateClick"
       >
-        {{ t('sidebar.dockerUpdateTitle') }}
-      </NButton>
-      <NButton v-else-if="appStore.updateAvailable" type="primary" size="tiny" block class="update-btn" :loading="appStore.updating" @click="handleUpdate">
-        {{ appStore.updating ? t('sidebar.updating') : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
+        {{ !isDockerRuntime && appStore.updating
+          ? t('sidebar.updating')
+          : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
       </NButton>
     </div>
 
@@ -945,11 +953,4 @@ function handleDockerUpdateTip() {
   }
 }
 
-.docker-update-btn {
-  background: #2496ed !important;
-  border-color: #2496ed !important;
-  &:hover {
-    background: #1d7fd4 !important;
-  }
-}
 </style>

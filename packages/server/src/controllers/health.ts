@@ -76,14 +76,9 @@ let pendingAgentBridgeHealthRefresh: Promise<AgentBridgeHealthPayload> | null = 
  * to upgrade — the "update available" prompt would be misleading and
  * the periodic outbound HTTP request to the npm registry is unnecessary.
  *
- * Docker 环境下自动禁用：npm 升级方式在 Docker 中不可用，
- * 用户应通过 docker pull 升级，无需检查 npm registry。
- *
  * Set HERMES_WEB_UI_DISABLE_UPDATE_CHECK=true (or 1, on, yes) to disable.
  */
 function isUpdateCheckDisabled(): boolean {
-  // Docker 环境下自动禁用，无需额外配置
-  if (isDockerContainer()) return true
   const raw = (process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK || '').trim().toLowerCase()
   return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'
 }
