@@ -9,6 +9,7 @@ const mockAppStore = vi.hoisted(() => ({
   connected: true,
   serverVersion: 'test',
   latestVersion: '',
+  isDocker: false,
   updateAvailable: false,
   clientOutdated: false,
   updating: false,
@@ -108,6 +109,7 @@ describe('AppSidebar navigation', () => {
     openSessionSearchMock.mockClear()
     mockAppStore.serverVersion = 'test'
     mockAppStore.latestVersion = ''
+    mockAppStore.isDocker = false
     mockAppStore.updateAvailable = false
     mockAppStore.clientOutdated = false
     mockAppStore.updating = false
@@ -178,5 +180,23 @@ describe('AppSidebar navigation', () => {
 
     expect(wrapper.text()).toContain('sidebar.mcp')
     expect(wrapper.text()).not.toContain('sidebar.devices')
+  })
+
+  it('shows Docker upgrade guidance even when npm update checks are disabled', () => {
+    mockAppStore.isDocker = true
+    mockAppStore.updateAvailable = false
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    const button = wrapper.get('.docker-update-btn')
+    expect(button.text()).toContain('sidebar.dockerUpdateTitle')
   })
 })

@@ -3,18 +3,11 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
 import { getWebUiHome } from '../config'
+import { isDockerContainer } from '../services/runtime-environment'
 
 let updateInProgress = false
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
 const DOCKER_ENVIRONMENT_CODE = 'docker_environment'
-
-/**
- * 检测当前进程是否在 Docker 容器中运行。
- * 使用 /.dockerenv 文件存在性判断（Docker 默认创建该文件）。
- */
-function isDockerContainer(): boolean {
-  return existsSync('/.dockerenv') || process.env.container === 'docker'
-}
 
 const PREVIEW_DIR_NAME = 'hermes-web-ui-pereview'
 const PREVIEW_HOME_DIR_NAME = 'hermes-web-ui-pereview-home'

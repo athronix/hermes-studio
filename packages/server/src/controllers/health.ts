@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
 import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
 import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
+import { isDockerContainer } from '../services/runtime-environment'
 
 declare const __APP_VERSION__: string
 
@@ -82,7 +83,7 @@ let pendingAgentBridgeHealthRefresh: Promise<AgentBridgeHealthPayload> | null = 
  */
 function isUpdateCheckDisabled(): boolean {
   // Docker 环境下自动禁用，无需额外配置
-  if (existsSync('/.dockerenv') || process.env.container === 'docker') return true
+  if (isDockerContainer()) return true
   const raw = (process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK || '').trim().toLowerCase()
   return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'
 }
@@ -208,6 +209,6 @@ export async function healthCheck(ctx: any) {
       : Boolean(LOCAL_VERSION && cachedLatestVersion && isNewerVersion(cachedLatestVersion, LOCAL_VERSION)),
     node_version: process.versions.node,
     agent_bridge: agentBridge,
-    is_docker: existsSync('/.dockerenv') || process.env.container === 'docker',
+    is_docker: isDockerContainer(),
   }
 }

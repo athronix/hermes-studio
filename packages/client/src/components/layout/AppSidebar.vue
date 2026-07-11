@@ -379,14 +379,14 @@ function handleDockerUpdateTip() {
       </NButton>
       <!-- Docker 环境下引导用户使用 docker pull 升级 -->
       <NButton
-        v-else-if="appStore.isDocker && appStore.updateAvailable"
+        v-else-if="appStore.isDocker"
         type="primary"
         size="tiny"
         block
         class="update-btn docker-update-btn"
         @click="handleDockerUpdateTip"
       >
-        {{ t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
+        {{ t('sidebar.dockerUpdateTitle') }}
       </NButton>
       <NButton v-else-if="appStore.updateAvailable" type="primary" size="tiny" block class="update-btn" :loading="appStore.updating" @click="handleUpdate">
         {{ appStore.updating ? t('sidebar.updating') : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
@@ -930,7 +930,7 @@ function handleDockerUpdateTip() {
   .docker-command {
     display: block;
     padding: 10px 14px;
-    background: $bg-code;
+    background: $code-bg;
     border-radius: $radius-sm;
     font-family: $font-code;
     font-size: 13px;

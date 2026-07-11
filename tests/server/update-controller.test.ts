@@ -11,7 +11,11 @@ type UpdateControllerMocks = {
   appendFileSync: ReturnType<typeof vi.fn>
 }
 
-async function loadUpdateController(overrides: Partial<UpdateControllerMocks> = {}) {
+type LoadUpdateControllerOptions = Partial<UpdateControllerMocks> & {
+  isDocker?: boolean
+}
+
+async function loadUpdateController(overrides: LoadUpdateControllerOptions = {}) {
   const execFile = overrides.execFile ?? vi.fn((_command: string, _args: string[], _options: any, callback: any) => callback(null, '', ''))
   const execFileSync = overrides.execFileSync ?? vi.fn().mockReturnValue('updated')
   const unref = overrides.unref ?? vi.fn()
@@ -35,6 +39,9 @@ async function loadUpdateController(overrides: Partial<UpdateControllerMocks> = 
     readFileSync,
     rmSync: vi.fn(),
     writeFileSync: vi.fn(),
+  }))
+  vi.doMock('../../packages/server/src/services/runtime-environment', () => ({
+    isDockerContainer: () => overrides.isDocker === true,
   }))
 
   const mod = await import('../../packages/server/src/controllers/update')
@@ -85,6 +92,7 @@ describe('update controller', () => {
     vi.useRealTimers()
     vi.doUnmock('child_process')
     vi.doUnmock('fs')
+    vi.doUnmock('../../packages/server/src/services/runtime-environment')
     vi.unstubAllGlobals()
     if (originalPort === undefined) {
       delete process.env.PORT
@@ -212,6 +220,22 @@ describe('update controller', () => {
     expect(ctx.body).toEqual({ success: false, message: 'engine mismatch' })
     expect(mocks.spawn).not.toHaveBeenCalled()
     expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it('rejects in-container npm updates with Docker recreation guidance', async () => {
+    const { handleUpdate, mocks } = await loadUpdateController({ isDocker: true })
+    const ctx = createMockCtx()
+
+    await handleUpdate(ctx)
+
+    expect(ctx.status).toBe(400)
+    expect(ctx.body).toEqual({
+      success: false,
+      code: 'docker_environment',
+      message: expect.stringContaining('docker compose pull'),
+    })
+    expect(mocks.execFileSync).not.toHaveBeenCalled()
+    expect(mocks.spawn).not.toHaveBeenCalled()
   })
 
   it('loads preview tags through async git with a short timeout', async () => {
