@@ -7,6 +7,7 @@ const updateSessionMock = vi.hoisted(() => vi.fn())
 const updateSessionStatsMock = vi.hoisted(() => vi.fn())
 const resolveBridgeRunModelConfigMock = vi.hoisted(() => vi.fn())
 const agentRunMock = vi.hoisted(() => vi.fn())
+const recordSessionUsageMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
@@ -61,6 +62,10 @@ vi.mock('../../packages/server/src/services/hermes/pet-state-socket', () => ({
 
 vi.mock('../../packages/server/src/services/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}))
+
+vi.mock('../../packages/server/src/services/usage-recorder', () => ({
+  recordSessionUsage: recordSessionUsageMock,
 }))
 
 function makeHarness() {
@@ -171,6 +176,16 @@ describe('ekko-agent context usage events', () => {
       contextTokens: 30_000,
     }))
     expect(state.contextTokens).toBe(30_000)
+    expect(recordSessionUsageMock).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      runId: 'run-1',
+      source: 'ekko_agent',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      profile: 'default',
+      model: 'ekko-test-model',
+      provider: 'test-provider',
+      isEstimated: false,
+    })
     expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
       ended_at: null,
       end_reason: null,

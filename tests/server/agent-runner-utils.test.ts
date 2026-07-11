@@ -16,6 +16,7 @@ import { mapCodingAgentResponseEvent } from '../../packages/server/src/services/
 import { applyResponseStreamEvent } from '../../packages/server/src/services/hermes/run-chat/response-stream'
 import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas'
 import { addMessage, getSession, getSessionDetail, listSessions } from '../../packages/server/src/db/hermes/session-store'
+import { getRecordedUsageTotals, getUsage } from '../../packages/server/src/db/hermes/usage-store'
 
 describe('agent runner endpoint resolver', () => {
   it('adds v1 for provider hosts without an API root path', () => {
@@ -319,6 +320,8 @@ describe('coding agent run state', () => {
           id: 'resp-1',
           status: 'completed',
           output: [],
+          model: 'test-model',
+          usage: { input_tokens: 12, output_tokens: 5 },
         },
       },
     })
@@ -330,6 +333,79 @@ describe('coding agent run state', () => {
       activeRunMarker: undefined,
       events: [],
     }))
+    expect(getUsage('chat-session-1')).toEqual(expect.objectContaining({
+      input_tokens: 12,
+      output_tokens: 5,
+      model: 'test-model',
+      profile: 'default',
+    }))
+    manager.shutdown()
+  })
+
+  it('records scoped proxy usage once per model call and skips the scoped turn aggregate', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-proxy-usage-${suffix}`
+    const chatSessionId = `chat-session-proxy-usage-${suffix}`
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).emitToChat = () => {}
+    ;(manager as any).markChatRunCompleted = () => {}
+
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'glm',
+      model: 'glm-5-turbo',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+
+    const proxyCompleted = {
+      type: 'response.completed',
+      data: {
+        response: {
+          id: `provider-call-${suffix}`,
+          status: 'completed',
+          model: 'glm-5-turbo',
+          output: [],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 7,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        },
+      },
+    }
+    manager.handleProxyUsageEvent(agentSessionId, proxyCompleted)
+    manager.handleProxyUsageEvent(agentSessionId, proxyCompleted)
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.completed',
+      data: {
+        response: {
+          id: `turn-${suffix}`,
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 120, output_tokens: 7 },
+        },
+      },
+    })
+
+    expect(getRecordedUsageTotals(chatSessionId, 'coding_agent')).toEqual({
+      inputTokens: 120,
+      outputTokens: 7,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      apiCalls: 1,
+    })
     manager.shutdown()
   })
 

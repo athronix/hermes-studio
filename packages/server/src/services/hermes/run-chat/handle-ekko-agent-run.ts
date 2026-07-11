@@ -17,6 +17,7 @@ import { getGlobalEkkoAgent } from '../../ekko-agent/manager'
 import { resolveEkkoMcpServers } from '../../ekko-agent/mcp'
 import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
+import { recordSessionUsage } from '../../usage-recorder'
 import { getProfileDir } from '../hermes-profile'
 import { observeRunChatPetEvent } from '../pet-state-socket'
 import { contentBlocksToString, extractTextForPreview } from './content-blocks'
@@ -514,6 +515,7 @@ export async function handleEkkoAgentRun(
   let runId = ''
   let usageInput = 0
   let usageOutput = 0
+  let usageEstimated = false
   let sawStreamUsage = false
   let contextEstimate: any
   const handleRuntimeEvent = (event: AgentRuntimeEvent) => {
@@ -740,6 +742,7 @@ export async function handleEkkoAgentRun(
       ])
       usageInput = usage.inputTokens
       usageOutput = usage.outputTokens
+      usageEstimated = true
     }
     state.inputTokens = (state.inputTokens || 0) + usageInput
     state.outputTokens = (state.outputTokens || 0) + usageOutput
@@ -764,6 +767,16 @@ export async function handleEkkoAgentRun(
       contextTokens: contextEstimate?.contextTokens ?? state.contextTokens,
       context_tokens: contextEstimate?.contextTokens ?? state.contextTokens,
     })
+    recordSessionUsage({
+      sessionId,
+      runId: runId || undefined,
+      source: 'ekko_agent',
+      usage: { inputTokens: usageInput, outputTokens: usageOutput },
+      profile,
+      model: modelConfig.model,
+      provider: modelConfig.provider,
+      isEstimated: usageEstimated,
+    })
     emit('run.completed', {
       event: 'run.completed',
       run_id: runId || result.runId,
@@ -786,6 +799,17 @@ export async function handleEkkoAgentRun(
     }
     const error = err instanceof Error ? err.message : String(err)
     logger.warn(err, '[chat-run-socket] ekko-agent run failed for session %s', sessionId)
+    if (usageInput > 0 || usageOutput > 0) {
+      recordSessionUsage({
+        sessionId,
+        runId: runId || undefined,
+        source: 'ekko_agent',
+        usage: { inputTokens: usageInput, outputTokens: usageOutput },
+        profile,
+        model: modelConfig.model,
+        provider: modelConfig.provider,
+      })
+    }
     if (state.queue.length === 0) {
       try {
         updateSession(sessionId, {

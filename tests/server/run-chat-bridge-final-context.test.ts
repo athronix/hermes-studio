@@ -413,7 +413,10 @@ describe('bridge run final context usage', () => {
           done: true,
           status: 'completed',
           output: '',
-          result: { final_response: '你好呀！' },
+          result: {
+            final_response: '你好呀！',
+            usage: { input_tokens: 120, output_tokens: 30 },
+          },
         }
       }),
     } as any
@@ -435,6 +438,16 @@ describe('bridge run final context usage', () => {
     expect(state.messages.find((message: any) => message.role === 'assistant')?.content).toBe('你好呀！')
     expect(emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
       output: '你好呀！',
+    }))
+    expect(updateUsageMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      runId: 'run-1',
+      source: 'hermes',
+      inputTokens: 120,
+      outputTokens: 30,
+      model: 'default',
+      provider: 'moa',
+      profile: 'default',
+      isEstimated: false,
     }))
   })
 

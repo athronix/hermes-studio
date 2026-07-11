@@ -137,6 +137,10 @@ describe('Database Schema Synchronization', () => {
       expect(usageCols.has('id')).toBe(true)
       expect(usageCols.has('session_id')).toBe(true)
       expect(usageCols.has('input_tokens')).toBe(true)
+      const usageRunIndex = db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='index' AND name='idx_session_usage_run'`,
+      ).get()
+      expect(usageRunIndex).toBeTruthy()
 
       // Verify SESSIONS_TABLE was created
       expect(tableExists(db, SESSIONS_TABLE)).toBe(true)
@@ -218,6 +222,10 @@ describe('Database Schema Synchronization', () => {
       expect(cols.has('output_tokens')).toBe(true)
       expect(cols.has('cache_read_tokens')).toBe(true)
       expect(cols.has('cache_write_tokens')).toBe(true)
+      expect(cols.has('run_id')).toBe(true)
+      expect(cols.has('source')).toBe(true)
+      expect(cols.has('provider')).toBe(true)
+      expect(cols.has('is_estimated')).toBe(true)
 
       // Verify data integrity (should be preserved)
       const row = db.prepare(`SELECT * FROM "${USAGE_TABLE}" WHERE session_id = ?`).get('test-1')

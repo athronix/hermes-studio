@@ -148,18 +148,24 @@ describe('Usage Store (SQLite path)', () => {
     }))
   })
 
-  it('updateUsage runs INSERT ... ON CONFLICT query', async () => {
+  it('updateUsage inserts a usage record with normalized metadata defaults', async () => {
     const { updateUsage } = await import('../../packages/server/src/db/hermes/usage-store')
     updateUsage('s1', { inputTokens: 500, outputTokens: 200 })
     expect(runMock).toHaveBeenCalledWith(
       's1',
+      '', // runId
+      '', // source
+      'run', // usageScope
+      0, // apiCalls
       500,
       200,
       0, // cacheReadTokens
       0, // cacheWriteTokens
       0, // reasoningTokens
       '', // model
+      '', // provider
       'default', // profile
+      0, // isEstimated
       expect.any(Number), // created_at
     )
   })
@@ -175,13 +181,19 @@ describe('Usage Store (SQLite path)', () => {
     updateUsage('s1', { inputTokens: 500, outputTokens: 200 })
     expect(runMock).toHaveBeenCalledWith(
       's1',
+      '', // runId
+      '', // source
+      'run', // usageScope
+      0, // apiCalls
       500,
       200,
       0, // cacheReadTokens
       0, // cacheWriteTokens
       0, // reasoningTokens
       '', // model
+      '', // provider
       'default', // profile
+      0, // isEstimated
       expect.any(Number), // created_at
       expect.any(Number), // updated_at
     )

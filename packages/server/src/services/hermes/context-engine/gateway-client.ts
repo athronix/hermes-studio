@@ -4,8 +4,8 @@ import {
     buildFullSummaryPrompt,
     buildIncrementalUpdatePrompt,
 } from './prompt'
-import { updateUsage } from '../../../db/hermes/usage-store'
 import { logger } from '../../logger'
+import { recordSessionUsage } from '../../usage-recorder'
 import { AgentBridgeClient, type AgentBridgeRunResult } from '../agent-bridge'
 
 /**
@@ -72,12 +72,11 @@ export class GatewaySummarizer implements GatewayCaller {
 
             const usage = payload?.usage || payload?.response?.usage
             if (usage) {
-                updateUsage(roomId, {
-                    inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
-                    outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
-                    cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
-                    cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
-                    reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
+                recordSessionUsage({
+                    sessionId: roomId,
+                    runId: result.run_id,
+                    source: 'context_engine',
+                    usage,
                     model: payload?.model || payload?.response?.model || '',
                     profile,
                 })

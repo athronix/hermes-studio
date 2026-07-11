@@ -838,6 +838,7 @@ describe('coding agent launch preparation', () => {
       start(controller) {
         controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"p"}}]}\n\n'))
         controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ong"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}\n\n'))
         controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         controller.close()
       },
@@ -862,6 +863,7 @@ describe('coding agent launch preparation', () => {
     expect(sse).toContain('"text":"pong"')
     expect(sse).toContain('event: response.output_item.done')
     expect(sse).toContain('"output":[{"type":"message"')
+    expect(sse).not.toContain('"usage"')
   })
 
   it('streams Codex proxy Anthropic text as Responses message events', async () => {
@@ -884,6 +886,7 @@ describe('coding agent launch preparation', () => {
         controller.enqueue(encoder.encode('event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'))
         controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"he"}}\n\n'))
         controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"llo"}}\n\n'))
+        controller.enqueue(encoder.encode('event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2}}\n\n'))
         controller.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'))
         controller.close()
       },
@@ -910,6 +913,43 @@ describe('coding agent launch preparation', () => {
     expect(sse).toContain('event: response.output_text.done')
     expect(sse).toContain('"text":"hello"')
     expect(sse).toContain('event: response.completed')
+    expect(sse).not.toContain('"usage"')
+  })
+
+  it('preserves native Responses usage for Codex Responses providers', async () => {
+    const target = registerCodexProxyTarget({
+      profile: 'default',
+      provider: 'openai-api',
+      model: 'gpt-5.5',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-upstream',
+      apiMode: 'codex_responses',
+    })
+    const encoder = new TextEncoder()
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: response.created\ndata: {"type":"response.created","response":{"id":"resp_native","status":"in_progress"}}\n\n'))
+        controller.enqueue(encoder.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n'))
+        controller.enqueue(encoder.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_native","status":"completed","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13}}}\n\n'))
+        controller.close()
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const ctx = makeProxyContext(target.routeKey, target.token, {
+      stream: true,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'ping' }] }],
+    })
+    await codexProxyResponses(ctx)
+
+    const chunks: string[] = []
+    for await (const chunk of ctx.body) chunks.push(String(chunk))
+    const sse = chunks.join('')
+    expect(fetchMock).toHaveBeenCalledWith('https://api.openai.com/v1/responses', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer sk-upstream' }),
+    }))
+    expect(sse).toContain('"usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13}')
   })
 
   it('exposes Codex proxy models with route-token authentication', async () => {

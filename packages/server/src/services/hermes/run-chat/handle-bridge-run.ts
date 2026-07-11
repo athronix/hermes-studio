@@ -6,8 +6,8 @@
 import type { Server, Socket } from 'socket.io'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession, getSessionDetail, createSession, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
-import { updateUsage } from '../../../db/hermes/usage-store'
 import { logger, bridgeLogger } from '../../logger'
+import { recordSessionUsage } from '../../usage-recorder'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
 import { contentBlocksToString, convertContentBlocksForAgent, extractTextForPreview, isContentBlockArray } from './content-blocks'
 import { buildCompressedHistory, buildDbHistory, buildSnapshotAwareHistory, forceCompressBridgeHistory, pushState, replaceState } from './compression'
@@ -644,6 +644,7 @@ export async function handleBridgeRun(
     if (state.activeRunMarker !== runMarker) return
     if (!state.isWorking) return
     const queueLen = state.queue?.length ?? 0
+    const failedRunId = state.runId || runMarker
     state.isWorking = false
     state.isAborting = false
     state.profile = undefined
@@ -667,9 +668,17 @@ export async function handleBridgeRun(
       emit,
       bridge,
     })
-    updateUsage(session_id, {
-      inputTokens: errUsage.inputTokens,
-      outputTokens: errUsage.outputTokens,
+    recordSessionUsage({
+      sessionId: session_id,
+      runId: failedRunId,
+      source: 'hermes',
+      fallbackUsage: estimateBridgeRunUsage(
+        state,
+        runMarker,
+        currentInputTokens,
+      ),
+      model: resolvedModel,
+      provider: resolvedProvider,
       profile,
     })
     emit('run.failed', {
@@ -698,6 +707,23 @@ function latestAssistantText(state: SessionState): string {
     if (message.role === 'assistant') return message.content || ''
   }
   return ''
+}
+
+function estimateBridgeRunUsage(
+  state: SessionState,
+  runMarker: string,
+  currentInputTokens: number,
+) {
+  const outputUsage = estimateUsageTokensFromMessages(
+    state.messages.filter(message => message.runMarker === runMarker && message.role !== 'user'),
+  )
+  const storedInputUsage = estimateUsageTokensFromMessages(
+    state.messages.filter(message => message.runMarker === runMarker),
+  )
+  return {
+    inputTokens: currentInputTokens || storedInputUsage.inputTokens,
+    outputTokens: outputUsage.outputTokens,
+  }
 }
 
 export async function resumeBridgeRun(
@@ -1386,9 +1412,18 @@ async function applyBridgeChunkAsync(
     emit,
     bridge,
   })
-  updateUsage(sessionId, {
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
+  recordSessionUsage({
+    sessionId,
+    runId: chunk.run_id,
+    source: 'hermes',
+    usage: chunk.result,
+    fallbackUsage: estimateBridgeRunUsage(
+      state,
+      runMarker,
+      currentInputTokens,
+    ),
+    model: modelContext.model,
+    provider: modelContext.provider,
     profile: state.profile,
   })
   const hadQueuedRunBeforeGoalEvaluation = state.queue.length > 0

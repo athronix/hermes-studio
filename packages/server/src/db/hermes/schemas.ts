@@ -12,15 +12,24 @@ export const USAGE_TABLE = 'session_usage'
 export const USAGE_SCHEMA: Record<string, string> = {
   id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
   session_id: 'TEXT NOT NULL',
+  run_id: "TEXT NOT NULL DEFAULT ''",
+  source: "TEXT NOT NULL DEFAULT ''",
+  usage_scope: "TEXT NOT NULL DEFAULT 'run'",
+  api_calls: 'INTEGER NOT NULL DEFAULT 0',
   input_tokens: 'INTEGER NOT NULL DEFAULT 0',
   output_tokens: 'INTEGER NOT NULL DEFAULT 0',
   cache_read_tokens: 'INTEGER NOT NULL DEFAULT 0',
   cache_write_tokens: 'INTEGER NOT NULL DEFAULT 0',
   reasoning_tokens: 'INTEGER NOT NULL DEFAULT 0',
   model: "TEXT NOT NULL DEFAULT ''",
+  provider: "TEXT NOT NULL DEFAULT ''",
   profile: "TEXT NOT NULL DEFAULT 'default'",
+  is_estimated: 'INTEGER NOT NULL DEFAULT 0',
   created_at: 'INTEGER NOT NULL DEFAULT 0',
 }
+
+export const USAGE_RUN_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS idx_session_usage_run
+  ON ${USAGE_TABLE}(session_id, run_id, source) WHERE run_id <> ''`
 
 // ============================================================================
 // Session Store (session-store.ts)
@@ -794,6 +803,7 @@ export function initAllHermesTables(): void {
   try {
     // Usage store
     syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
+    db.exec(USAGE_RUN_INDEX)
 
     // Session store
     syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)

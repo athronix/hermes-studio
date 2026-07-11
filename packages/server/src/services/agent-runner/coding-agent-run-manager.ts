@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../db/hermes/session-store'
 import type { ApiMode } from './types'
 import { logger } from '../logger'
+import { normalizeTokenUsage, recordSessionUsage } from '../usage-recorder'
 import { applyResponseStreamEvent, flushResponseRunToDb } from '../hermes/run-chat/response-stream'
 import { calcAndUpdateUsage, estimateUsageTokensFromMessages, updateContextTokenUsage } from '../hermes/run-chat/usage'
 import { extractResponseText } from '../hermes/run-chat/response-utils'
@@ -580,6 +581,37 @@ export class CodingAgentRunManager {
     if (run) this.touch(run)
   }
 
+  handleProxyUsageEvent(agentSessionId: string | undefined, event: CanonicalResponsesEvent) {
+    if (!agentSessionId || event.type !== 'response.completed') return
+    const run = this.runs.get(agentSessionId)
+    if (!run || run.launch.mode !== 'scoped') return
+    const final = (event.data as any).response || event.data
+    if (!final?.usage) return
+    const usage = normalizeTokenUsage(final.usage)
+    if (usage.isEstimated) {
+      logger.warn({
+        runId: run.id,
+        sessionId: run.launch.sessionId,
+        responseId: final?.id,
+        provider: run.launch.provider,
+        model: final?.model || run.launch.model,
+      }, '[coding-agent-run] scoped proxy response omitted token usage')
+      return
+    }
+    recordSessionUsage({
+      sessionId: run.launch.sessionId,
+      runId: final?.id,
+      source: 'coding_agent',
+      usageScope: 'model_call',
+      apiCalls: 1,
+      usage: final.usage,
+      profile: run.launch.profile,
+      model: final?.model || run.launch.model,
+      provider: run.launch.provider,
+      isEstimated: false,
+    })
+  }
+
   handleResponseEvent(agentSessionId: string | undefined, event: CanonicalResponsesEvent) {
     if (!agentSessionId) return
     const run = this.runs.get(agentSessionId)
@@ -627,6 +659,22 @@ export class CodingAgentRunManager {
       updateSessionStats(run.launch.sessionId)
       run.terminalUsageRefresh = this.refreshCodingAgentUsage(run)
       const final = (storageSafeResponseEvent.data as any).response || storageSafeResponseEvent.data
+      if (run.launch.mode !== 'scoped' && final?.usage) {
+        const usage = normalizeTokenUsage(final.usage)
+        if (!usage.isEstimated) {
+          recordSessionUsage({
+            sessionId: run.launch.sessionId,
+            runId: final?.id || run.printResponseId || run.runMarker,
+            source: 'coding_agent',
+            usageScope: 'run',
+            usage: final.usage,
+            profile: run.launch.profile,
+            model: final?.model || run.launch.model,
+            provider: run.launch.provider,
+            isEstimated: false,
+          })
+        }
+      }
       const finalText = extractResponseText(final)
       const terminalError = storageSafeResponseEvent.type === 'response.failed'
         ? responseErrorMessage(final?.error || (responseEvent.data as any).error) || 'Coding agent run failed'

@@ -26,13 +26,19 @@ function hasUpdatedAtColumn(): boolean {
 export function updateUsage(
   sessionId: string,
   data: {
+    runId?: string
+    source?: string
+    usageScope?: 'model_call' | 'run'
+    apiCalls?: number
     inputTokens: number
     outputTokens: number
     cacheReadTokens?: number
     cacheWriteTokens?: number
     reasoningTokens?: number
     model?: string
+    provider?: string
     profile?: string
+    isEstimated?: boolean
   },
 ): void {
   const cacheReadTokens = data.cacheReadTokens ?? 0
@@ -40,30 +46,43 @@ export function updateUsage(
   const reasoningTokens = data.reasoningTokens ?? 0
   const now = Date.now()
   const model = data.model || ''
+  const provider = data.provider || ''
   const profile = data.profile || 'default'
   if (isSqliteAvailable()) {
     const db = getDb()!
     const columns = [
       'session_id',
+      'run_id',
+      'source',
+      'usage_scope',
+      'api_calls',
       'input_tokens',
       'output_tokens',
       'cache_read_tokens',
       'cache_write_tokens',
       'reasoning_tokens',
       'model',
+      'provider',
       'profile',
+      'is_estimated',
       'created_at',
     ]
     const values = columns.map(() => '?')
     const params = [
       sessionId,
+      data.runId || '',
+      data.source || '',
+      data.usageScope || 'run',
+      data.apiCalls ?? 0,
       data.inputTokens,
       data.outputTokens,
       cacheReadTokens,
       cacheWriteTokens,
       reasoningTokens,
       model,
+      provider,
       profile,
+      data.isEstimated ? 1 : 0,
       now,
     ]
     if (hasUpdatedAtColumn()) {
@@ -72,19 +91,64 @@ export function updateUsage(
       params.push(now)
     }
     db.prepare(
-      `INSERT INTO ${TABLE} (${columns.join(', ')}) VALUES (${values.join(', ')})`,
+      `INSERT OR IGNORE INTO ${TABLE} (${columns.join(', ')}) VALUES (${values.join(', ')})`,
     ).run(...params)
   } else {
     jsonSet(TABLE, sessionId, {
+      run_id: data.runId || '',
+      source: data.source || '',
+      usage_scope: data.usageScope || 'run',
+      api_calls: data.apiCalls ?? 0,
       input_tokens: data.inputTokens,
       output_tokens: data.outputTokens,
       cache_read_tokens: cacheReadTokens,
       cache_write_tokens: cacheWriteTokens,
       reasoning_tokens: reasoningTokens,
       model,
+      provider,
       profile,
+      is_estimated: data.isEstimated ? 1 : 0,
       created_at: now,
     })
+  }
+}
+
+export function getRecordedUsageTotals(sessionId: string, source: string): {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+  apiCalls: number
+} {
+  if (!isSqliteAvailable()) {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      apiCalls: 0,
+    }
+  }
+  const row = getDb()!.prepare(`
+    SELECT
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+      COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+      COALESCE(SUM(api_calls), 0) AS api_calls
+    FROM ${TABLE}
+    WHERE session_id = ? AND source = ?
+  `).get(sessionId, source) as any
+  return {
+    inputTokens: Number(row?.input_tokens || 0),
+    outputTokens: Number(row?.output_tokens || 0),
+    cacheReadTokens: Number(row?.cache_read_tokens || 0),
+    cacheWriteTokens: Number(row?.cache_write_tokens || 0),
+    reasoningTokens: Number(row?.reasoning_tokens || 0),
+    apiCalls: Number(row?.api_calls || 0),
   }
 }
 
