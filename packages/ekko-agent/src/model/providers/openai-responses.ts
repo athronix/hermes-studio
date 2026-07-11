@@ -54,6 +54,8 @@ interface OpenAIResponsesResponse {
     input_tokens?: number
     output_tokens?: number
     total_tokens?: number
+    input_tokens_details?: { cached_tokens?: number }
+    output_tokens_details?: { reasoning_tokens?: number }
   }
   status?: string
   error?: {
@@ -214,6 +216,8 @@ function normalizeUsage(usage: NonNullable<OpenAIResponsesResponse['usage']>): M
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens,
+    cacheReadTokens: usage.input_tokens_details?.cached_tokens,
+    reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
   }
 }
 

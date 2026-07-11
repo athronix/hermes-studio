@@ -515,8 +515,7 @@ export async function handleEkkoAgentRun(
   let runId = ''
   let usageInput = 0
   let usageOutput = 0
-  let usageEstimated = false
-  let sawStreamUsage = false
+  let usageCallIndex = 0
   let contextEstimate: any
   const handleRuntimeEvent = (event: AgentRuntimeEvent) => {
     if ('runId' in event) runId = event.runId
@@ -553,10 +552,6 @@ export async function handleEkkoAgentRun(
           })
         }
       }
-      if (event.message.usage && !sawStreamUsage) {
-        usageInput += event.message.usage.inputTokens || 0
-        usageOutput += event.message.usage.outputTokens || 0
-      }
     } else if (event.type === 'model.delta') {
       assistantText += event.text
       emit('message.delta', {
@@ -565,9 +560,21 @@ export async function handleEkkoAgentRun(
         delta: event.text,
       })
     } else if (event.type === 'model.usage') {
-      sawStreamUsage = true
       usageInput += event.usage.inputTokens || 0
       usageOutput += event.usage.outputTokens || 0
+      usageCallIndex += 1
+      recordSessionUsage({
+        sessionId,
+        runId: `${event.runId}:step:${event.step}:call:${usageCallIndex}`,
+        source: 'ekko_agent',
+        usageScope: 'model_call',
+        apiCalls: 1,
+        usage: event.usage,
+        profile,
+        model: modelConfig.model,
+        provider: modelConfig.provider,
+        isEstimated: false,
+      })
     } else if (event.type === 'model.context') {
       emit('context.updated', {
         event: 'context.updated',
@@ -742,7 +749,6 @@ export async function handleEkkoAgentRun(
       ])
       usageInput = usage.inputTokens
       usageOutput = usage.outputTokens
-      usageEstimated = true
     }
     state.inputTokens = (state.inputTokens || 0) + usageInput
     state.outputTokens = (state.outputTokens || 0) + usageOutput
@@ -767,16 +773,6 @@ export async function handleEkkoAgentRun(
       contextTokens: contextEstimate?.contextTokens ?? state.contextTokens,
       context_tokens: contextEstimate?.contextTokens ?? state.contextTokens,
     })
-    recordSessionUsage({
-      sessionId,
-      runId: runId || undefined,
-      source: 'ekko_agent',
-      usage: { inputTokens: usageInput, outputTokens: usageOutput },
-      profile,
-      model: modelConfig.model,
-      provider: modelConfig.provider,
-      isEstimated: usageEstimated,
-    })
     emit('run.completed', {
       event: 'run.completed',
       run_id: runId || result.runId,
@@ -799,17 +795,6 @@ export async function handleEkkoAgentRun(
     }
     const error = err instanceof Error ? err.message : String(err)
     logger.warn(err, '[chat-run-socket] ekko-agent run failed for session %s', sessionId)
-    if (usageInput > 0 || usageOutput > 0) {
-      recordSessionUsage({
-        sessionId,
-        runId: runId || undefined,
-        source: 'ekko_agent',
-        usage: { inputTokens: usageInput, outputTokens: usageOutput },
-        profile,
-        model: modelConfig.model,
-        provider: modelConfig.provider,
-      })
-    }
     if (state.queue.length === 0) {
       try {
         updateSession(sessionId, {

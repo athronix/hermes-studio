@@ -144,6 +144,17 @@ describe('ekko-agent context usage events', () => {
           toolCount: 5,
         },
       })
+      input.onEvent({
+        type: 'model.usage',
+        runId: 'run-1',
+        step: 2,
+        usage: {
+          inputTokens: 3,
+          outputTokens: 2,
+          cacheReadTokens: 1,
+          reasoningTokens: 1,
+        },
+      })
       return {
         runId: 'run-1',
         output: { role: 'assistant', content: 'done', usage: { inputTokens: 3, outputTokens: 2 } },
@@ -178,9 +189,16 @@ describe('ekko-agent context usage events', () => {
     expect(state.contextTokens).toBe(30_000)
     expect(recordSessionUsageMock).toHaveBeenCalledWith({
       sessionId: 'session-1',
-      runId: 'run-1',
+      runId: 'run-1:step:2:call:1',
       source: 'ekko_agent',
-      usage: { inputTokens: 3, outputTokens: 2 },
+      usageScope: 'model_call',
+      apiCalls: 1,
+      usage: {
+        inputTokens: 3,
+        outputTokens: 2,
+        cacheReadTokens: 1,
+        reasoningTokens: 1,
+      },
       profile: 'default',
       model: 'ekko-test-model',
       provider: 'test-provider',

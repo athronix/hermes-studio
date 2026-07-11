@@ -99,6 +99,8 @@ interface OpenAIChatResponse {
     prompt_tokens?: number
     completion_tokens?: number
     total_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    completion_tokens_details?: { reasoning_tokens?: number }
   } | null
   error?: {
     message?: string
@@ -340,6 +342,8 @@ function normalizeUsage(usage: NonNullable<OpenAIChatResponse['usage']>): ModelU
     inputTokens: usage.prompt_tokens,
     outputTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,
+    cacheReadTokens: usage.prompt_tokens_details?.cached_tokens,
+    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens,
   }
 }
 
