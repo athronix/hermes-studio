@@ -562,13 +562,8 @@ function compareSnapshots(before: SnapshotFile | undefined, after: SnapshotFile,
   }
 }
 
-function isEmptyContentOnlyChange(comparison: SnapshotComparison): boolean {
-  return comparison.changed &&
-    comparison.additions === 0 &&
-    comparison.deletions === 0 &&
-    !comparison.patch &&
-    (comparison.sizeBefore == null || comparison.sizeBefore === 0) &&
-    (comparison.sizeAfter == null || comparison.sizeAfter === 0)
+function isZeroLineDiff(comparison: SnapshotComparison): boolean {
+  return comparison.changed && comparison.additions === 0 && comparison.deletions === 0
 }
 
 export function startWorkspaceRunCheckpoint(args: {
@@ -672,7 +667,7 @@ export function completeWorkspaceRunCheckpointDraft(args: {
       Math.max(0, MAX_TOTAL_PATCH_BYTES - totalPatchBytes),
     )
     if (!comparison.changed) continue
-    if (isEmptyContentOnlyChange(comparison)) continue
+    if (isZeroLineDiff(comparison)) continue
     if (files.length >= MAX_CHANGED_FILES) {
       truncated = true
       break

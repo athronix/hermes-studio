@@ -508,10 +508,29 @@ onBeforeUnmount(() => {
                 <span v-if="isAgent && agentInfo?.description" class="agent-desc">{{ agentInfo.description }}</span>
             </div>
             <div v-if="workspaceDiffPayload" class="workspace-diff-card">
-                <div class="workspace-diff-head">
-                    <span class="workspace-diff-title">{{ t('chat.workspaceChanges') }}</span>
+                <button
+                    class="workspace-diff-head"
+                    type="button"
+                    :aria-expanded="toolExpanded"
+                    @click="toolExpanded = !toolExpanded"
+                >
+                    <span class="workspace-diff-title-wrap">
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            class="workspace-diff-chevron"
+                            :class="{ rotated: toolExpanded }"
+                        >
+                            <polyline points="9 18 15 12 9 6" />
+                        </svg>
+                        <span class="workspace-diff-title">{{ t('chat.workspaceChanges') }}</span>
+                    </span>
                     <span class="workspace-diff-status">{{ workspaceDiffPayload.status }}</span>
-                </div>
+                </button>
                 <div class="workspace-diff-meta" :title="workspaceDiffLabel">
                     <span>{{ workspaceDiffLabel }}</span>
                     <span>{{ t('chat.changedFiles', { files: workspaceDiffPayload.files_changed ?? workspaceDiffFiles.length }) }}</span>
@@ -519,7 +538,7 @@ onBeforeUnmount(() => {
                     <span class="diff-del">-{{ workspaceDiffPayload.deletions || 0 }}</span>
                     <span v-if="workspaceDiffPayload.truncated">{{ t('chat.truncated') }}</span>
                 </div>
-                <div class="workspace-diff-files" @click="handleToolDetailClick">
+                <div v-if="toolExpanded" class="workspace-diff-files" @click="handleToolDetailClick">
                     <div v-for="file in workspaceDiffFiles" :key="file.id || file.path" class="workspace-diff-file">
                         <div class="workspace-diff-file-head">
                             <span class="workspace-diff-path">{{ file.path }}</span>
@@ -817,9 +836,31 @@ onBeforeUnmount(() => {
 }
 
 .workspace-diff-head {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
     justify-content: space-between;
     padding: 8px 10px;
     border-bottom: 1px solid $border-color;
+    text-align: left;
+    width: 100%;
+}
+
+.workspace-diff-title-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.workspace-diff-chevron {
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+
+    &.rotated {
+        transform: rotate(90deg);
+    }
 }
 
 .workspace-diff-title {

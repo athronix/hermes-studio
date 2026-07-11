@@ -132,7 +132,7 @@ describe('group chat workspace diff client rendering', () => {
     })
   })
 
-  it('renders a workspace diff card instead of raw JSON details', () => {
+  it('renders a workspace diff card collapsed by default and expands it on demand', async () => {
     const wrapper = mount(GroupMessageItem, {
       props: {
         message: {
@@ -150,6 +150,12 @@ describe('group chat workspace diff client rendering', () => {
 
     expect(wrapper.find('.workspace-diff-card').exists()).toBe(true)
     expect(wrapper.text()).toContain('chat.workspaceChanges')
+    expect(wrapper.find('.workspace-diff-files').exists()).toBe(false)
+    expect(wrapper.find('.workspace-diff-head').attributes('aria-expanded')).toBe('false')
+
+    await wrapper.find('.workspace-diff-head').trigger('click')
+
+    expect(wrapper.find('.workspace-diff-head').attributes('aria-expanded')).toBe('true')
     expect(wrapper.text()).toContain('src/a.ts')
     expect(wrapper.find('.tool-line').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('"kind"')

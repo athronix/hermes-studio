@@ -202,6 +202,35 @@ describe('workspace diff tracker', () => {
     expect(nonEmptyChange?.files.map(file => file.path)).toEqual(['non-empty.txt'])
   })
 
+  it('does not save zero-line diffs that are not covered by filename filters', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+
+    const workspace = join(root, 'plain-zero-line-diff')
+    mkdirSync(workspace)
+    writeFileSync(join(workspace, '.global-cache'), Buffer.from([0, 1, 2, 3]))
+
+    startWorkspaceRunCheckpoint({
+      sessionId: 'session-zero-line',
+      runId: 'run-zero-line',
+      workspace,
+    })
+
+    writeFileSync(join(workspace, '.global-cache'), Buffer.from([0, 4, 5, 6]))
+    writeFileSync(join(workspace, 'notes.md'), 'visible change\n')
+    const change = completeWorkspaceRunCheckpoint({
+      sessionId: 'session-zero-line',
+      runId: 'run-zero-line',
+      workspace,
+    })
+
+    expect(change).not.toBeNull()
+    expect(change?.files.map(file => file.path)).toEqual(['notes.md'])
+    expect(state.db?.prepare('SELECT COUNT(*) AS count FROM workspace_run_change_files WHERE additions = 0 AND deletions = 0').get()).toEqual({ count: 0 })
+  })
+
   it('skips SQLite WAL and SHM sidecar files in non-git workspaces', async () => {
     const {
       completeWorkspaceRunCheckpoint,
