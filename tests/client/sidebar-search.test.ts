@@ -119,6 +119,8 @@ describe('AppSidebar navigation', () => {
     mockAppStore.updating = false
     mockAppStore.sidebarCollapsed = false
     mockAppStore.reloadClient.mockClear()
+    mockAppStore.doUpdate.mockReset()
+    mockAppStore.doUpdate.mockResolvedValue(false)
   })
 
   it('keeps page-sidebar-only actions out of the app sidebar', () => {
@@ -207,6 +209,28 @@ describe('AppSidebar navigation', () => {
 
     await button.trigger('click')
 
+    expect(mockAppStore.doUpdate).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('sidebar.dockerUpdateGuide')
+  })
+
+  it('keeps the original npm update action outside Docker', async () => {
+    mockAppStore.isDocker = false
+    mockAppStore.updateAvailable = true
+    mockAppStore.latestVersion = '0.6.29'
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    await wrapper.get('.update-btn').trigger('click')
+
+    expect(mockAppStore.doUpdate).toHaveBeenCalledOnce()
+    expect(wrapper.text()).not.toContain('sidebar.dockerUpdateGuide')
   })
 })
