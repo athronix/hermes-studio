@@ -492,6 +492,85 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('executes two disjoint bounded loops with independent canonical iteration paths', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Disjoint loops ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'a-header', type: 'agent', data: { title: 'A header', agent: 'hermes', input: 'a-header' } },
+        { id: 'a-latch', type: 'agent', data: { title: 'A latch', agent: 'hermes', input: 'a-latch' } },
+        { id: 'b-header', type: 'agent', data: { title: 'B header', agent: 'hermes', input: 'b-header' } },
+        { id: 'b-latch', type: 'agent', data: { title: 'B latch', agent: 'hermes', input: 'b-latch' } },
+      ], edges: [
+        { id: 'a-forward', source: 'a-header', target: 'a-latch' },
+        { id: 'a-retry', source: 'a-latch', target: 'a-header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+        { id: 'b-forward', source: 'b-header', target: 'b-latch' },
+        { id: 'b-retry', source: 'b-latch', target: 'b-header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(8)
+      expect(result.nodeSessions.map(session => [session.node_id, session.iteration_path])).toEqual([
+        ['a-header', [{ loopId: 'loop:a-retry', iteration: 0 }]],
+        ['a-latch', [{ loopId: 'loop:a-retry', iteration: 0 }]],
+        ['a-header', [{ loopId: 'loop:a-retry', iteration: 1 }]],
+        ['a-latch', [{ loopId: 'loop:a-retry', iteration: 1 }]],
+        ['b-header', [{ loopId: 'loop:b-retry', iteration: 0 }]],
+        ['b-latch', [{ loopId: 'loop:b-retry', iteration: 0 }]],
+        ['b-header', [{ loopId: 'loop:b-retry', iteration: 1 }]],
+        ['b-latch', [{ loopId: 'loop:b-retry', iteration: 1 }]],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('executes a strictly nested loop inner-first with canonical nested iteration paths', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Nested loops ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'outer-header', type: 'agent', data: { title: 'Outer header', agent: 'hermes', input: 'outer-header' } },
+        { id: 'inner-header', type: 'agent', data: { title: 'Inner header', agent: 'hermes', input: 'inner-header' } },
+        { id: 'inner-latch', type: 'agent', data: { title: 'Inner latch', agent: 'hermes', input: 'inner-latch' } },
+        { id: 'outer-latch', type: 'agent', data: { title: 'Outer latch', agent: 'hermes', input: 'outer-latch' } },
+      ], edges: [
+        { id: 'enter-inner', source: 'outer-header', target: 'inner-header' },
+        { id: 'inner-forward', source: 'inner-header', target: 'inner-latch' },
+        { id: 'leave-inner', source: 'inner-latch', target: 'outer-latch' },
+        { id: 'inner-retry', source: 'inner-latch', target: 'inner-header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+        { id: 'outer-retry', source: 'outer-latch', target: 'outer-header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(12)
+      expect(result.nodeSessions.map(session => [session.node_id, session.iteration_path])).toEqual([
+        ['outer-header', [{ loopId: 'loop:outer-retry', iteration: 0 }]],
+        ['inner-header', [{ loopId: 'loop:outer-retry', iteration: 0 }, { loopId: 'loop:inner-retry', iteration: 0 }]],
+        ['inner-latch', [{ loopId: 'loop:outer-retry', iteration: 0 }, { loopId: 'loop:inner-retry', iteration: 0 }]],
+        ['inner-header', [{ loopId: 'loop:outer-retry', iteration: 0 }, { loopId: 'loop:inner-retry', iteration: 1 }]],
+        ['inner-latch', [{ loopId: 'loop:outer-retry', iteration: 0 }, { loopId: 'loop:inner-retry', iteration: 1 }]],
+        ['outer-latch', [{ loopId: 'loop:outer-retry', iteration: 0 }]],
+        ['outer-header', [{ loopId: 'loop:outer-retry', iteration: 1 }]],
+        ['inner-header', [{ loopId: 'loop:outer-retry', iteration: 1 }, { loopId: 'loop:inner-retry', iteration: 0 }]],
+        ['inner-latch', [{ loopId: 'loop:outer-retry', iteration: 1 }, { loopId: 'loop:inner-retry', iteration: 0 }]],
+        ['inner-header', [{ loopId: 'loop:outer-retry', iteration: 1 }, { loopId: 'loop:inner-retry', iteration: 1 }]],
+        ['inner-latch', [{ loopId: 'loop:outer-retry', iteration: 1 }, { loopId: 'loop:inner-retry', iteration: 1 }]],
+        ['outer-latch', [{ loopId: 'loop:outer-retry', iteration: 1 }]],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('skips an unmatched conditional node inside a loop iteration without creating a session', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
