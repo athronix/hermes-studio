@@ -290,6 +290,7 @@ export type WorkflowEdgeDecision =
   | { status: 'taken'; routeMatched: true; condition?: WorkflowConditionEvaluation }
   | { status: 'not_taken'; routeMatched: false; reason: 'route_not_matched' }
   | { status: 'not_taken'; routeMatched: true; reason: 'condition_not_matched'; condition: WorkflowConditionEvaluation }
+  | { status: 'not_taken'; routeMatched: true; reason: 'iteration_limit_reached' }
 
 export function evaluateWorkflowEdgeRoute(
   orchestration: WorkflowEdgeOrchestration,
@@ -907,19 +908,20 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
               nodeStatuses[node.id] = 'completed'
             }
-            if (iteration + 1 < loop.maxIterations) {
-              const decision = evaluateWorkflowEdgeRoute(feedbackEdge.orchestration, 'success', { output: outputs.get(loop.latchNodeId) || '' })
-              createWorkflowRunEdgeEvaluation({
-                run_id: run.id, workflow_id: workflow.id,
-                edge_id: feedbackEdge.id || `$4{feedbackEdge.source}->$4{feedbackEdge.target}`,
-                source_node_id: feedbackEdge.source, target_node_id: feedbackEdge.target,
-                source_outcome: 'success', status: decision.status, route: feedbackEdge.orchestration.route,
-                reason: 'reason' in decision ? decision.reason : null, sequence: iteration,
-                orchestration: feedbackEdge.orchestration,
-                condition_evaluation: 'condition' in decision ? decision.condition : null,
-              })
-              if (decision.status !== 'taken') break
-            }
+            const hasNextIteration = iteration + 1 < loop.maxIterations
+            const decision: WorkflowEdgeDecision = hasNextIteration
+              ? evaluateWorkflowEdgeRoute(feedbackEdge.orchestration, 'success', { output: outputs.get(loop.latchNodeId) || '' })
+              : { status: 'not_taken', routeMatched: true, reason: 'iteration_limit_reached' }
+            createWorkflowRunEdgeEvaluation({
+              run_id: run.id, workflow_id: workflow.id,
+              edge_id: feedbackEdge.id || `$4{feedbackEdge.source}->$4{feedbackEdge.target}`,
+              source_node_id: feedbackEdge.source, target_node_id: feedbackEdge.target,
+              source_outcome: 'success', status: decision.status, route: feedbackEdge.orchestration.route,
+              reason: 'reason' in decision ? decision.reason : null, sequence: iteration,
+              orchestration: feedbackEdge.orchestration,
+              condition_evaluation: 'condition' in decision ? decision.condition : null,
+            })
+            if (decision.status !== 'taken') break
           }
           const finishedAt = Date.now()
           const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run

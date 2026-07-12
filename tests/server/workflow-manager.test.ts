@@ -362,7 +362,44 @@ describe('workflow manager', () => {
         ['header', 'header@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
         ['latch', 'latch@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
       ])
+      const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'retry').map(item => [item.status, item.reason])).toEqual([
+        ['taken', null], ['taken', null], ['not_taken', 'iteration_limit_reached'],
+      ])
     } finally { await manager.delete(workflow.id) }
+  })
+
+  it('fails a loop run when its iteration-limit evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_loop_limit_evidence BEFORE INSERT ON workflow_run_edge_evaluations
+      WHEN NEW.reason = 'iteration_limit_reached' BEGIN SELECT RAISE(ABORT, 'loop limit evidence write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Loop evidence failure ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('loop limit evidence write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_loop_limit_evidence')
+      await manager.delete(workflow.id)
+    }
   })
 
   it('exits a top-level loop when its feedback condition is not taken and records each decision', async () => {
