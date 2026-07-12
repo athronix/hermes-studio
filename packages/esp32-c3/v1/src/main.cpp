@@ -14,9 +14,52 @@
 #include "esp_rom_sys.h"
 
 namespace {
+#ifndef HERMES_MCU_FIRMWARE_VERSION
+#define HERMES_MCU_FIRMWARE_VERSION "v1"
+#endif
+#ifndef HERMES_MCU_FIRMWARE_MANIFEST_PATH
+#define HERMES_MCU_FIRMWARE_MANIFEST_PATH "/api/hermes/mcu/firmware/v1/manifest"
+#endif
+#ifndef HERMES_PIN_BATTERY_ADC
+#define HERMES_PIN_BATTERY_ADC 3
+#endif
+#ifndef HERMES_PIN_I2C_SDA
+#define HERMES_PIN_I2C_SDA 0
+#endif
+#ifndef HERMES_PIN_I2C_SCL
+#define HERMES_PIN_I2C_SCL 1
+#endif
+#ifndef HERMES_PIN_I2S_DOUT
+#define HERMES_PIN_I2S_DOUT 4
+#endif
+#ifndef HERMES_PIN_I2S_WS
+#define HERMES_PIN_I2S_WS 5
+#endif
+#ifndef HERMES_PIN_I2S_DIN
+#define HERMES_PIN_I2S_DIN 6
+#endif
+#ifndef HERMES_PIN_I2S_BCK
+#define HERMES_PIN_I2S_BCK 7
+#endif
+#ifndef HERMES_PIN_I2S_MCK
+#define HERMES_PIN_I2S_MCK 8
+#endif
+#ifndef HERMES_PIN_BOOT
+#define HERMES_PIN_BOOT 9
+#endif
+#ifndef HERMES_PIN_PA_EN
+#define HERMES_PIN_PA_EN 10
+#endif
+#ifndef HERMES_ES8311_DAC_VOLUME
+#define HERMES_ES8311_DAC_VOLUME 0xC0
+#endif
+#ifndef HERMES_DEFAULT_OUTPUT_VOLUME_PERCENT
+#define HERMES_DEFAULT_OUTPUT_VOLUME_PERCENT 70
+#endif
+
 constexpr char kApName[] = "HStudio-WIFI";
-constexpr char kMcuFirmwareVersion[] = "v1";
-constexpr char kMcuFirmwareManifestPath[] = "/api/hermes/mcu/firmware/v1/manifest";
+constexpr char kMcuFirmwareVersion[] = HERMES_MCU_FIRMWARE_VERSION;
+constexpr char kMcuFirmwareManifestPath[] = HERMES_MCU_FIRMWARE_MANIFEST_PATH;
 constexpr uint32_t kConnectTimeoutMs = 18000;
 constexpr uint32_t kMcuOtaFirstCheckMs = 30000;
 constexpr uint32_t kMcuOtaIntervalMs = 6UL * 60UL * 60UL * 1000UL;
@@ -31,16 +74,16 @@ constexpr char kNoDevicePromptPcmUrl[] =
     "/api/hermes/mcu/audio/no-device-24k.s16le.pcm";
 constexpr char kTokenInvalidPromptPcmUrl[] =
     "/api/hermes/mcu/audio/token-invalid-24k.s16le.pcm";
-constexpr int kPinI2cSda = 0;
-constexpr int kPinI2cScl = 1;
-constexpr int kPinI2sDout = 4;
-constexpr int kPinI2sWs = 5;
-constexpr int kPinI2sDin = 6;
-constexpr int kPinI2sBck = 7;
-constexpr int kPinBoot = 9;
-constexpr int kPinI2sMck = 8;
-constexpr int kPinPaEn = 10;
-constexpr int kPinBatteryAdc = 3;
+constexpr int kPinI2cSda = HERMES_PIN_I2C_SDA;
+constexpr int kPinI2cScl = HERMES_PIN_I2C_SCL;
+constexpr int kPinI2sDout = HERMES_PIN_I2S_DOUT;
+constexpr int kPinI2sWs = HERMES_PIN_I2S_WS;
+constexpr int kPinI2sDin = HERMES_PIN_I2S_DIN;
+constexpr int kPinI2sBck = HERMES_PIN_I2S_BCK;
+constexpr int kPinBoot = HERMES_PIN_BOOT;
+constexpr int kPinI2sMck = HERMES_PIN_I2S_MCK;
+constexpr int kPinPaEn = HERMES_PIN_PA_EN;
+constexpr int kPinBatteryAdc = HERMES_PIN_BATTERY_ADC;
 constexpr float kBatteryDividerRatio = 2.0f;
 constexpr uint8_t kEs8311Addr = 0x18;
 constexpr uint8_t kDefaultOledAddr = 0x3C;
@@ -103,9 +146,9 @@ constexpr size_t kVoiceStreamChunkFrames = 4096;
 constexpr size_t kVoiceStreamAdpcmMaxBytes = kMcuAdpcmHeaderBytes + ((kVoiceStreamChunkFrames + 1) / 2);
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
-constexpr uint8_t kDefaultOutputVolumePercent = 70;
+constexpr uint8_t kDefaultOutputVolumePercent = HERMES_DEFAULT_OUTPUT_VOLUME_PERCENT;
 constexpr int16_t kVoiceOutputLimit = 24000;
-constexpr uint8_t kEs8311DacVolume = 0xC0;
+constexpr uint8_t kEs8311DacVolume = HERMES_ES8311_DAC_VOLUME;
 constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 
 Preferences prefs;
