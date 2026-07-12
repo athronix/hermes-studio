@@ -904,11 +904,22 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       const loop = topLevelLoops[0]
       const loopBody = new Set(loop.bodyNodeIds)
       const feedbackEdge = activeEdges.find(edge => edge.id === loop.feedbackEdgeId)!
-      const loopOnly = activeNodes.every(node => loopBody.has(node.id)) && activeEdges.every(edge =>
+      const outsideNodes = activeNodes.filter(node => !loopBody.has(node.id))
+      const outsideNode = outsideNodes.length === 1 ? outsideNodes[0] : null
+      const loopExitEdges = outsideNode
+        ? activeEdges.filter(edge => loopBody.has(edge.source) && edge.target === outsideNode.id)
+        : []
+      const loopOnly = outsideNodes.length === 0 && activeEdges.every(edge =>
         loopBody.has(edge.source) && loopBody.has(edge.target),
       )
-      if (loopOnly) {
-        const forwardEdges = activeEdges.filter(edge => !edge.orchestration.feedback)
+      const loopWithSingleExit = outsideNode !== null
+        && loopExitEdges.length > 0
+        && activeEdges.every(edge => (
+          (loopBody.has(edge.source) && loopBody.has(edge.target))
+          || (loopBody.has(edge.source) && edge.target === outsideNode.id)
+        ))
+      if (loopOnly || loopWithSingleExit) {
+        const forwardEdges = activeEdges.filter(edge => !edge.orchestration.feedback && loopBody.has(edge.source) && loopBody.has(edge.target))
         const ordered: WorkflowNodeSnapshot[] = []
         const indegree = new Map(loop.bodyNodeIds.map(id => [id, 0]))
         for (const edge of forwardEdges) indegree.set(edge.target, (indegree.get(edge.target) || 0) + 1)
@@ -983,7 +994,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               outputs.set(node.id, output)
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
               nodeStatuses[node.id] = 'completed'
-              for (const edge of forwardEdges.filter(item => item.source === node.id)) {
+              for (const edge of [...forwardEdges, ...loopExitEdges].filter(item => item.source === node.id)) {
                 const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output })
                 createWorkflowRunEdgeEvaluation({
                   run_id: run.id, workflow_id: workflow.id,
@@ -1047,6 +1058,58 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
             })
             if (decision.status !== 'taken') break
+          }
+          if (outsideNode) {
+            const takenExit = loopExitEdges.some(edge => {
+              const sourceOutput = outputs.get(edge.source) || ''
+              return evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output: sourceOutput }).status === 'taken'
+            })
+            if (!takenExit) {
+              nodeStatuses[outsideNode.id] = 'skipped'
+            } else {
+              executionCount += 1
+              if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
+                throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
+              }
+              const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+              if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
+              const nodeSessionId = randomUUID()
+              const target = resolveWorkflowNodeRunTarget(outsideNode.data.agent)
+              const nodeSession = createWorkflowRunNodeSession({
+                run_id: run.id, workflow_id: workflow.id, node_id: outsideNode.id,
+                session_id: nodeSessionId, profile, agent: target.agent,
+                agent_mode: outsideNode.data.agent === 'hermes' ? '' : 'scoped', status: 'running',
+                sequence: sequence++, started_at: Date.now(),
+              })
+              nodeStatuses[outsideNode.id] = 'running'
+              this.setRuntimeStatus(workflow.id, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
+              const assembledInput = await this.buildNodeUserMessage({
+                node: outsideNode, incomingEdges: loopExitEdges, nodeById, outputs, profile,
+              })
+              const runResult = await chatRun.runAndWait({
+                session_id: nodeSessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
+                profile, workspace: workflow.workspace, model: outsideNode.data.model || undefined,
+                provider: outsideNode.data.provider || undefined, mode: outsideNode.data.agent === 'hermes' ? undefined : 'scoped',
+                coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: outsideNode.data.apiMode || undefined,
+              }, { profile, user: input.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
+              if (!runResult.ok) {
+                const error = runResult.error || `node ${outsideNode.id} failed`
+                updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
+                nodeStatuses[outsideNode.id] = 'failed'
+                throw new Error(error)
+              }
+              const output = lastAssistantOutput(nodeSessionId, runResult.output)
+              const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+              if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
+              const approved = await this.waitForNodeApproval({
+                workflowId: workflow.id, runId: run.id, node: outsideNode, nodeStatuses,
+                timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
+              })
+              if (!approved) throw new Error('Workflow node approval rejected')
+              outputs.set(outsideNode.id, output)
+              updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
+              nodeStatuses[outsideNode.id] = 'completed'
+            }
           }
           const finishedAt = Date.now()
           const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run

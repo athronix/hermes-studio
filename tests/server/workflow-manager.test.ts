@@ -1027,6 +1027,96 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('executes one downstream node after a top-level loop exits', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.sessionOutputs.clear()
+    const outputs = ['header-0', 'continue', 'header-1', 'stop', 'exit-done']
+    const requests: Array<{ input: string }> = []
+    chatRunMock.runAndWait.mockImplementation(async (request: { session_id: string; input: string }) => {
+      requests.push({ input: request.input })
+      const output = outputs.shift() || 'unexpected'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Loop downstream ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'exit', type: 'agent', data: { title: 'Exit', agent: 'hermes', input: 'exit' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: {
+          route: 'success', feedback: { maxIterations: 3 },
+          condition: { path: 'output', operator: 'equals', value: 'continue' },
+        } } },
+        { id: 'after-loop', source: 'latch', target: 'exit', data: { orchestration: {
+          route: 'success', condition: { path: 'output', operator: 'equals', value: 'stop' },
+        } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'completed', error: null })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(5)
+      expect(result.nodeSessions.map(session => [session.node_id, session.execution_id])).toEqual([
+        ['header', 'header@loop:retry:0'], ['latch', 'latch@loop:retry:0'],
+        ['header', 'header@loop:retry:1'], ['latch', 'latch@loop:retry:1'], ['exit', 'exit'],
+      ])
+      expect(requests[4].input).toContain('stop')
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'after-loop').map(item => ({
+        status: item.status, sourceExecutionId: item.source_execution_id, iterationPath: item.iteration_path,
+      }))).toEqual([
+        { status: 'not_taken', sourceExecutionId: 'latch@loop:retry:0', iterationPath: [{ loopId: 'loop:retry', iteration: 0 }] },
+        { status: 'taken', sourceExecutionId: 'latch@loop:retry:1', iterationPath: [{ loopId: 'loop:retry', iteration: 1 }] },
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('finalizes a failed downstream node after a top-level loop exits', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.sessionOutputs.clear()
+    const outputs = ['header', 'stop']
+    chatRunMock.runAndWait.mockImplementation(async (request: { session_id: string }) => {
+      if (outputs.length > 0) {
+        const output = outputs.shift()!
+        chatRunMock.sessionOutputs.set(request.session_id, output)
+        return { ok: true, output }
+      }
+      return { ok: false, error: 'exit exploded' }
+    })
+    const workflow = manager.create({
+      name: `Failed loop downstream ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'exit', type: 'agent', data: { title: 'Exit', agent: 'hermes', input: 'exit' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: {
+          route: 'success', feedback: { maxIterations: 2 },
+          condition: { path: 'output', operator: 'equals', value: 'continue' },
+        } } },
+        { id: 'after-loop', source: 'latch', target: 'exit', data: { orchestration: {
+          route: 'success', condition: { path: 'output', operator: 'equals', value: 'stop' },
+        } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'exit exploded' })
+      expect(result.nodeSessions.map(session => [session.node_id, session.status, session.error])).toEqual([
+        ['header', 'completed', null], ['latch', 'completed', null], ['exit', 'failed', 'exit exploded'],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('enforces one absolute deadline across sequential DAG executions', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
