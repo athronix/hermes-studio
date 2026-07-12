@@ -732,6 +732,12 @@ export default {
       rerunFailed: 'Workflow rerun failed',
       deleteNode: 'Delete Node',
       deleteEdge: 'Delete Connection',
+      importWorkflow: 'Import Workflow',
+      exportWorkflow: 'Export Workflow',
+      imported: 'Workflow imported',
+      exported: 'Workflow exported',
+      importFailed: 'Workflow import failed',
+      exportFailed: 'Workflow export failed',
     },
     batch: {
       toggle: 'Batch selection',

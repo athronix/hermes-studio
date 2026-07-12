@@ -637,6 +637,12 @@ export default {
       rerunFailed: 'Не удалось повторно запустить workflow',
       deleteNode: 'Удалить узел',
       deleteEdge: 'Удалить соединение',
+      importWorkflow: 'Импорт Workflow',
+      exportWorkflow: 'Экспорт Workflow',
+      imported: 'Workflow импортирован',
+      exported: 'Workflow экспортирован',
+      importFailed: 'Ошибка импорта Workflow',
+      exportFailed: 'Ошибка экспорта Workflow',
     },
     batch: {
       toggle: 'Массовый выбор',

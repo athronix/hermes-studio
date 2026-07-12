@@ -732,6 +732,12 @@ export default {
       rerunFailed: '工作流重跑失败',
       deleteNode: '删除节点',
       deleteEdge: '删除连接线',
+      importWorkflow: '导入 Workflow',
+      exportWorkflow: '导出 Workflow',
+      imported: 'Workflow 导入成功',
+      exported: 'Workflow 导出成功',
+      importFailed: 'Workflow 导入失败',
+      exportFailed: 'Workflow 导出失败',
     },
     batch: {
       toggle: '批量选择',

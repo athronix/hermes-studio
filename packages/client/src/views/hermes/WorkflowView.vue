@@ -27,9 +27,12 @@ import {
   approveWorkflowNode,
   batchDeleteWorkflows,
   createWorkflow as createWorkflowApi,
+  confirmWorkflowImport,
   deleteWorkflowRun,
   deleteWorkflow as deleteWorkflowApi,
+  exportWorkflow,
   listWorkflowRuns,
+  previewWorkflowImport,
   listWorkflows as listWorkflowsApi,
   rerunWorkflowRunFromNode,
   runWorkflowNow,
@@ -73,6 +76,7 @@ const { screenToFlowCoordinate, getViewport, setViewport } = useVueFlow('hermes-
 const defaultViewport: WorkflowViewport = { x: 80, y: 80, zoom: 0.75 }
 const workflowBodyRef = ref<HTMLElement | null>(null)
 const workflowCanvasRef = ref<HTMLElement | null>(null)
+const workflowImportInputRef = ref<HTMLInputElement | null>(null)
 const WORKFLOW_CHAT_PANEL_MIN_WIDTH = 360
 const WORKFLOW_CHAT_PANEL_DEFAULT_WIDTH = 560
 const WORKFLOW_CANVAS_MIN_WIDTH = 360
@@ -1224,6 +1228,41 @@ async function selectWorkflow(workflowId: string) {
   await applyWorkflow(workflow, true)
 }
 
+async function exportActiveWorkflow() {
+  if (!activeWorkflowId.value) return
+  try {
+    const envelope = await exportWorkflow(activeWorkflowId.value)
+    const blob = new Blob([`${JSON.stringify(envelope, null, 2)}\n`], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${workflowName.value.trim().replace(/[^\w.-]+/g, '-') || 'workflow'}.workflow.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    message.success(t('workflow.actions.exported'))
+  } catch (err: any) { message.error(err?.message || t('workflow.actions.exportFailed')) }
+}
+
+function openWorkflowImport() {
+  workflowImportInputRef.value?.click()
+}
+
+async function handleWorkflowImport(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    const document = await file.text()
+    const preview = await previewWorkflowImport(document, workflowProfileFilter.value || defaultWorkflowProfile.value)
+    const record = await confirmWorkflowImport(preview.token, workflowProfileFilter.value || defaultWorkflowProfile.value)
+    const imported = workflowDocumentFromRecord(record)
+    workflows.value = [imported, ...workflows.value.filter(item => item.id !== imported.id)]
+    await applyWorkflow(imported, true)
+    message.success(t('workflow.actions.imported'))
+  } catch (err: any) { message.error(err?.message || t('workflow.actions.importFailed')) }
+}
+
 function openCreateWorkflowDrawer() {
   createWorkflowName.value = `${t('workflow.title')} ${workflows.value.length + 1}`
   createWorkflowProfile.value = defaultWorkflowProfile.value
@@ -1889,6 +1928,9 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             </template>
             {{ showWorkflowRunsPanel ? t('workflow.runs.hide') : t('workflow.runs.show') }}
           </NTooltip>
+          <input ref="workflowImportInputRef" class="workflow-import-input" type="file" accept="application/json,.json" @change="handleWorkflowImport" />
+          <NButton v-if="!selectedWorkflowRunId" quaternary size="small" @click="openWorkflowImport">{{ t('workflow.actions.importWorkflow') }}</NButton>
+          <NButton v-if="!selectedWorkflowRunId" quaternary size="small" :disabled="!activeWorkflowId" @click="exportActiveWorkflow">{{ t('workflow.actions.exportWorkflow') }}</NButton>
           <NTooltip v-if="!selectedWorkflowRunId" trigger="hover">
             <template #trigger>
               <NButton quaternary size="small" circle :aria-label="t('workflow.actions.addNode')" @click="addAgentNode">
@@ -2509,6 +2551,8 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   min-height: 0;
   display: flex;
 }
+
+.workflow-import-input { display: none; }
 
 .workflow-canvas {
   min-width: 0;
