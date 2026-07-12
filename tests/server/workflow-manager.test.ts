@@ -113,6 +113,36 @@ describe('workflow manager', () => {
     expect(() => normalizeWorkflowEdge({ id: 'missing-value', source: 'first', target: 'second', data: { orchestration: { route: 'success', condition: { path: 'output.status', operator: 'equals' } } } })).toThrow('workflow edge missing-value condition operator equals requires value')
   })
 
+  it('evaluates equals conditions through own properties only', async () => {
+    const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
+
+    expect(evaluateWorkflowEdgeCondition(
+      { path: 'output.status', operator: 'equals', value: 'RETRY' },
+      { output: { status: 'RETRY' } },
+    )).toEqual({ status: 'matched', actual: 'RETRY' })
+    expect(evaluateWorkflowEdgeCondition(
+      { path: 'output.status', operator: 'equals', value: 'RETRY' },
+      { output: {} },
+    )).toEqual({ status: 'not_matched', reason: 'path_not_found' })
+
+    const inherited = Object.create({ status: 'RETRY' })
+    expect(evaluateWorkflowEdgeCondition(
+      { path: 'output.status', operator: 'equals', value: 'RETRY' },
+      { output: inherited },
+    )).toEqual({ status: 'not_matched', reason: 'path_not_found' })
+  })
+
+  it('rejects dangerous condition paths before evaluation', async () => {
+    const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
+
+    for (const path of ['output.__proto__.polluted', 'output.prototype.value', 'output.constructor.name']) {
+      expect(() => evaluateWorkflowEdgeCondition(
+        { path, operator: 'equals', value: 'anything' },
+        { output: {} },
+      )).toThrow(`workflow condition path contains forbidden segment: ${path}`)
+    }
+  })
+
   it('pauses downstream nodes until an approval-required node is approved', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const manager = new WorkflowManager()

@@ -199,6 +199,43 @@ function isUnfinishedWorkflowNodeStatus(status: WorkflowRuntimeState | undefined
   return status === 'queued' || status === 'running' || status === 'pending_approval'
 }
 
+export type WorkflowConditionEvaluation =
+  | { status: 'matched'; actual: unknown }
+  | { status: 'not_matched'; actual?: unknown; reason?: 'path_not_found' | 'not_equal' }
+
+const FORBIDDEN_WORKFLOW_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor'])
+
+export function evaluateWorkflowEdgeCondition(
+  condition: WorkflowEdgeCondition,
+  context: unknown,
+): WorkflowConditionEvaluation {
+  const segments = condition.path.split('.')
+  for (const segment of segments) {
+    if (FORBIDDEN_WORKFLOW_PATH_SEGMENTS.has(segment)) {
+      throw new Error(`workflow condition path contains forbidden segment: ${condition.path}`)
+    }
+  }
+
+  let current: unknown = context
+  for (const segment of segments) {
+    if (!segment || (typeof current !== 'object' && typeof current !== 'function') || current === null) {
+      return { status: 'not_matched', reason: 'path_not_found' }
+    }
+    const record = current as Record<string, unknown>
+    if (!Object.prototype.hasOwnProperty.call(record, segment)) {
+      return { status: 'not_matched', reason: 'path_not_found' }
+    }
+    current = record[segment]
+  }
+
+  if (condition.operator === 'equals') {
+    return Object.is(current, condition.value)
+      ? { status: 'matched', actual: current }
+      : { status: 'not_matched', actual: current, reason: 'not_equal' }
+  }
+  throw new Error(`unsupported workflow condition operator: ${condition.operator}`)
+}
+
 export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const source = typeof record.source === 'string' && record.source.trim() ? record.source.trim() : ''
