@@ -32,6 +32,8 @@ export interface WorkflowRunNodeSessionRecord {
   run_id: string
   workflow_id: string
   node_id: string
+  execution_id: string
+  iteration_path: unknown[]
   session_id: string
   profile: string
   agent: string
@@ -84,6 +86,8 @@ function rowToNodeSessionRecord(row: Record<string, any>): WorkflowRunNodeSessio
     run_id: String(row.run_id || ''),
     workflow_id: String(row.workflow_id || ''),
     node_id: String(row.node_id || ''),
+    execution_id: String(row.execution_id || row.node_id || ''),
+    iteration_path: parseArrayJson(row.iteration_path_json ?? row.iteration_path),
     session_id: String(row.session_id || ''),
     profile: profileName(row.profile),
     agent: String(row.agent || ''),
@@ -303,6 +307,8 @@ export function createWorkflowRunNodeSession(input: {
   run_id: string
   workflow_id: string
   node_id: string
+  execution_id?: string
+  iteration_path?: unknown[]
   session_id: string
   profile?: string | null
   agent?: string | null
@@ -319,6 +325,8 @@ export function createWorkflowRunNodeSession(input: {
     run_id: input.run_id,
     workflow_id: input.workflow_id,
     node_id: input.node_id,
+    execution_id: input.execution_id?.trim() || input.node_id,
+    iteration_path: input.iteration_path || [],
     session_id: input.session_id,
     profile: profileName(input.profile),
     agent: input.agent?.trim() || '',
@@ -338,14 +346,16 @@ export function createWorkflowRunNodeSession(input: {
   }
   db.prepare(`
     INSERT INTO ${WORKFLOW_RUN_NODE_SESSIONS_TABLE} (
-      id, run_id, workflow_id, node_id, session_id, profile, agent, agent_mode,
+      id, run_id, workflow_id, node_id, execution_id, iteration_path_json, session_id, profile, agent, agent_mode,
       status, sequence, started_at, finished_at, created_at, updated_at, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id,
     record.run_id,
     record.workflow_id,
     record.node_id,
+    record.execution_id,
+    JSON.stringify(record.iteration_path),
     record.session_id,
     record.profile,
     record.agent,

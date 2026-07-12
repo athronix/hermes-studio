@@ -620,6 +620,20 @@ describe('workflow manager', () => {
     }
   })
 
+  it('stores distinct execution instances for repeated loop node sessions', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession, deleteWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const run = createWorkflowRun({ workflow_id: `instances-${Date.now()}` })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: run.workflow_id, node_id: 'header', session_id: 'header-0', execution_id: 'header@0', iteration_path: [{ loopId: 'loop:retry', iteration: 0 }], sequence: 0 })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: run.workflow_id, node_id: 'header', session_id: 'header-1', execution_id: 'header@1', iteration_path: [{ loopId: 'loop:retry', iteration: 1 }], sequence: 1 })
+    expect(listWorkflowRunNodeSessions(run.id).map(item => [item.execution_id, item.iteration_path])).toEqual([
+      ['header@0', [{ loopId: 'loop:retry', iteration: 0 }]],
+      ['header@1', [{ loopId: 'loop:retry', iteration: 1 }]],
+    ])
+    expect(deleteWorkflowRun(run.id)).toBe(true)
+  })
+
   it('round-trips the compiled loop snapshot with a workflow run', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { createWorkflowRun, deleteWorkflowRun, getWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
