@@ -22,7 +22,7 @@ export interface WorkflowRunRecord {
 
 export interface WorkflowRunEdgeEvaluationRecord {
   id: string; run_id: string; workflow_id: string; edge_id: string; source_node_id: string; target_node_id: string
-  source_outcome: 'success' | 'failure'; status: 'taken' | 'not_taken' | 'error'; route: 'success' | 'failure' | 'always'
+  source_outcome: 'success' | 'failure' | 'skipped'; status: 'taken' | 'not_taken' | 'error'; route: 'success' | 'failure' | 'always'
   reason: string | null; sequence: number; orchestration: unknown; condition_evaluation: unknown | null; evaluated_at: number
 }
 

@@ -231,6 +231,14 @@ describe('workflow manager', () => {
       expect(result.run.status).toBe('completed')
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
       expect(result.nodeSessions.map(session => session.node_id).sort()).toEqual(['matched', 'source'])
+      const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).map(item => ({
+        edge: item.edge_id, status: item.status, route: item.route, reason: item.reason,
+        condition: item.condition_evaluation,
+      }))).toEqual([
+        { edge: 'yes', status: 'taken', route: 'success', reason: null, condition: { status: 'matched', actual: expect.any(String) } },
+        { edge: 'no', status: 'not_taken', route: 'success', reason: 'condition_not_matched', condition: { status: 'not_matched', actual: expect.any(String), reason: 'not_equal' } },
+      ])
       expect(manager.getRuntimeStatus(workflow.id).nodeStatuses).toMatchObject({ source: 'completed', matched: 'completed', unmatched: 'skipped' })
     } finally { await manager.delete(workflow.id) }
   })
@@ -452,6 +460,36 @@ describe('workflow manager', () => {
       expect(finalStatuses.join).toBe('canceled')
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
     } finally {
+      await manager.delete(workflow.id)
+    }
+  })
+
+  it('fails closed before starting a target node when edge evidence persistence fails', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_workflow_edge_evidence BEFORE INSERT ON workflow_run_edge_evaluations BEGIN SELECT RAISE(ABORT, 'edge evidence write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'done' })
+    const workflow = manager.create({
+      name: `Evidence failure ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'target', type: 'agent', data: { title: 'Target', agent: 'hermes', input: 'target' } },
+      ], edges: [{ id: 'source-target', source: 'source', target: 'target' }],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('edge evidence write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['source'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.target).toBe('canceled')
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_workflow_edge_evidence')
       await manager.delete(workflow.id)
     }
   })

@@ -13,6 +13,7 @@ import {
 import { getExactSessionDetailFromDbWithProfile } from '../db/hermes/sessions-db'
 import {
   createWorkflowRun,
+  createWorkflowRunEdgeEvaluation,
   createWorkflowRunNodeSession,
   deleteWorkflowRun,
   deleteWorkflowRunNodeSessions,
@@ -690,6 +691,28 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const nodeSessionRecordIds = new Map<string, string>()
     const nodeStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const]))
     let sequence = 0
+    let edgeEvidenceSequence = 0
+    const recordEdgeDecision = (
+      edge: WorkflowEdgeSnapshot,
+      sourceOutcome: 'success' | 'failure' | 'skipped',
+      decision: WorkflowEdgeDecision,
+    ) => {
+      createWorkflowRunEdgeEvaluation({
+        run_id: run.id,
+        workflow_id: workflow.id,
+        edge_id: edge.id || `${edge.source}->${edge.target}`,
+        source_node_id: edge.source,
+        target_node_id: edge.target,
+        source_outcome: sourceOutcome,
+        status: decision.status,
+        route: edge.orchestration.route,
+        reason: 'reason' in decision ? decision.reason : null,
+        sequence: edgeEvidenceSequence++,
+        orchestration: edge.orchestration,
+        condition_evaluation: 'condition' in decision ? decision.condition : null,
+      })
+      edgeDecisions.set(edge, decision)
+    }
     const inFlight = new Map<string, Promise<any>>()
     let firstNodeFailure: { node: WorkflowNodeSnapshot; error: string } | null = null
 
@@ -738,7 +761,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               completed.add(node.id)
               nodeStatuses[node.id] = 'skipped'
               for (const edge of activeOutgoing.get(node.id) || []) {
-                edgeDecisions.set(edge, { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' })
+                recordEdgeDecision(edge, 'skipped', { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' })
               }
               propagatedSkip = true
             }
@@ -826,7 +849,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             completed.add(node.id)
             if (!firstNodeFailure) firstNodeFailure = { node, error }
             for (const edge of activeOutgoing.get(node.id) || []) {
-              edgeDecisions.set(edge, evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error }))
+              recordEdgeDecision(edge, 'failure', evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error }))
             }
             this.setRuntimeStatus(workflow.id, {
               status: 'running',
@@ -856,7 +879,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           }
           outputs.set(node.id, output)
           for (const edge of activeOutgoing.get(node.id) || []) {
-            edgeDecisions.set(edge, evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output }))
+            recordEdgeDecision(edge, 'success', evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output }))
           }
           completed.add(node.id)
           nodeStatuses[node.id] = 'completed'
