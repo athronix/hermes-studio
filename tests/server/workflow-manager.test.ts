@@ -1116,6 +1116,38 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('continues through a post-loop DAG after the final persisted exit decision', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      const output = request.input.includes('latch') ? 'exit' : request.input.includes('first-after') ? 'first-ok' : request.input.includes('second-after') ? 'second-ok' : 'header-ok'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Post-loop DAG ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'first-after', type: 'agent', data: { title: 'First after', agent: 'hermes', input: 'first-after' } },
+        { id: 'second-after', type: 'agent', data: { title: 'Second after', agent: 'hermes', input: 'second-after' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 }, condition: { path: 'output', operator: 'equals', value: 'retry' } } } },
+        { id: 'exit', source: 'latch', target: 'first-after', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'exit' } } } },
+        { id: 'after-forward', source: 'first-after', target: 'second-after' },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'completed', error: null })
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['header', 'latch', 'first-after', 'second-after'])
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('dispatches multiple loop exit targets only from persisted final-iteration evidence and skips untaken targets', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')

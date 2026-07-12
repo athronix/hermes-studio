@@ -915,6 +915,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         && activeEdges.every(edge => (
           (loopBody.has(edge.source) && loopBody.has(edge.target))
           || (loopBody.has(edge.source) && outsideNodeIds.has(edge.target))
+          || (outsideNodeIds.has(edge.source) && outsideNodeIds.has(edge.target))
         ))
       if (loopOnly || loopWithExitTargets) {
         const forwardEdges = activeEdges.filter(edge => !edge.orchestration.feedback && loopBody.has(edge.source) && loopBody.has(edge.target))
@@ -1091,14 +1092,30 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               break
             }
           }
+          const outsideEdges = activeEdges.filter(edge => outsideNodeIds.has(edge.source) && outsideNodeIds.has(edge.target))
+          const outsideDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
           for (const outsideNode of outsideNodes) {
-            const targetExitEdges = loopExitEdges.filter(edge => edge.target === outsideNode.id)
+            const targetIncomingEdges = activeEdges.filter(edge => edge.target === outsideNode.id && (
+              loopBody.has(edge.source) || outsideNodeIds.has(edge.source)
+            ))
             const targetReadiness = evaluateWorkflowNodeJoin(
               outsideNode.data.orchestration.join,
-              targetExitEdges.map(edge => finalExitDecisions.get(edge)),
+              targetIncomingEdges.map(edge => finalExitDecisions.get(edge) || outsideDecisions.get(edge)),
             )
             if (targetReadiness !== 'ready') {
               nodeStatuses[outsideNode.id] = 'skipped'
+              for (const edge of outsideEdges.filter(item => item.source === outsideNode.id)) {
+                const decision: WorkflowEdgeDecision = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
+                createWorkflowRunEdgeEvaluation({
+                  run_id: run.id, workflow_id: workflow.id,
+                  edge_id: edge.id || `${edge.source}->${edge.target}`,
+                  source_node_id: edge.source, source_execution_id: outsideNode.id, iteration_path: [],
+                  target_node_id: edge.target, source_outcome: 'skipped', status: decision.status,
+                  route: edge.orchestration.route, reason: decision.reason,
+                  sequence: edgeEvidenceSequence++, orchestration: edge.orchestration, condition_evaluation: null,
+                })
+                outsideDecisions.set(edge, decision)
+              }
               continue
             }
             executionCount += 1
@@ -1128,7 +1145,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             }
             try {
               const assembledInput = await this.buildNodeUserMessage({
-                node: outsideNode, incomingEdges: targetExitEdges, nodeById, outputs, profile,
+                node: outsideNode, incomingEdges: targetIncomingEdges, nodeById, outputs, profile,
               })
               const runResult = await chatRun.runAndWait({
                 session_id: nodeSessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
@@ -1162,6 +1179,19 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               outputs.set(outsideNode.id, output)
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
               nodeStatuses[outsideNode.id] = 'completed'
+              for (const edge of outsideEdges.filter(item => item.source === outsideNode.id)) {
+                const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output })
+                createWorkflowRunEdgeEvaluation({
+                  run_id: run.id, workflow_id: workflow.id,
+                  edge_id: edge.id || `${edge.source}->${edge.target}`,
+                  source_node_id: edge.source, source_execution_id: outsideNode.id, iteration_path: [],
+                  target_node_id: edge.target, source_outcome: 'success', status: decision.status,
+                  route: edge.orchestration.route, reason: 'reason' in decision ? decision.reason : null,
+                  sequence: edgeEvidenceSequence++, orchestration: edge.orchestration,
+                  condition_evaluation: 'condition' in decision ? decision.condition : null,
+                })
+                outsideDecisions.set(edge, decision)
+              }
             } catch (err) {
               if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
                 markCanceled()
