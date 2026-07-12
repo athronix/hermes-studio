@@ -423,6 +423,106 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('records an approval_rejected loop epoch and stops the iteration', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'needs review' })
+    const workflow = manager.create({
+      name: `Rejected loop approval ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header', approvalRequired: true } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.header).toBe('pending_approval'))
+      const runId = manager.getRuntimeStatus(workflow.id).runId!
+      expect(manager.approveNode(workflow.id, runId, 'header', false)).toBe(true)
+      const result = await runPromise
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'Workflow node approval rejected' })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(result.nodeSessions.map(session => [session.execution_id, session.status, session.error])).toEqual([
+        ['header@loop:retry:0', 'approval_rejected', 'Workflow node approval rejected'],
+      ])
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => ({ status: epoch.status, exitReason: epoch.exit_reason }))).toEqual([
+        { status: 'approval_rejected', exitReason: 'Workflow node approval rejected' },
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('fails closed when approval_rejected loop epoch evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_rejected_loop_epoch BEFORE INSERT ON workflow_run_loop_epochs
+      WHEN NEW.status = 'approval_rejected' BEGIN SELECT RAISE(ABORT, 'rejected loop epoch write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review' })
+    const workflow = manager.create({
+      name: `Rejected epoch persistence ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header', approvalRequired: true } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.header).toBe('pending_approval'))
+      const runId = manager.getRuntimeStatus(workflow.id).runId!
+      expect(manager.approveNode(workflow.id, runId, 'header', false)).toBe(true)
+      const result = await runPromise
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('rejected loop epoch write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_rejected_loop_epoch')
+      await manager.delete(workflow.id)
+    }
+  })
+
+  it('requires a fresh approval for each loop execution instance', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Approved loop executions ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header', approvalRequired: true } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.header).toBe('pending_approval'))
+      const runId = manager.getRuntimeStatus(workflow.id).runId!
+      expect(manager.approveNode(workflow.id, runId, 'header', true)).toBe(true)
+      await vi.waitFor(() => expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3))
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.header).toBe('pending_approval'))
+      expect(manager.approveNode(workflow.id, runId, 'header', true)).toBe(true)
+      const result = await runPromise
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+      expect(result.nodeSessions.filter(session => session.node_id === 'header').map(session => session.status)).toEqual(['completed', 'completed'])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('records a timed_out loop epoch for the runAndWait timeout contract', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')

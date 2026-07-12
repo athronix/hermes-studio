@@ -913,6 +913,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               }, { profile, user: input.user, timeoutMs: input.timeoutMs, approvalChoice: 'once' })
               if (!runResult.ok) throw new Error(runResult.error || `node ${node.id} failed`)
               const output = lastAssistantOutput(nodeSessionId, runResult.output)
+              const approved = await this.waitForNodeApproval({
+                workflowId: workflow.id, runId: run.id, node, nodeStatuses,
+              })
+              if (!approved) throw new Error('Workflow node approval rejected')
               outputs.set(node.id, output)
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
               nodeStatuses[node.id] = 'completed'
@@ -934,14 +938,15 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 const canceled = this.canceledRunIds.has(run.id) || persistedRun?.status === 'canceled'
                 const finalMessage = canceled ? (persistedRun?.error || 'Workflow run canceled') : message
                 const timedOut = !canceled && isChatRunWaitTimeout(message, input.timeoutMs)
+                const approvalRejected = !canceled && message === 'Workflow node approval rejected'
                 updateWorkflowRunNodeSession(nodeSession.id, {
-                  status: canceled ? 'canceled' : 'failed', finished_at: Date.now(), error: finalMessage,
+                  status: canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed', finished_at: Date.now(), error: finalMessage,
                 })
-                nodeStatuses[node.id] = canceled ? 'canceled' : 'failed'
+                nodeStatuses[node.id] = canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed'
                 try {
                   createWorkflowRunLoopEpoch({
                     run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
-                    iteration_path: iterationPath, status: canceled ? 'canceled' : timedOut ? 'timed_out' : 'failed', exit_reason: finalMessage,
+                    iteration_path: iterationPath, status: canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : timedOut ? 'timed_out' : 'failed', exit_reason: finalMessage,
                     sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
                   })
                 } catch (evidenceError) {

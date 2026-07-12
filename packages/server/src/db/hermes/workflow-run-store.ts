@@ -29,7 +29,7 @@ export interface WorkflowRunEdgeEvaluationRecord {
 
 export interface WorkflowRunLoopEpochRecord {
   id: string; run_id: string; workflow_id: string; loop_id: string; iteration: number; iteration_path: unknown[]
-  status: 'completed' | 'failed' | 'canceled' | 'timed_out'; exit_reason: string | null; sequence: number; started_at: number; finished_at: number
+  status: 'completed' | 'failed' | 'canceled' | 'timed_out' | 'approval_rejected'; exit_reason: string | null; sequence: number; started_at: number; finished_at: number
 }
 
 export interface WorkflowRunNodeSessionRecord {
