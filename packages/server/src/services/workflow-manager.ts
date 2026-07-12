@@ -914,8 +914,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               : { status: 'not_taken', routeMatched: true, reason: 'iteration_limit_reached' }
             createWorkflowRunEdgeEvaluation({
               run_id: run.id, workflow_id: workflow.id,
-              edge_id: feedbackEdge.id || `$4{feedbackEdge.source}->$4{feedbackEdge.target}`,
-              source_node_id: feedbackEdge.source, target_node_id: feedbackEdge.target,
+              edge_id: feedbackEdge.id || `${feedbackEdge.source}->${feedbackEdge.target}`,
+              source_node_id: feedbackEdge.source,
+              source_execution_id: `${loop.latchNodeId}@${loop.id}:${iteration}`,
+              iteration_path: [{ loopId: loop.id, iteration }],
+              target_node_id: feedbackEdge.target,
               source_outcome: 'success', status: decision.status, route: feedbackEdge.orchestration.route,
               reason: 'reason' in decision ? decision.reason : null, sequence: iteration,
               orchestration: feedbackEdge.orchestration,

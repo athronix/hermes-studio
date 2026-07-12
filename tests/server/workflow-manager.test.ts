@@ -335,7 +335,9 @@ describe('workflow manager', () => {
   })
 
   it('executes a bounded top-level feedback loop with distinct iteration identities', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
     const manager = new WorkflowManager()
     chatRunMock.runAndWait.mockReset()
     chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'continue' })
@@ -363,8 +365,12 @@ describe('workflow manager', () => {
         ['latch', 'latch@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
       ])
       const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
-      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'retry').map(item => [item.status, item.reason])).toEqual([
-        ['taken', null], ['taken', null], ['not_taken', 'iteration_limit_reached'],
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'retry').map(item => ({
+        status: item.status, reason: item.reason, sourceExecutionId: item.source_execution_id, iterationPath: item.iteration_path,
+      }))).toEqual([
+        { status: 'taken', reason: null, sourceExecutionId: 'latch@loop:retry:0', iterationPath: [{ loopId: 'loop:retry', iteration: 0 }] },
+        { status: 'taken', reason: null, sourceExecutionId: 'latch@loop:retry:1', iterationPath: [{ loopId: 'loop:retry', iteration: 1 }] },
+        { status: 'not_taken', reason: 'iteration_limit_reached', sourceExecutionId: 'latch@loop:retry:2', iterationPath: [{ loopId: 'loop:retry', iteration: 2 }] },
       ])
     } finally { await manager.delete(workflow.id) }
   })
@@ -774,8 +780,8 @@ describe('workflow manager', () => {
       target_node_id: 'other', source_outcome: 'success', status: 'taken', route: 'always',
       sequence: 1, orchestration: { route: 'always' }, condition_evaluation: null,
     })
-    expect(listWorkflowRunEdgeEvaluations(run.id).map(item => [item.edge_id, item.sequence, item.status])).toEqual([
-      ['edge-b', 1, 'taken'], ['edge-a', 2, 'not_taken'],
+    expect(listWorkflowRunEdgeEvaluations(run.id).map(item => [item.edge_id, item.sequence, item.status, item.source_execution_id, item.iteration_path])).toEqual([
+      ['edge-b', 1, 'taken', 'source', []], ['edge-a', 2, 'not_taken', 'source', []],
     ])
     expect(deleteWorkflowRun(run.id)).toBe(true)
     expect(listWorkflowRunEdgeEvaluations(run.id)).toEqual([])

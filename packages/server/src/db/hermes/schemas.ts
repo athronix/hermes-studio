@@ -234,7 +234,8 @@ export const WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE = 'workflow_run_edge_evaluation
 
 export const WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', edge_id: 'TEXT NOT NULL',
-  source_node_id: 'TEXT NOT NULL', target_node_id: 'TEXT NOT NULL', source_outcome: 'TEXT NOT NULL',
+  source_node_id: 'TEXT NOT NULL', source_execution_id: "TEXT NOT NULL DEFAULT ''", iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  target_node_id: 'TEXT NOT NULL', source_outcome: 'TEXT NOT NULL',
   status: 'TEXT NOT NULL', route: 'TEXT NOT NULL', reason: 'TEXT', sequence: 'INTEGER NOT NULL',
   orchestration_json: "TEXT NOT NULL DEFAULT '{}'", condition_evaluation_json: 'TEXT', evaluated_at: 'INTEGER NOT NULL',
 }

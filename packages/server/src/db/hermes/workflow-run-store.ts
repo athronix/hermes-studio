@@ -22,7 +22,7 @@ export interface WorkflowRunRecord {
 }
 
 export interface WorkflowRunEdgeEvaluationRecord {
-  id: string; run_id: string; workflow_id: string; edge_id: string; source_node_id: string; target_node_id: string
+  id: string; run_id: string; workflow_id: string; edge_id: string; source_node_id: string; source_execution_id: string; iteration_path: unknown[]; target_node_id: string
   source_outcome: 'success' | 'failure' | 'skipped'; status: 'taken' | 'not_taken' | 'error'; route: 'success' | 'failure' | 'always'
   reason: string | null; sequence: number; orchestration: unknown; condition_evaluation: unknown | null; evaluated_at: number
 }
@@ -110,18 +110,19 @@ function parseObjectJson(value: unknown): unknown {
 
 function rowToEdgeEvaluationRecord(row: Record<string, any>): WorkflowRunEdgeEvaluationRecord {
   return { id: String(row.id), run_id: String(row.run_id), workflow_id: String(row.workflow_id), edge_id: String(row.edge_id),
-    source_node_id: String(row.source_node_id), target_node_id: String(row.target_node_id), source_outcome: row.source_outcome,
+    source_node_id: String(row.source_node_id), source_execution_id: String(row.source_execution_id || row.source_node_id),
+    iteration_path: parseArrayJson(row.iteration_path_json ?? row.iteration_path), target_node_id: String(row.target_node_id), source_outcome: row.source_outcome,
     status: row.status, route: row.route, reason: row.reason == null ? null : String(row.reason), sequence: Number(row.sequence),
     orchestration: parseObjectJson(row.orchestration_json ?? row.orchestration),
     condition_evaluation: parseObjectJson(row.condition_evaluation_json ?? row.condition_evaluation), evaluated_at: Number(row.evaluated_at) }
 }
 
-export function createWorkflowRunEdgeEvaluation(input: Omit<WorkflowRunEdgeEvaluationRecord, 'id' | 'evaluated_at'> & { id?: string; evaluated_at?: number }): WorkflowRunEdgeEvaluationRecord {
-  const record = { ...input, id: input.id?.trim() || randomUUID(), reason: input.reason ?? null, evaluated_at: input.evaluated_at ?? Date.now() } as WorkflowRunEdgeEvaluationRecord
-  const row = { ...record, orchestration_json: JSON.stringify(record.orchestration), condition_evaluation_json: record.condition_evaluation == null ? null : JSON.stringify(record.condition_evaluation) }
+export function createWorkflowRunEdgeEvaluation(input: Omit<WorkflowRunEdgeEvaluationRecord, 'id' | 'evaluated_at' | 'source_execution_id' | 'iteration_path'> & { id?: string; evaluated_at?: number; source_execution_id?: string; iteration_path?: unknown[] }): WorkflowRunEdgeEvaluationRecord {
+  const record = { ...input, id: input.id?.trim() || randomUUID(), source_execution_id: input.source_execution_id?.trim() || input.source_node_id, iteration_path: input.iteration_path || [], reason: input.reason ?? null, evaluated_at: input.evaluated_at ?? Date.now() } as WorkflowRunEdgeEvaluationRecord
+  const row = { ...record, iteration_path_json: JSON.stringify(record.iteration_path), orchestration_json: JSON.stringify(record.orchestration), condition_evaluation_json: record.condition_evaluation == null ? null : JSON.stringify(record.condition_evaluation) }
   const db = getDb()
   if (!db) { jsonSet(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, record.id, row as any); return record }
-  db.prepare(`INSERT INTO ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} (id, run_id, workflow_id, edge_id, source_node_id, target_node_id, source_outcome, status, route, reason, sequence, orchestration_json, condition_evaluation_json, evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.id, record.run_id, record.workflow_id, record.edge_id, record.source_node_id, record.target_node_id, record.source_outcome, record.status, record.route, record.reason, record.sequence, row.orchestration_json, row.condition_evaluation_json, record.evaluated_at)
+  db.prepare(`INSERT INTO ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} (id, run_id, workflow_id, edge_id, source_node_id, source_execution_id, iteration_path_json, target_node_id, source_outcome, status, route, reason, sequence, orchestration_json, condition_evaluation_json, evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.id, record.run_id, record.workflow_id, record.edge_id, record.source_node_id, record.source_execution_id, row.iteration_path_json, record.target_node_id, record.source_outcome, record.status, record.route, record.reason, record.sequence, row.orchestration_json, row.condition_evaluation_json, record.evaluated_at)
   return record
 }
 

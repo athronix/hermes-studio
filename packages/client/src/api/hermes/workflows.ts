@@ -68,6 +68,8 @@ export interface WorkflowRunNodeSessionRecord {
   run_id: string
   workflow_id: string
   node_id: string
+  execution_id: string
+  iteration_path: unknown[]
   session_id: string
   profile: string
   agent: string
@@ -87,6 +89,8 @@ export interface WorkflowRunEdgeEvaluationRecord {
   workflow_id: string
   edge_id: string
   source_node_id: string
+  source_execution_id: string
+  iteration_path: unknown[]
   target_node_id: string
   source_outcome: 'success' | 'failure' | 'skipped'
   status: 'taken' | 'not_taken' | 'error'
