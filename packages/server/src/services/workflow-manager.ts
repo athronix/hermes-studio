@@ -876,6 +876,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         }
         const outputs = new Map<string, string>()
         let sequence = 0
+        let edgeEvidenceSequence = 0
         try {
           for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
             for (const node of ordered) {
@@ -904,9 +905,22 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
               }, { profile, user: input.user, timeoutMs: input.timeoutMs, approvalChoice: 'once' })
               if (!runResult.ok) throw new Error(runResult.error || `node ${node.id} failed`)
-              outputs.set(node.id, lastAssistantOutput(nodeSessionId, runResult.output))
+              const output = lastAssistantOutput(nodeSessionId, runResult.output)
+              outputs.set(node.id, output)
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
               nodeStatuses[node.id] = 'completed'
+              for (const edge of forwardEdges.filter(item => item.source === node.id)) {
+                const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output })
+                createWorkflowRunEdgeEvaluation({
+                  run_id: run.id, workflow_id: workflow.id,
+                  edge_id: edge.id || `$4{edge.source}->$4{edge.target}`,
+                  source_node_id: edge.source, source_execution_id: executionId, iteration_path: iterationPath,
+                  target_node_id: edge.target, source_outcome: 'success', status: decision.status,
+                  route: edge.orchestration.route, reason: 'reason' in decision ? decision.reason : null,
+                  sequence: edgeEvidenceSequence++, orchestration: edge.orchestration,
+                  condition_evaluation: 'condition' in decision ? decision.condition : null,
+                })
+              }
             }
             const hasNextIteration = iteration + 1 < loop.maxIterations
             const decision: WorkflowEdgeDecision = hasNextIteration
@@ -920,7 +934,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               iteration_path: [{ loopId: loop.id, iteration }],
               target_node_id: feedbackEdge.target,
               source_outcome: 'success', status: decision.status, route: feedbackEdge.orchestration.route,
-              reason: 'reason' in decision ? decision.reason : null, sequence: iteration,
+              reason: 'reason' in decision ? decision.reason : null, sequence: edgeEvidenceSequence++,
               orchestration: feedbackEdge.orchestration,
               condition_evaluation: 'condition' in decision ? decision.condition : null,
             })

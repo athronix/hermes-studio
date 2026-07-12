@@ -372,7 +372,47 @@ describe('workflow manager', () => {
         { status: 'taken', reason: null, sourceExecutionId: 'latch@loop:retry:1', iterationPath: [{ loopId: 'loop:retry', iteration: 1 }] },
         { status: 'not_taken', reason: 'iteration_limit_reached', sourceExecutionId: 'latch@loop:retry:2', iterationPath: [{ loopId: 'loop:retry', iteration: 2 }] },
       ])
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'forward').map(item => ({
+        status: item.status, sourceExecutionId: item.source_execution_id, iterationPath: item.iteration_path,
+      }))).toEqual([
+        { status: 'taken', sourceExecutionId: 'header@loop:retry:0', iterationPath: [{ loopId: 'loop:retry', iteration: 0 }] },
+        { status: 'taken', sourceExecutionId: 'header@loop:retry:1', iterationPath: [{ loopId: 'loop:retry', iteration: 1 }] },
+        { status: 'taken', sourceExecutionId: 'header@loop:retry:2', iterationPath: [{ loopId: 'loop:retry', iteration: 2 }] },
+      ])
     } finally { await manager.delete(workflow.id) }
+  })
+
+  it('does not start a loop target when forward edge evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_loop_forward_evidence BEFORE INSERT ON workflow_run_edge_evaluations
+      WHEN NEW.edge_id = 'forward' BEGIN SELECT RAISE(ABORT, 'loop forward evidence write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Loop forward evidence failure ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('loop forward evidence write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['header'])
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_loop_forward_evidence')
+      await manager.delete(workflow.id)
+    }
   })
 
   it('fails a loop run when its iteration-limit evidence cannot be persisted', async () => {
