@@ -10,6 +10,7 @@ const managerMock = vi.hoisted(() => ({
 }))
 const listWorkflowRunsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunNodeSessionsMock = vi.hoisted(() => vi.fn())
+const listWorkflowRunEdgeEvaluationsMock = vi.hoisted(() => vi.fn())
 const listUserProfilesMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/services/workflow-manager', () => ({
@@ -22,6 +23,7 @@ vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/workflow-run-store', () => ({
   listWorkflowRunNodeSessions: listWorkflowRunNodeSessionsMock,
+  listWorkflowRunEdgeEvaluations: listWorkflowRunEdgeEvaluationsMock,
   listWorkflowRuns: listWorkflowRunsMock,
 }))
 
@@ -46,6 +48,7 @@ describe('workflow controller', () => {
     managerMock.stopRun.mockReset()
     managerMock.approveNode.mockReset()
     listWorkflowRunNodeSessionsMock.mockReset()
+    listWorkflowRunEdgeEvaluationsMock.mockReset()
     listWorkflowRunsMock.mockReset()
     listUserProfilesMock.mockReset()
     listUserProfilesMock.mockReturnValue([])
@@ -55,6 +58,7 @@ describe('workflow controller', () => {
     managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
     listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed' }])
     listWorkflowRunNodeSessionsMock.mockReturnValue([{ id: 'node-session-1', node_id: 'node-1', status: 'completed' }])
+    listWorkflowRunEdgeEvaluationsMock.mockReturnValue([{ id: 'edge-eval-1', edge_id: 'edge-1', sequence: 0, status: 'taken' }])
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({ params: { id: 'workflow-1' }, query: { limit: '25' } })
@@ -63,14 +67,27 @@ describe('workflow controller', () => {
 
     expect(listWorkflowRunsMock).toHaveBeenCalledWith('workflow-1', 25)
     expect(listWorkflowRunNodeSessionsMock).toHaveBeenCalledWith('run-1')
+    expect(listWorkflowRunEdgeEvaluationsMock).toHaveBeenCalledWith('run-1')
     expect(c.body).toEqual({
       runs: [{
         id: 'run-1',
         workflow_id: 'workflow-1',
         status: 'completed',
         node_sessions: [{ id: 'node-session-1', node_id: 'node-1', status: 'completed' }],
+        edge_evaluations: [{ id: 'edge-eval-1', edge_id: 'edge-1', sequence: 0, status: 'taken' }],
       }],
     })
+  })
+
+  it('does not return a partial run history when edge evidence loading fails', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed' }])
+    listWorkflowRunNodeSessionsMock.mockReturnValue([])
+    listWorkflowRunEdgeEvaluationsMock.mockImplementation(() => { throw new Error('edge evidence read failed') })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1' } })
+    await expect(mod.listRuns(c)).rejects.toThrow('edge evidence read failed')
+    expect(c.body).toBeUndefined()
   })
 
   it('runs a workflow through the workflow manager', async () => {
