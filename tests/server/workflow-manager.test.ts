@@ -132,6 +132,37 @@ describe('workflow manager', () => {
     )).toEqual({ status: 'not_matched', reason: 'path_not_found' })
   })
 
+  it('evaluates the supported declarative condition operators without coercing missing operands', async () => {
+    const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
+    const evaluate = (operator: string, actual: unknown, value?: unknown) => evaluateWorkflowEdgeCondition(
+      value === undefined
+        ? { path: 'output.value', operator }
+        : { path: 'output.value', operator, value },
+      { output: { value: actual } },
+    )
+
+    expect(evaluate('not_equals', 'PASS', 'RETRY').status).toBe('matched')
+    expect(evaluate('contains', 'build completed', 'complete').status).toBe('matched')
+    expect(evaluate('not_contains', ['safe', 'read'], 'write').status).toBe('matched')
+    expect(evaluate('greater_than', 4, 3).status).toBe('matched')
+    expect(evaluate('greater_than_or_equal', 3, 3).status).toBe('matched')
+    expect(evaluate('less_than', 2, 3).status).toBe('matched')
+    expect(evaluate('less_than_or_equal', 3, 3).status).toBe('matched')
+    expect(evaluate('in', 'PASS', ['PASS', 'BLOCKED']).status).toBe('matched')
+    expect(evaluate('not_in', 'RETRY', ['PASS', 'BLOCKED']).status).toBe('matched')
+    expect(evaluate('exists', null).status).toBe('matched')
+    expect(evaluate('not_exists', null).status).toBe('not_matched')
+
+    expect(() => evaluateWorkflowEdgeCondition(
+      { path: 'output.value', operator: 'contains' } as any,
+      { output: { value: 'anything' } },
+    )).toThrow('workflow condition operator contains requires value')
+    expect(evaluateWorkflowEdgeCondition(
+      { path: 'output.missing', operator: 'not_exists' } as any,
+      { output: {} },
+    )).toEqual({ status: 'matched', reason: 'path_not_found' })
+  })
+
   it('rejects dangerous condition paths before evaluation', async () => {
     const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
 

@@ -95,12 +95,17 @@ interface WorkflowNodeSnapshot {
 }
 
 type WorkflowEdgeRoute = 'success' | 'failure' | 'always'
-type WorkflowConditionOperator = 'equals'
+type WorkflowConditionOperator =
+  | 'exists' | 'not_exists'
+  | 'equals' | 'not_equals'
+  | 'contains' | 'not_contains'
+  | 'greater_than' | 'greater_than_or_equal' | 'less_than' | 'less_than_or_equal'
+  | 'in' | 'not_in'
 
 interface WorkflowEdgeCondition {
   path: string
   operator: WorkflowConditionOperator
-  value: unknown
+  value?: unknown
 }
 
 interface WorkflowEdgeOrchestration {
@@ -200,7 +205,7 @@ function isUnfinishedWorkflowNodeStatus(status: WorkflowRuntimeState | undefined
 }
 
 export type WorkflowConditionEvaluation =
-  | { status: 'matched'; actual: unknown }
+  | { status: 'matched'; actual?: unknown; reason?: 'path_not_found' }
   | { status: 'not_matched'; actual?: unknown; reason?: 'path_not_found' | 'not_equal' }
 
 const FORBIDDEN_WORKFLOW_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor'])
@@ -219,21 +224,50 @@ export function evaluateWorkflowEdgeCondition(
   let current: unknown = context
   for (const segment of segments) {
     if (!segment || (typeof current !== 'object' && typeof current !== 'function') || current === null) {
-      return { status: 'not_matched', reason: 'path_not_found' }
+      return condition.operator === 'not_exists'
+        ? { status: 'matched', reason: 'path_not_found' }
+        : { status: 'not_matched', reason: 'path_not_found' }
     }
     const record = current as Record<string, unknown>
     if (!Object.prototype.hasOwnProperty.call(record, segment)) {
-      return { status: 'not_matched', reason: 'path_not_found' }
+      return condition.operator === 'not_exists'
+        ? { status: 'matched', reason: 'path_not_found' }
+        : { status: 'not_matched', reason: 'path_not_found' }
     }
     current = record[segment]
   }
 
-  if (condition.operator === 'equals') {
-    return Object.is(current, condition.value)
-      ? { status: 'matched', actual: current }
-      : { status: 'not_matched', actual: current, reason: 'not_equal' }
+  const operator = condition.operator
+  const hasValue = Object.prototype.hasOwnProperty.call(condition, 'value')
+  if (operator === 'exists') return { status: 'matched', actual: current }
+  if (operator === 'not_exists') return { status: 'not_matched', actual: current }
+  if (!hasValue) throw new Error(`workflow condition operator ${operator} requires value`)
+
+  let matched: boolean
+  switch (operator) {
+    case 'equals': matched = Object.is(current, condition.value); break
+    case 'not_equals': matched = !Object.is(current, condition.value); break
+    case 'contains':
+      matched = typeof current === 'string'
+        ? typeof condition.value === 'string' && current.includes(condition.value)
+        : Array.isArray(current) && current.some(item => Object.is(item, condition.value))
+      break
+    case 'not_contains':
+      matched = typeof current === 'string'
+        ? typeof condition.value === 'string' && !current.includes(condition.value)
+        : Array.isArray(current) && !current.some(item => Object.is(item, condition.value))
+      break
+    case 'greater_than': matched = typeof current === 'number' && typeof condition.value === 'number' && current > condition.value; break
+    case 'greater_than_or_equal': matched = typeof current === 'number' && typeof condition.value === 'number' && current >= condition.value; break
+    case 'less_than': matched = typeof current === 'number' && typeof condition.value === 'number' && current < condition.value; break
+    case 'less_than_or_equal': matched = typeof current === 'number' && typeof condition.value === 'number' && current <= condition.value; break
+    case 'in': matched = Array.isArray(condition.value) && condition.value.some(item => Object.is(item, current)); break
+    case 'not_in': matched = Array.isArray(condition.value) && !condition.value.some(item => Object.is(item, current)); break
+    default: throw new Error(`unsupported workflow condition operator: ${operator}`)
   }
-  throw new Error(`unsupported workflow condition operator: ${condition.operator}`)
+  return matched
+    ? { status: 'matched', actual: current }
+    : { status: 'not_matched', actual: current, reason: 'not_equal' }
 }
 
 export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null {
@@ -270,11 +304,18 @@ export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null
     const path = typeof conditionRecord.path === 'string' ? conditionRecord.path.trim() : ''
     const operator = conditionRecord.operator
     if (!path) throw new Error(`workflow edge ${edgeLabel} condition requires path`)
-    if (operator !== 'equals') throw new Error(`workflow edge ${edgeLabel} has invalid condition operator`)
-    if (!Object.prototype.hasOwnProperty.call(conditionRecord, 'value')) {
-      throw new Error(`workflow edge ${edgeLabel} condition operator equals requires value`)
+    const supportedOperators: WorkflowConditionOperator[] = [
+      'exists', 'not_exists', 'equals', 'not_equals', 'contains', 'not_contains',
+      'greater_than', 'greater_than_or_equal', 'less_than', 'less_than_or_equal', 'in', 'not_in',
+    ]
+    if (!supportedOperators.includes(operator)) throw new Error(`workflow edge ${edgeLabel} has invalid condition operator`)
+    const hasValue = Object.prototype.hasOwnProperty.call(conditionRecord, 'value')
+    if (operator !== 'exists' && operator !== 'not_exists' && !hasValue) {
+      throw new Error(`workflow edge ${edgeLabel} condition operator ${operator} requires value`)
     }
-    orchestration.condition = { path, operator, value: conditionRecord.value }
+    orchestration.condition = hasValue
+      ? { path, operator, value: conditionRecord.value }
+      : { path, operator }
   }
 
   return { id, source, target, orchestration }
