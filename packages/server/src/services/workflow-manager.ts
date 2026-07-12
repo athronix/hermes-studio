@@ -905,20 +905,18 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       const loopBody = new Set(loop.bodyNodeIds)
       const feedbackEdge = activeEdges.find(edge => edge.id === loop.feedbackEdgeId)!
       const outsideNodes = activeNodes.filter(node => !loopBody.has(node.id))
-      const outsideNode = outsideNodes.length === 1 ? outsideNodes[0] : null
-      const loopExitEdges = outsideNode
-        ? activeEdges.filter(edge => loopBody.has(edge.source) && edge.target === outsideNode.id)
-        : []
+      const outsideNodeIds = new Set(outsideNodes.map(node => node.id))
+      const loopExitEdges = activeEdges.filter(edge => loopBody.has(edge.source) && outsideNodeIds.has(edge.target))
       const loopOnly = outsideNodes.length === 0 && activeEdges.every(edge =>
         loopBody.has(edge.source) && loopBody.has(edge.target),
       )
-      const loopWithSingleExit = outsideNode !== null
+      const loopWithExitTargets = outsideNodes.length > 0
         && loopExitEdges.length > 0
         && activeEdges.every(edge => (
           (loopBody.has(edge.source) && loopBody.has(edge.target))
-          || (loopBody.has(edge.source) && edge.target === outsideNode.id)
+          || (loopBody.has(edge.source) && outsideNodeIds.has(edge.target))
         ))
-      if (loopOnly || loopWithSingleExit) {
+      if (loopOnly || loopWithExitTargets) {
         const forwardEdges = activeEdges.filter(edge => !edge.orchestration.feedback && loopBody.has(edge.source) && loopBody.has(edge.target))
         const ordered: WorkflowNodeSnapshot[] = []
         const indegree = new Map(loop.bodyNodeIds.map(id => [id, 0]))
@@ -936,9 +934,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         let sequence = 0
         let edgeEvidenceSequence = 0
         let executionCount = 0
+        let finalExitDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
         try {
           for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
             const epochStartedAt = Date.now()
+            const iterationExitDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
             for (const node of ordered) {
               executionCount += 1
               if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
@@ -998,13 +998,14 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output })
                 createWorkflowRunEdgeEvaluation({
                   run_id: run.id, workflow_id: workflow.id,
-                  edge_id: edge.id || `$4{edge.source}->$4{edge.target}`,
+                  edge_id: edge.id || `${edge.source}->${edge.target}`,
                   source_node_id: edge.source, source_execution_id: executionId, iteration_path: iterationPath,
                   target_node_id: edge.target, source_outcome: 'success', status: decision.status,
                   route: edge.orchestration.route, reason: 'reason' in decision ? decision.reason : null,
                   sequence: edgeEvidenceSequence++, orchestration: edge.orchestration,
                   condition_evaluation: 'condition' in decision ? decision.condition : null,
                 })
+                if (loopExitEdges.includes(edge)) iterationExitDecisions.set(edge, decision)
               }
               } catch (err) {
                 const message = err instanceof Error ? err.message : String(err)
@@ -1057,34 +1058,51 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               exit_reason: decision.status === 'taken' ? 'feedback_taken' : decision.reason,
               sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
             })
-            if (decision.status !== 'taken') break
+            if (decision.status !== 'taken') {
+              // Exit decisions become dispatchable only after both the feedback decision and
+              // the final loop epoch have been durably recorded above.
+              finalExitDecisions = iterationExitDecisions
+              break
+            }
           }
-          if (outsideNode) {
-            const takenExit = loopExitEdges.some(edge => {
-              const sourceOutput = outputs.get(edge.source) || ''
-              return evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output: sourceOutput }).status === 'taken'
-            })
-            if (!takenExit) {
+          for (const outsideNode of outsideNodes) {
+            const targetExitEdges = loopExitEdges.filter(edge => edge.target === outsideNode.id)
+            const targetReadiness = evaluateWorkflowNodeJoin(
+              outsideNode.data.orchestration.join,
+              targetExitEdges.map(edge => finalExitDecisions.get(edge)),
+            )
+            if (targetReadiness !== 'ready') {
               nodeStatuses[outsideNode.id] = 'skipped'
-            } else {
-              executionCount += 1
-              if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
-                throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
-              }
-              const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-              if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
-              const nodeSessionId = randomUUID()
-              const target = resolveWorkflowNodeRunTarget(outsideNode.data.agent)
-              const nodeSession = createWorkflowRunNodeSession({
-                run_id: run.id, workflow_id: workflow.id, node_id: outsideNode.id,
-                session_id: nodeSessionId, profile, agent: target.agent,
-                agent_mode: outsideNode.data.agent === 'hermes' ? '' : 'scoped', status: 'running',
-                sequence: sequence++, started_at: Date.now(),
-              })
-              nodeStatuses[outsideNode.id] = 'running'
-              this.setRuntimeStatus(workflow.id, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
+              continue
+            }
+            executionCount += 1
+            if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
+              throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
+            }
+            const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+            if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
+            if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
+              throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
+            }
+            const nodeSessionId = randomUUID()
+            const target = resolveWorkflowNodeRunTarget(outsideNode.data.agent)
+            const nodeSession = createWorkflowRunNodeSession({
+              run_id: run.id, workflow_id: workflow.id, node_id: outsideNode.id,
+              session_id: nodeSessionId, profile, agent: target.agent,
+              agent_mode: outsideNode.data.agent === 'hermes' ? '' : 'scoped', status: 'running',
+              sequence: sequence++, started_at: Date.now(),
+            })
+            nodeStatuses[outsideNode.id] = 'running'
+            this.setRuntimeStatus(workflow.id, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
+            const markCanceled = () => {
+              const error = getWorkflowRun(run.id)?.error || 'Workflow run canceled'
+              updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
+              nodeStatuses[outsideNode.id] = 'canceled'
+              return error
+            }
+            try {
               const assembledInput = await this.buildNodeUserMessage({
-                node: outsideNode, incomingEdges: loopExitEdges, nodeById, outputs, profile,
+                node: outsideNode, incomingEdges: targetExitEdges, nodeById, outputs, profile,
               })
               const runResult = await chatRun.runAndWait({
                 session_id: nodeSessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
@@ -1092,8 +1110,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 provider: outsideNode.data.provider || undefined, mode: outsideNode.data.agent === 'hermes' ? undefined : 'scoped',
                 coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: outsideNode.data.apiMode || undefined,
               }, { profile, user: input.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
+              if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') throw new Error(markCanceled())
               if (!runResult.ok) {
-                const error = runResult.error || `node ${outsideNode.id} failed`
+                const error = runTimeoutMessage && isChatRunWaitTimeout(runResult.error || '', remainingTimeoutMs)
+                  ? runTimeoutMessage
+                  : runResult.error || `node ${outsideNode.id} failed`
                 updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
                 nodeStatuses[outsideNode.id] = 'failed'
                 throw new Error(error)
@@ -1105,10 +1126,25 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 workflowId: workflow.id, runId: run.id, node: outsideNode, nodeStatuses,
                 timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
               })
-              if (!approved) throw new Error('Workflow node approval rejected')
+              if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') throw new Error(markCanceled())
+              if (!approved) {
+                const error = 'Workflow node approval rejected'
+                updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
+                nodeStatuses[outsideNode.id] = 'approval_rejected'
+                throw new Error(error)
+              }
               outputs.set(outsideNode.id, output)
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
               nodeStatuses[outsideNode.id] = 'completed'
+            } catch (err) {
+              if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
+                markCanceled()
+              } else if (nodeStatuses[outsideNode.id] !== 'failed' && nodeStatuses[outsideNode.id] !== 'approval_rejected') {
+                const error = err instanceof Error ? err.message : String(err)
+                updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
+                nodeStatuses[outsideNode.id] = 'failed'
+              }
+              throw err
             }
           }
           const finishedAt = Date.now()

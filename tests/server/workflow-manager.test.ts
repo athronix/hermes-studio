@@ -1077,6 +1077,238 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('dispatches multiple loop exit targets only from persisted final-iteration evidence and skips untaken targets', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.sessionOutputs.clear()
+    const outputs = ['header-0', 'continue', 'header-1', 'stop', 'publish-done']
+    const requests: Array<{ input: string }> = []
+    chatRunMock.runAndWait.mockImplementation(async (request: { session_id: string; input: string }) => {
+      requests.push({ input: request.input })
+      const output = outputs.shift() || 'unexpected'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Multiple loop exits ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'publish', type: 'agent', data: { title: 'Publish', agent: 'hermes', input: 'publish' } },
+        { id: 'discard', type: 'agent', data: { title: 'Discard', agent: 'hermes', input: 'discard' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: {
+          route: 'success', feedback: { maxIterations: 3 },
+          condition: { path: 'output', operator: 'equals', value: 'continue' },
+        } } },
+        { id: 'publish-exit', source: 'latch', target: 'publish', data: { orchestration: {
+          route: 'success', condition: { path: 'output', operator: 'equals', value: 'stop' },
+        } } },
+        { id: 'discard-exit', source: 'latch', target: 'discard', data: { orchestration: {
+          route: 'success', condition: { path: 'output', operator: 'equals', value: 'discard' },
+        } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'completed', error: null })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(5)
+      expect(result.nodeSessions.map(session => [session.node_id, session.execution_id, session.status])).toEqual([
+        ['header', 'header@loop:retry:0', 'completed'], ['latch', 'latch@loop:retry:0', 'completed'],
+        ['header', 'header@loop:retry:1', 'completed'], ['latch', 'latch@loop:retry:1', 'completed'],
+        ['publish', 'publish', 'completed'],
+      ])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses).toMatchObject({ publish: 'completed', discard: 'skipped' })
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => ['publish-exit', 'discard-exit'].includes(item.edge_id)).map(item => [
+        item.edge_id, item.status, item.source_execution_id, item.iteration_path,
+      ])).toEqual([
+        ['publish-exit', 'not_taken', 'latch@loop:retry:0', [{ loopId: 'loop:retry', iteration: 0 }]],
+        ['discard-exit', 'not_taken', 'latch@loop:retry:0', [{ loopId: 'loop:retry', iteration: 0 }]],
+        ['publish-exit', 'taken', 'latch@loop:retry:1', [{ loopId: 'loop:retry', iteration: 1 }]],
+        ['discard-exit', 'not_taken', 'latch@loop:retry:1', [{ loopId: 'loop:retry', iteration: 1 }]],
+      ])
+      expect(requests[4].input).toContain('stop')
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('does not dispatch any loop exit target when final-iteration exit evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_final_exit_evidence BEFORE INSERT ON workflow_run_edge_evaluations
+      WHEN NEW.edge_id = 'publish-exit' AND NEW.source_execution_id LIKE '%:1'
+      BEGIN SELECT RAISE(ABORT, 'final exit evidence write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'stop' })
+    const workflow = manager.create({
+      name: `Final exit evidence ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'publish', type: 'agent', data: { title: 'Publish', agent: 'hermes', input: 'publish' } },
+        { id: 'discard', type: 'agent', data: { title: 'Discard', agent: 'hermes', input: 'discard' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+        { id: 'publish-exit', source: 'latch', target: 'publish' },
+        { id: 'discard-exit', source: 'latch', target: 'discard', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'discard' } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('final exit evidence write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['header', 'latch', 'header', 'latch'])
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_final_exit_evidence')
+      await manager.delete(workflow.id)
+    }
+  })
+
+  it('applies approval rejection at the loop exit target boundary', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'stop' })
+    const workflow = manager.create({
+      name: `Exit approval ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'publish', type: 'agent', data: { title: 'Publish', agent: 'hermes', input: 'publish', approvalRequired: true } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+        { id: 'publish-exit', source: 'latch', target: 'publish' },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.publish).toBe('pending_approval'))
+      const runId = manager.getRuntimeStatus(workflow.id).runId!
+      expect(manager.approveNode(workflow.id, runId, 'publish', false)).toBe(true)
+      const result = await runPromise
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'Workflow node approval rejected' })
+      expect(result.nodeSessions.map(session => [session.node_id, session.status, session.error])).toEqual([
+        ['header', 'completed', null], ['latch', 'completed', null], ['publish', 'approval_rejected', 'Workflow node approval rejected'],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('does not dispatch a loop exit target after the shared run deadline', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let now = 1000
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    chatRunMock.runAndWait.mockReset().mockImplementation(async () => {
+      now += 15
+      return { ok: true, output: 'stop' }
+    })
+    const workflow = manager.create({
+      name: `Exit deadline ${now}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'publish', type: 'agent', data: { title: 'Publish', agent: 'hermes', input: 'publish' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+        { id: 'publish-exit', source: 'latch', target: 'publish' },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 25 })
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'workflow run timed out after 25ms' })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+      expect(result.nodeSessions.map(session => [session.node_id, session.status])).toEqual([
+        ['header', 'completed'], ['latch', 'failed'],
+      ])
+    } finally { nowSpy.mockRestore(); await manager.delete(workflow.id) }
+  })
+
+  it('finalizes a loop exit target when its approval reaches the shared deadline', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'stop' })
+    const workflow = manager.create({
+      name: `Exit approval deadline ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'publish', type: 'agent', data: { title: 'Publish', agent: 'hermes', input: 'publish', approvalRequired: true } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+        { id: 'publish-exit', source: 'latch', target: 'publish' },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 20 })
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'workflow run timed out after 20ms' })
+      expect(result.nodeSessions.map(session => [session.node_id, session.status, session.error])).toEqual([
+        ['header', 'completed', null], ['latch', 'completed', null], ['publish', 'failed', 'workflow run timed out after 20ms'],
+      ])
+      expect(manager.approveNode(workflow.id, result.run.id, 'publish', true)).toBe(false)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('keeps a canceled loop exit target canceled when its agent fails late', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let release!: () => void
+    let targetStarted!: () => void
+    const targetStartedPromise = new Promise<void>(resolve => { targetStarted = resolve })
+    const releasePromise = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    chatRunMock.runAndWait.mockReset().mockImplementation(async () => {
+      calls += 1
+      if (calls < 3) return { ok: true, output: 'stop' }
+      targetStarted()
+      await releasePromise
+      return { ok: false, error: 'late exit failure' }
+    })
+    const workflow = manager.create({
+      name: `Canceled exit ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'publish', type: 'agent', data: { title: 'Publish', agent: 'hermes', input: 'publish' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+        { id: 'publish-exit', source: 'latch', target: 'publish' },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await targetStartedPromise
+      const runId = listWorkflowRuns(workflow.id)[0].id
+      await manager.stopRun(workflow.id, runId, 'operator canceled exit')
+      release()
+      const result = await runPromise
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'canceled', error: 'operator canceled exit' })
+      expect(result.nodeSessions.map(session => [session.node_id, session.status, session.error])).toEqual([
+        ['header', 'completed', null], ['latch', 'completed', null], ['publish', 'canceled', 'operator canceled exit'],
+      ])
+    } finally { release(); await manager.delete(workflow.id) }
+  })
+
   it('finalizes a failed downstream node after a top-level loop exits', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const manager = new WorkflowManager()
