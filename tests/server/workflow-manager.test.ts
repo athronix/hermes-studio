@@ -1438,6 +1438,69 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('enforces a fresh absolute deadline across sequential rerun executions', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let now = 9000
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const receivedTimeouts: Array<number | undefined> = []
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => {
+      receivedTimeouts.push(options.timeoutMs)
+      if (receivedTimeouts.length === 1) { now += 70; return { ok: true, output: 'first' } }
+      return { ok: false, error: `chat-run timed out after ${options.timeoutMs}ms` }
+    })
+    const nodes = [
+      { id: 'first', type: 'agent', data: { title: 'First', agent: 'hermes', input: 'first' } },
+      { id: 'second', type: 'agent', data: { title: 'Second', agent: 'hermes', input: 'second' } },
+    ]
+    const edges = [{ id: 'next', source: 'first', target: 'second' }]
+    const workflow = manager.create({ name: `Rerun deadline ${now}`, profile: 'default', nodes, edges })
+    const run = createWorkflowRun({
+      workflow_id: workflow.id, profile: 'default', status: 'canceled', snapshot_nodes: nodes, snapshot_edges: edges,
+      started_at: 1000, finished_at: 1100,
+    })
+    for (const [sequence, nodeId] of ['first', 'second'].entries()) createWorkflowRunNodeSession({
+      run_id: run.id, workflow_id: workflow.id, node_id: nodeId, session_id: `old-${nodeId}`, status: 'canceled', sequence,
+    })
+    try {
+      const result = await manager.rerunFromNode(workflow.id, run.id, 'first', { timeoutMs: 100 })
+      expect(receivedTimeouts).toEqual([100, 30])
+      expect({ status: result.run.status, error: result.run.error, startedAt: result.run.started_at }).toEqual({
+        status: 'failed', error: 'workflow run timed out after 100ms', startedAt: 9000,
+      })
+    } finally { nowSpy.mockRestore(); await manager.delete(workflow.id) }
+  })
+
+  it('times out and removes a pending rerun approval at its fresh deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(12000)
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review' })
+    const nodes = [{ id: 'review', type: 'agent', data: { title: 'Review', agent: 'hermes', input: 'review', approvalRequired: true } }]
+    const workflow = manager.create({ name: 'Rerun approval deadline', profile: 'default', nodes, edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'canceled', snapshot_nodes: nodes, snapshot_edges: [], started_at: 1000 })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'review', session_id: 'old-review', status: 'canceled' })
+    try {
+      const rerunPromise = manager.rerunFromNode(workflow.id, run.id, 'review', { timeoutMs: 100 })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.review).toBe('pending_approval')
+      await vi.advanceTimersByTimeAsync(100)
+      const result = await rerunPromise
+      expect({ status: result.run.status, error: result.run.error, startedAt: result.run.started_at }).toEqual({
+        status: 'failed', error: 'workflow run timed out after 100ms', startedAt: 12000,
+      })
+      expect(result.nodeSessions.map(session => [session.status, session.error])).toEqual([['failed', 'workflow run timed out after 100ms']])
+      expect(manager.approveNode(workflow.id, run.id, 'review', true)).toBe(false)
+    } finally { vi.useRealTimers(); await manager.delete(workflow.id) }
+  })
+
   it('reruns incomplete external upstream dependencies for downstream joins', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const {

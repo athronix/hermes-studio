@@ -1487,6 +1487,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     deleteWorkflowRunNodeSessions(run.id, [...activeIds])
 
     const startedAt = Date.now()
+    const runDeadline = input.timeoutMs && input.timeoutMs > 0 ? startedAt + input.timeoutMs : null
+    const runTimeoutMessage = input.timeoutMs && input.timeoutMs > 0
+      ? `workflow run timed out after ${input.timeoutMs}ms`
+      : null
     const updatedRun = updateWorkflowRun(run.id, {
       status: 'running',
       started_at: startedAt,
@@ -1558,6 +1562,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         })
 
         const results = await Promise.all(ready.map(async node => {
+          const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+          if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
+          }
           const nodeSessionId = randomUUID()
           runningOrDone.add(node.id)
           const target = resolveWorkflowNodeRunTarget(node.data.agent)
@@ -1597,11 +1605,16 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           }, {
             profile,
             user: input.user,
-            timeoutMs: input.timeoutMs,
+            timeoutMs: remainingTimeoutMs,
             approvalChoice: 'once',
           })
           if (!runResult.ok) {
             const error = runResult.error || `node ${node.id} failed`
+            if (runTimeoutMessage !== null && isChatRunWaitTimeout(error, remainingTimeoutMs)) {
+              updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
+              nodeStatuses[node.id] = 'failed'
+              return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage }
+            }
             if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
               updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
               nodeStatuses[node.id] = 'canceled'
@@ -1623,12 +1636,24 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             return { node, ok: false, error }
           }
           const output = lastAssistantOutput(nodeSessionId, runResult.output)
-          const approved = await this.waitForNodeApproval({
-            workflowId: workflow.id,
-            runId: run.id,
-            node,
-            nodeStatuses,
-          })
+          const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+          if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) {
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
+            nodeStatuses[node.id] = 'failed'
+            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
+          }
+          let approved: boolean
+          try {
+            approved = await this.waitForNodeApproval({
+              workflowId: workflow.id, runId: run.id, node, nodeStatuses,
+              timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
+            })
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err)
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
+            nodeStatuses[node.id] = 'failed'
+            return { node, ok: false, deadlineExceeded: error === runTimeoutMessage, error }
+          }
           if (!approved) {
             const error = 'Workflow node approval rejected'
             updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
@@ -1661,6 +1686,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           if ('canceled' in failed && failed.canceled) {
             const canceledRun = failRun(failed.error || 'Workflow run canceled')
             return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
+          if ('deadlineExceeded' in failed && failed.deadlineExceeded) {
+            const failedRun = failRun(failed.error || runTimeoutMessage || 'workflow run timed out')
+            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
           }
           if ('approvalRejected' in failed && failed.approvalRejected) {
             const message = `Node ${failed.node.data.title || failed.node.id} approval rejected`
