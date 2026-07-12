@@ -895,6 +895,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               })
               nodeStatuses[node.id] = 'running'
               this.setRuntimeStatus(workflow.id, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
+              try {
               const assembledInput = await this.buildNodeUserMessage({
                 node, incomingEdges: forwardEdges.filter(edge => edge.target === node.id),
                 nodeById, outputs, overrideInput: iteration === 0 && startNodeIds.includes(node.id) ? input.input : undefined,
@@ -922,6 +923,17 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                   sequence: edgeEvidenceSequence++, orchestration: edge.orchestration,
                   condition_evaluation: 'condition' in decision ? decision.condition : null,
                 })
+              }
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err)
+                updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: message })
+                nodeStatuses[node.id] = 'failed'
+                createWorkflowRunLoopEpoch({
+                  run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
+                  iteration_path: iterationPath, status: 'failed', exit_reason: message,
+                  sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
+                })
+                throw err
               }
             }
             const hasNextIteration = iteration + 1 < loop.maxIterations

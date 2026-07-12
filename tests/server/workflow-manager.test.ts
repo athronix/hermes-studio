@@ -391,6 +391,70 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('records a failed loop epoch when an agent fails during an iteration', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+      .mockResolvedValueOnce({ ok: true, output: 'header ok' })
+      .mockResolvedValueOnce({ ok: false, error: 'latch exploded' })
+    const workflow = manager.create({
+      name: `Failed loop epoch ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'latch exploded' })
+      expect(result.nodeSessions.map(session => [session.execution_id, session.status, session.error])).toEqual([
+        ['header@loop:retry:0', 'completed', null],
+        ['latch@loop:retry:0', 'failed', 'latch exploded'],
+      ])
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => ({
+        iteration: epoch.iteration, path: epoch.iteration_path, status: epoch.status, exitReason: epoch.exit_reason,
+      }))).toEqual([{ iteration: 0, path: [{ loopId: 'loop:retry', iteration: 0 }], status: 'failed', exitReason: 'latch exploded' }])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('fails closed when failed loop epoch evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_failed_loop_epoch BEFORE INSERT ON workflow_run_loop_epochs
+      WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'failed loop epoch write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: false, error: 'agent exploded' })
+    const workflow = manager.create({
+      name: `Failed epoch persistence ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('failed loop epoch write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(result.nodeSessions.map(session => [session.execution_id, session.status])).toEqual([['header@loop:retry:0', 'failed']])
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_failed_loop_epoch')
+      await manager.delete(workflow.id)
+    }
+  })
+
   it('does not start the next iteration when loop epoch evidence cannot be persisted', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { getDb } = await import('../../packages/server/src/db')
