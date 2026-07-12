@@ -103,6 +103,20 @@ describe('workflow manager', () => {
     expect(() => normalizeWorkflowNode({ id: 'bad', type: 'agent', data: { orchestration: { join: 'some' } } })).toThrow('workflow node bad has invalid orchestration join')
   })
 
+  it('distinguishes pending, ready, and skipped joins without treating unresolved edges as not taken', async () => {
+    const { evaluateWorkflowNodeJoin } = await import('../../packages/server/src/services/workflow-manager')
+    const taken = { status: 'taken', routeMatched: true } as const
+    const notTaken = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' } as const
+
+    expect(evaluateWorkflowNodeJoin('all', [taken, undefined])).toBe('pending')
+    expect(evaluateWorkflowNodeJoin('all', [taken, taken])).toBe('ready')
+    expect(evaluateWorkflowNodeJoin('all', [taken, notTaken])).toBe('skipped')
+    expect(evaluateWorkflowNodeJoin('any', [taken, undefined])).toBe('ready')
+    expect(evaluateWorkflowNodeJoin('any', [notTaken, undefined])).toBe('pending')
+    expect(evaluateWorkflowNodeJoin('any', [notTaken, notTaken])).toBe('skipped')
+    expect(evaluateWorkflowNodeJoin('all', [])).toBe('ready')
+  })
+
   it('normalizes legacy and declarative workflow edges without changing legacy semantics', async () => {
     const { normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
 
@@ -218,6 +232,34 @@ describe('workflow manager', () => {
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
       expect(result.nodeSessions.map(session => session.node_id).sort()).toEqual(['matched', 'source'])
       expect(manager.getRuntimeStatus(workflow.id).nodeStatuses).toMatchObject({ source: 'completed', matched: 'completed', unmatched: 'skipped' })
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('runs an any-join once when at least one incoming edge is taken', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'done' })
+    const workflow = manager.create({
+      name: `Any join ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'left', type: 'agent', data: { title: 'Left', agent: 'hermes', input: 'left' } },
+        { id: 'right', type: 'agent', data: { title: 'Right', agent: 'hermes', input: 'right' } },
+        { id: 'join', type: 'agent', data: { title: 'Join', agent: 'hermes', input: 'join', orchestration: { join: 'any' } } },
+      ],
+      edges: [
+        { id: 'left-join', source: 'left', target: 'join', data: { orchestration: { route: 'success' } } },
+        { id: 'right-join', source: 'right', target: 'join', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'never' } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
+      expect(result.nodeSessions.filter(session => session.node_id === 'join')).toHaveLength(1)
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.join).toBe('completed')
     } finally { await manager.delete(workflow.id) }
   })
 

@@ -300,6 +300,21 @@ export function evaluateWorkflowEdgeRoute(
     : { status: 'not_taken', routeMatched: true, reason: 'condition_not_matched', condition }
 }
 
+export type WorkflowNodeJoinDecision = 'pending' | 'ready' | 'skipped'
+
+export function evaluateWorkflowNodeJoin(
+  join: 'all' | 'any',
+  decisions: Array<WorkflowEdgeDecision | undefined>,
+): WorkflowNodeJoinDecision {
+  if (decisions.length === 0) return 'ready'
+  if (join === 'any') {
+    if (decisions.some(decision => decision?.status === 'taken')) return 'ready'
+    return decisions.every(Boolean) ? 'skipped' : 'pending'
+  }
+  if (decisions.some(decision => decision?.status === 'not_taken')) return 'skipped'
+  return decisions.every(decision => decision?.status === 'taken') ? 'ready' : 'pending'
+}
+
 export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const source = typeof record.source === 'string' && record.source.trim() ? record.source.trim() : ''
@@ -713,8 +728,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           for (const node of activeNodes) {
             if (runningOrDone.has(node.id)) continue
             const dependencies = activeIncoming.get(node.id) || []
-            if (dependencies.length === 0 || !dependencies.every(edge => completed.has(edge.source))) continue
-            if (dependencies.every(edge => edgeDecisions.has(edge)) && dependencies.some(edge => edgeDecisions.get(edge)?.status !== 'taken')) {
+            const joinDecision = evaluateWorkflowNodeJoin(
+              node.data.orchestration.join,
+              dependencies.map(edge => edgeDecisions.get(edge)),
+            )
+            if (joinDecision === 'skipped') {
               runningOrDone.add(node.id)
               completed.add(node.id)
               nodeStatuses[node.id] = 'skipped'
@@ -728,7 +746,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         const ready = activeNodes.filter(node => {
           if (runningOrDone.has(node.id)) return false
           const dependencies = activeIncoming.get(node.id) || []
-          return dependencies.every(edge => completed.has(edge.source) && edgeDecisions.get(edge)?.status === 'taken')
+          return evaluateWorkflowNodeJoin(
+            node.data.orchestration.join,
+            dependencies.map(edge => edgeDecisions.get(edge)),
+          ) === 'ready'
         })
         if (ready.length === 0) {
           throw new Error('workflow graph contains a cycle or blocked dependency')
