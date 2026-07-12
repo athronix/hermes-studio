@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 const chatRunMock = vi.hoisted(() => ({
   runAndWait: vi.fn(),
   abortSession: vi.fn(),
+  sessionOutputs: new Map<string, string>(),
 }))
 
 vi.mock('../../packages/server/src/routes/hermes/chat-run', () => ({
@@ -15,7 +16,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', async (importOrigin
     ...actual,
     getSession: vi.fn(() => null),
     getSessionDetail: vi.fn((sessionId: string) => ({
-      messages: [{ role: 'assistant', content: `output:${sessionId}` }],
+      messages: [{ role: 'assistant', content: chatRunMock.sessionOutputs.get(sessionId) || `output:${sessionId}` }],
     })),
     deleteSession: vi.fn(),
   }
@@ -360,6 +361,48 @@ describe('workflow manager', () => {
         ['latch', 'latch@loop:retry:1', [{ loopId: 'loop:retry', iteration: 1 }]],
         ['header', 'header@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
         ['latch', 'latch@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('exits a top-level loop when its feedback condition is not taken and records each decision', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    const outputs = ['header', 'continue', 'header', 'stop']
+    chatRunMock.sessionOutputs.clear()
+    chatRunMock.runAndWait.mockImplementation(async (request: { session_id: string }) => {
+      const output = outputs.shift() || 'unexpected'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Conditional loop exit ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: {
+          route: 'success', feedback: { maxIterations: 3 },
+          condition: { path: 'output', operator: 'equals', value: 'continue' },
+        } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'completed', error: null })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+      expect(result.nodeSessions.map(session => session.execution_id)).toEqual([
+        'header@loop:retry:0', 'latch@loop:retry:0', 'header@loop:retry:1', 'latch@loop:retry:1',
+      ])
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'retry').map(item => ({
+        status: item.status, reason: item.reason, condition: item.condition_evaluation,
+      }))).toEqual([
+        { status: 'taken', reason: null, condition: { status: 'matched', actual: 'continue' } },
+        { status: 'not_taken', reason: 'condition_not_matched', condition: { status: 'not_matched', actual: 'stop', reason: 'not_equal' } },
       ])
     } finally { await manager.delete(workflow.id) }
   })
