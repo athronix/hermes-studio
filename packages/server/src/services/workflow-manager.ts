@@ -690,6 +690,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const nodeSessionRecordIds = new Map<string, string>()
     const nodeStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const]))
     let sequence = 0
+    const inFlight = new Map<string, Promise<any>>()
     let firstNodeFailure: { node: WorkflowNodeSnapshot; error: string } | null = null
 
     const failRun = (message: string) => {
@@ -751,7 +752,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             dependencies.map(edge => edgeDecisions.get(edge)),
           ) === 'ready'
         })
-        if (ready.length === 0) {
+        if (ready.length === 0 && inFlight.size === 0) {
           throw new Error('workflow graph contains a cycle or blocked dependency')
         }
         for (const node of ready) nodeStatuses[node.id] = 'running'
@@ -761,7 +762,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           nodeStatuses: { ...nodeStatuses },
         })
 
-        const results = await Promise.all(ready.map(async node => {
+        for (const node of ready) {
+          const execution = (async () => {
           const nodeSessionId = randomUUID()
           nodeSessionIds.set(node.id, nodeSessionId)
           runningOrDone.add(node.id)
@@ -865,10 +867,20 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           })
           updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
           return { node, ok: true }
-        }))
+          })()
+          inFlight.set(node.id, execution)
+        }
+        if (inFlight.size === 0) continue
+        const settled = await Promise.race(inFlight.values())
+        inFlight.delete(settled.node.id)
+        const results = [settled]
 
         const failed = results.find(result => !result.ok && !('handledFailure' in result && result.handledFailure))
         if (failed) {
+          if ('approvalRejected' in failed && failed.approvalRejected && inFlight.size > 0) {
+            await Promise.allSettled(inFlight.values())
+            inFlight.clear()
+          }
           for (const node of activeNodes) {
             if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
           }

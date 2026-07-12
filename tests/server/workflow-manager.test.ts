@@ -263,6 +263,45 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('starts an any-join after the first taken edge without waiting for another running source', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let releaseSlow!: () => void
+    const slow = new Promise<{ ok: true; output: string }>(resolve => { releaseSlow = () => resolve({ ok: true, output: 'slow' }) })
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockImplementation(async (request: { input: string }) => {
+      if (request.input.includes('slow')) return slow
+      return { ok: true, output: 'done' }
+    })
+    const workflow = manager.create({
+      name: `Completion driven ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'fast', type: 'agent', data: { title: 'Fast', agent: 'hermes', input: 'fast' } },
+        { id: 'slow', type: 'agent', data: { title: 'Slow', agent: 'hermes', input: 'slow' } },
+        { id: 'join', type: 'agent', data: { title: 'Join', agent: 'hermes', input: 'join', orchestration: { join: 'any' } } },
+      ],
+      edges: [
+        { id: 'fast-join', source: 'fast', target: 'join' },
+        { id: 'slow-join', source: 'slow', target: 'join' },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.fast).toBe('completed'))
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.slow).toBe('running')
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.join).toBe('completed'))
+      let settled = false
+      void runPromise.then(() => { settled = true })
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      releaseSlow()
+      await expect(runPromise).resolves.toMatchObject({ run: { status: 'completed' } })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
+    } finally { releaseSlow?.(); await manager.delete(workflow.id) }
+  })
+
   it('runs failure and always branches after a failed node while skipping its success branch', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
