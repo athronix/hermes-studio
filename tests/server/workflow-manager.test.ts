@@ -379,7 +379,49 @@ describe('workflow manager', () => {
         { status: 'taken', sourceExecutionId: 'header@loop:retry:1', iterationPath: [{ loopId: 'loop:retry', iteration: 1 }] },
         { status: 'taken', sourceExecutionId: 'header@loop:retry:2', iterationPath: [{ loopId: 'loop:retry', iteration: 2 }] },
       ])
+      const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => ({
+        loopId: epoch.loop_id, iteration: epoch.iteration, path: epoch.iteration_path,
+        status: epoch.status, exitReason: epoch.exit_reason,
+      }))).toEqual([
+        { loopId: 'loop:retry', iteration: 0, path: [{ loopId: 'loop:retry', iteration: 0 }], status: 'completed', exitReason: 'feedback_taken' },
+        { loopId: 'loop:retry', iteration: 1, path: [{ loopId: 'loop:retry', iteration: 1 }], status: 'completed', exitReason: 'feedback_taken' },
+        { loopId: 'loop:retry', iteration: 2, path: [{ loopId: 'loop:retry', iteration: 2 }], status: 'completed', exitReason: 'iteration_limit_reached' },
+      ])
     } finally { await manager.delete(workflow.id) }
+  })
+
+  it('does not start the next iteration when loop epoch evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_loop_epoch_evidence BEFORE INSERT ON workflow_run_loop_epochs
+      BEGIN SELECT RAISE(ABORT, 'loop epoch evidence write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Loop epoch failure ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('loop epoch evidence write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+      expect(result.nodeSessions.map(session => session.execution_id)).toEqual(['header@loop:retry:0', 'latch@loop:retry:0'])
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_loop_epoch_evidence')
+      await manager.delete(workflow.id)
+    }
   })
 
   it('does not start a loop target when forward edge evidence cannot be persisted', async () => {
@@ -804,8 +846,8 @@ describe('workflow manager', () => {
   it('stores edge evaluations append-only and deletes them atomically with the run', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const {
-      createWorkflowRun, createWorkflowRunEdgeEvaluation, deleteWorkflowRun,
-      listWorkflowRunEdgeEvaluations,
+      createWorkflowRun, createWorkflowRunEdgeEvaluation, createWorkflowRunLoopEpoch, deleteWorkflowRun,
+      listWorkflowRunEdgeEvaluations, listWorkflowRunLoopEpochs,
     } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     initAllStores()
     const run = createWorkflowRun({ workflow_id: `evidence-${Date.now()}`, status: 'running' })
@@ -823,8 +865,13 @@ describe('workflow manager', () => {
     expect(listWorkflowRunEdgeEvaluations(run.id).map(item => [item.edge_id, item.sequence, item.status, item.source_execution_id, item.iteration_path])).toEqual([
       ['edge-b', 1, 'taken', 'source', []], ['edge-a', 2, 'not_taken', 'source', []],
     ])
+    createWorkflowRunLoopEpoch({ run_id: run.id, workflow_id: run.workflow_id, loop_id: 'loop:test', iteration: 0,
+      iteration_path: [{ loopId: 'loop:test', iteration: 0 }], status: 'completed', exit_reason: 'iteration_limit_reached',
+      sequence: 0, started_at: 1, finished_at: 2 })
+    expect(listWorkflowRunLoopEpochs(run.id)).toHaveLength(1)
     expect(deleteWorkflowRun(run.id)).toBe(true)
     expect(listWorkflowRunEdgeEvaluations(run.id)).toEqual([])
+    expect(listWorkflowRunLoopEpochs(run.id)).toEqual([])
   })
 
   it('rejects an invalid rerun snapshot before deleting sessions or mutating the run', async () => {

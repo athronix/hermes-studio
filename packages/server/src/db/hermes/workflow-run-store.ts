@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import { getDb, jsonDelete, jsonGet, jsonGetAll, jsonSet } from '../index'
-import { WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUNS_TABLE } from './schemas'
+import { WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_LOOP_EPOCHS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUNS_TABLE } from './schemas'
 
 export type WorkflowRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
 export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'approval_rejected' | 'canceled'
@@ -25,6 +25,11 @@ export interface WorkflowRunEdgeEvaluationRecord {
   id: string; run_id: string; workflow_id: string; edge_id: string; source_node_id: string; source_execution_id: string; iteration_path: unknown[]; target_node_id: string
   source_outcome: 'success' | 'failure' | 'skipped'; status: 'taken' | 'not_taken' | 'error'; route: 'success' | 'failure' | 'always'
   reason: string | null; sequence: number; orchestration: unknown; condition_evaluation: unknown | null; evaluated_at: number
+}
+
+export interface WorkflowRunLoopEpochRecord {
+  id: string; run_id: string; workflow_id: string; loop_id: string; iteration: number; iteration_path: unknown[]
+  status: 'completed' | 'failed' | 'canceled'; exit_reason: string | null; sequence: number; started_at: number; finished_at: number
 }
 
 export interface WorkflowRunNodeSessionRecord {
@@ -130,6 +135,28 @@ export function listWorkflowRunEdgeEvaluations(runId: string): WorkflowRunEdgeEv
   const db = getDb()
   if (!db) return Object.values(jsonGetAll(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)).map(rowToEdgeEvaluationRecord).filter(item => item.run_id === runId).sort((a,b) => a.sequence - b.sequence)
   return (db.prepare(`SELECT * FROM ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} WHERE run_id = ? ORDER BY sequence ASC`).all(runId) as Record<string, any>[]).map(rowToEdgeEvaluationRecord)
+}
+
+function rowToLoopEpochRecord(row: Record<string, any>): WorkflowRunLoopEpochRecord {
+  return { id: String(row.id), run_id: String(row.run_id), workflow_id: String(row.workflow_id), loop_id: String(row.loop_id),
+    iteration: Number(row.iteration), iteration_path: parseArrayJson(row.iteration_path_json ?? row.iteration_path), status: row.status,
+    exit_reason: row.exit_reason == null ? null : String(row.exit_reason), sequence: Number(row.sequence),
+    started_at: Number(row.started_at), finished_at: Number(row.finished_at) }
+}
+
+export function createWorkflowRunLoopEpoch(input: Omit<WorkflowRunLoopEpochRecord, 'id'> & { id?: string }): WorkflowRunLoopEpochRecord {
+  const record = { ...input, id: input.id?.trim() || randomUUID(), exit_reason: input.exit_reason ?? null } as WorkflowRunLoopEpochRecord
+  const row = { ...record, iteration_path_json: JSON.stringify(record.iteration_path) }
+  const db = getDb()
+  if (!db) { jsonSet(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, record.id, row as any); return record }
+  db.prepare(`INSERT INTO ${WORKFLOW_RUN_LOOP_EPOCHS_TABLE} (id, run_id, workflow_id, loop_id, iteration, iteration_path_json, status, exit_reason, sequence, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.id, record.run_id, record.workflow_id, record.loop_id, record.iteration, row.iteration_path_json, record.status, record.exit_reason, record.sequence, record.started_at, record.finished_at)
+  return record
+}
+
+export function listWorkflowRunLoopEpochs(runId: string): WorkflowRunLoopEpochRecord[] {
+  const db = getDb()
+  if (!db) return Object.values(jsonGetAll(WORKFLOW_RUN_LOOP_EPOCHS_TABLE)).map(rowToLoopEpochRecord).filter(item => item.run_id === runId).sort((a,b) => a.sequence - b.sequence)
+  return (db.prepare(`SELECT * FROM ${WORKFLOW_RUN_LOOP_EPOCHS_TABLE} WHERE run_id = ? ORDER BY sequence ASC`).all(runId) as Record<string, any>[]).map(rowToLoopEpochRecord)
 }
 
 export function createWorkflowRun(input: {
@@ -256,6 +283,9 @@ export function deleteWorkflowRun(id: string): boolean {
     for (const record of Object.values(jsonGetAll(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)).map(rowToEdgeEvaluationRecord)) {
       if (record.run_id === id) jsonDelete(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, record.id)
     }
+    for (const record of Object.values(jsonGetAll(WORKFLOW_RUN_LOOP_EPOCHS_TABLE)).map(rowToLoopEpochRecord)) {
+      if (record.run_id === id) jsonDelete(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, record.id)
+    }
     for (const record of Object.values(jsonGetAll(WORKFLOW_RUN_NODE_SESSIONS_TABLE)).map(rowToNodeSessionRecord)) {
       if (record.run_id === id) jsonDelete(WORKFLOW_RUN_NODE_SESSIONS_TABLE, record.id)
     }
@@ -265,6 +295,7 @@ export function deleteWorkflowRun(id: string): boolean {
   db.exec('BEGIN')
   try {
     db.prepare(`DELETE FROM ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} WHERE run_id = ?`).run(id)
+    db.prepare(`DELETE FROM ${WORKFLOW_RUN_LOOP_EPOCHS_TABLE} WHERE run_id = ?`).run(id)
     db.prepare(`DELETE FROM ${WORKFLOW_RUN_NODE_SESSIONS_TABLE} WHERE run_id = ?`).run(id)
     db.prepare(`DELETE FROM ${WORKFLOW_RUNS_TABLE} WHERE id = ?`).run(id)
     db.exec('COMMIT')

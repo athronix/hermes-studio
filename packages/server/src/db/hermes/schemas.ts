@@ -245,6 +245,17 @@ export const WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES = {
   idx_workflow_run_edge_evaluations_edge: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_edge ON workflow_run_edge_evaluations(edge_id)',
 }
 
+export const WORKFLOW_RUN_LOOP_EPOCHS_TABLE = 'workflow_run_loop_epochs'
+export const WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', loop_id: 'TEXT NOT NULL',
+  iteration: 'INTEGER NOT NULL', iteration_path_json: "TEXT NOT NULL DEFAULT '[]'", status: 'TEXT NOT NULL',
+  exit_reason: 'TEXT', sequence: 'INTEGER NOT NULL', started_at: 'INTEGER NOT NULL', finished_at: 'INTEGER NOT NULL',
+}
+export const WORKFLOW_RUN_LOOP_EPOCHS_INDEXES = {
+  idx_workflow_run_loop_epochs_run_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_loop_epochs_run_sequence ON workflow_run_loop_epochs(run_id, sequence)',
+  uniq_workflow_run_loop_epochs_identity: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_loop_epochs_identity ON workflow_run_loop_epochs(run_id, loop_id, iteration_path_json)',
+}
+
 // ============================================================================
 // Compression Snapshot (compression-snapshot.ts)
 // ============================================================================
@@ -847,6 +858,9 @@ export function initAllHermesTables(): void {
     for (const sql of Object.values(WORKFLOW_RUN_NODE_SESSIONS_INDEXES)) db.exec(sql)
     syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
       indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    syncTable(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA, {
+      indexes: WORKFLOW_RUN_LOOP_EPOCHS_INDEXES,
     })
 
     // Compression snapshot

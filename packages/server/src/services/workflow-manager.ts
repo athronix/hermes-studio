@@ -14,6 +14,7 @@ import { getExactSessionDetailFromDbWithProfile } from '../db/hermes/sessions-db
 import {
   createWorkflowRun,
   createWorkflowRunEdgeEvaluation,
+  createWorkflowRunLoopEpoch,
   createWorkflowRunNodeSession,
   deleteWorkflowRun,
   deleteWorkflowRunNodeSessions,
@@ -879,6 +880,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         let edgeEvidenceSequence = 0
         try {
           for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
+            const epochStartedAt = Date.now()
             for (const node of ordered) {
               const nodeSessionId = randomUUID()
               const executionId = `${node.id}@${loop.id}:${iteration}`
@@ -937,6 +939,12 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               reason: 'reason' in decision ? decision.reason : null, sequence: edgeEvidenceSequence++,
               orchestration: feedbackEdge.orchestration,
               condition_evaluation: 'condition' in decision ? decision.condition : null,
+            })
+            createWorkflowRunLoopEpoch({
+              run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
+              iteration_path: [{ loopId: loop.id, iteration }], status: 'completed',
+              exit_reason: decision.status === 'taken' ? 'feedback_taken' : decision.reason,
+              sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
             })
             if (decision.status !== 'taken') break
           }
