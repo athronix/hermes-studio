@@ -926,13 +926,25 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               }
               } catch (err) {
                 const message = err instanceof Error ? err.message : String(err)
-                updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: message })
-                nodeStatuses[node.id] = 'failed'
-                createWorkflowRunLoopEpoch({
-                  run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
-                  iteration_path: iterationPath, status: 'failed', exit_reason: message,
-                  sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
+                const persistedRun = getWorkflowRun(run.id)
+                const canceled = this.canceledRunIds.has(run.id) || persistedRun?.status === 'canceled'
+                const finalMessage = canceled ? (persistedRun?.error || 'Workflow run canceled') : message
+                updateWorkflowRunNodeSession(nodeSession.id, {
+                  status: canceled ? 'canceled' : 'failed', finished_at: Date.now(), error: finalMessage,
                 })
+                nodeStatuses[node.id] = canceled ? 'canceled' : 'failed'
+                try {
+                  createWorkflowRunLoopEpoch({
+                    run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
+                    iteration_path: iterationPath, status: canceled ? 'canceled' : 'failed', exit_reason: finalMessage,
+                    sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
+                  })
+                } catch (evidenceError) {
+                  const evidenceMessage = evidenceError instanceof Error ? evidenceError.message : String(evidenceError)
+                  this.canceledRunIds.delete(run.id)
+                  updateWorkflowRun(run.id, { status: 'failed', finished_at: Date.now(), error: evidenceMessage })
+                  throw evidenceError
+                }
                 throw err
               }
             }
@@ -967,6 +979,16 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           const finishedAt = Date.now()
+          const persistedRun = getWorkflowRun(run.id)
+          const canceled = this.canceledRunIds.has(run.id) || persistedRun?.status === 'canceled'
+          if (canceled) {
+            const canceledRun = persistedRun || run
+            this.setRuntimeStatus(workflow.id, {
+              status: 'canceled', runId: run.id, completedAt: canceledRun.finished_at || finishedAt,
+              error: canceledRun.error, nodeStatuses: { ...nodeStatuses },
+            })
+            return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
           const failedRun = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || run
           this.setRuntimeStatus(workflow.id, { status: 'failed', runId: run.id, completedAt: finishedAt, error: message, nodeStatuses: { ...nodeStatuses } })
           return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }

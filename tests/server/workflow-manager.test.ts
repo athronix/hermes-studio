@@ -423,6 +423,90 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('records a canceled loop epoch without letting an aborted agent overwrite canceled state', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRuns, listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let release!: () => void
+    let entered!: () => void
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve })
+    const releasePromise = new Promise<void>(resolve => { release = resolve })
+    chatRunMock.runAndWait.mockReset().mockImplementation(async () => {
+      entered()
+      await releasePromise
+      return { ok: false, error: 'Workflow run canceled' }
+    })
+    const workflow = manager.create({
+      name: `Canceled loop epoch ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await enteredPromise
+      const running = listWorkflowRuns(workflow.id)[0]
+      await manager.stopRun(workflow.id, running.id, 'operator canceled loop')
+      release()
+      const result = await runPromise
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'canceled', error: 'operator canceled loop' })
+      expect(result.nodeSessions.map(session => [session.execution_id, session.status, session.error])).toEqual([
+        ['header@loop:retry:0', 'canceled', 'operator canceled loop'],
+      ])
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => ({
+        iteration: epoch.iteration, status: epoch.status, exitReason: epoch.exit_reason,
+      }))).toEqual([{ iteration: 0, status: 'canceled', exitReason: 'operator canceled loop' }])
+    } finally { release(); await manager.delete(workflow.id) }
+  })
+
+  it('fails closed when canceled loop epoch evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { listWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_canceled_loop_epoch BEFORE INSERT ON workflow_run_loop_epochs
+      WHEN NEW.status = 'canceled' BEGIN SELECT RAISE(ABORT, 'canceled loop epoch write failed'); END`)
+    const manager = new WorkflowManager()
+    let release!: () => void
+    let entered!: () => void
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve })
+    const releasePromise = new Promise<void>(resolve => { release = resolve })
+    chatRunMock.runAndWait.mockReset().mockImplementation(async () => {
+      entered(); await releasePromise; return { ok: false, error: 'Workflow run canceled' }
+    })
+    const workflow = manager.create({
+      name: `Canceled epoch persistence ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await enteredPromise
+      const running = listWorkflowRuns(workflow.id)[0]
+      await manager.stopRun(workflow.id, running.id, 'operator canceled loop')
+      release()
+      const result = await runPromise
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('canceled loop epoch write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally {
+      release(); db.exec('DROP TRIGGER IF EXISTS fail_canceled_loop_epoch'); await manager.delete(workflow.id)
+    }
+  })
+
   it('fails closed when failed loop epoch evidence cannot be persisted', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { getDb } = await import('../../packages/server/src/db')
