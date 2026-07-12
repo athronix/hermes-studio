@@ -96,6 +96,23 @@ describe('workflow manager', () => {
     expect(workflowNodeRequiresApproval({ data: {} })).toBe(false)
   })
 
+  it('normalizes legacy and declarative workflow edges without changing legacy semantics', async () => {
+    const { normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
+
+    expect(normalizeWorkflowEdge({ id: 'legacy', source: 'first', target: 'second' })).toEqual({
+      id: 'legacy', source: 'first', target: 'second', orchestration: { route: 'success' },
+    })
+    expect(normalizeWorkflowEdge({ id: 'conditional', source: 'first', target: 'second', data: { orchestration: { route: 'failure', condition: { path: 'output.status', operator: 'equals', value: 'RETRY' } } } })).toEqual({
+      id: 'conditional', source: 'first', target: 'second', orchestration: { route: 'failure', condition: { path: 'output.status', operator: 'equals', value: 'RETRY' } },
+    })
+  })
+
+  it('rejects malformed explicit workflow edge orchestration instead of falling back to legacy routing', async () => {
+    const { normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
+    expect(() => normalizeWorkflowEdge({ id: 'invalid-route', source: 'first', target: 'second', data: { orchestration: { route: 'sometimes' } } })).toThrow('workflow edge invalid-route has invalid orchestration route')
+    expect(() => normalizeWorkflowEdge({ id: 'missing-value', source: 'first', target: 'second', data: { orchestration: { route: 'success', condition: { path: 'output.status', operator: 'equals' } } } })).toThrow('workflow edge missing-value condition operator equals requires value')
+  })
+
   it('pauses downstream nodes until an approval-required node is approved', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const manager = new WorkflowManager()

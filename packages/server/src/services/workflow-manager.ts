@@ -94,10 +94,25 @@ interface WorkflowNodeSnapshot {
   }
 }
 
+type WorkflowEdgeRoute = 'success' | 'failure' | 'always'
+type WorkflowConditionOperator = 'equals'
+
+interface WorkflowEdgeCondition {
+  path: string
+  operator: WorkflowConditionOperator
+  value: unknown
+}
+
+interface WorkflowEdgeOrchestration {
+  route: WorkflowEdgeRoute
+  condition?: WorkflowEdgeCondition
+}
+
 interface WorkflowEdgeSnapshot {
   id?: string
   source: string
   target: string
+  orchestration: WorkflowEdgeOrchestration
 }
 
 type WorkflowManagerEvents = {
@@ -184,16 +199,48 @@ function isUnfinishedWorkflowNodeStatus(status: WorkflowRuntimeState | undefined
   return status === 'queued' || status === 'running' || status === 'pending_approval'
 }
 
-function normalizeEdge(raw: unknown): WorkflowEdgeSnapshot | null {
+export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const source = typeof record.source === 'string' && record.source.trim() ? record.source.trim() : ''
   const target = typeof record.target === 'string' && record.target.trim() ? record.target.trim() : ''
   if (!source || !target) return null
-  return {
-    id: typeof record.id === 'string' ? record.id : undefined,
-    source,
-    target,
+
+  const id = typeof record.id === 'string' ? record.id : undefined
+  const edgeLabel = id || `${source}->${target}`
+  const data = record.data && typeof record.data === 'object' ? record.data as Record<string, any> : null
+  const hasExplicitOrchestration = Boolean(data && Object.prototype.hasOwnProperty.call(data, 'orchestration'))
+  if (!hasExplicitOrchestration) {
+    return { id, source, target, orchestration: { route: 'success' } }
   }
+
+  const rawOrchestration = data!.orchestration
+  if (!rawOrchestration || typeof rawOrchestration !== 'object' || Array.isArray(rawOrchestration)) {
+    throw new Error(`workflow edge ${edgeLabel} has invalid orchestration`)
+  }
+  const orchestrationRecord = rawOrchestration as Record<string, any>
+  const route = orchestrationRecord.route
+  if (route !== 'success' && route !== 'failure' && route !== 'always') {
+    throw new Error(`workflow edge ${edgeLabel} has invalid orchestration route`)
+  }
+
+  const orchestration: WorkflowEdgeOrchestration = { route }
+  if (Object.prototype.hasOwnProperty.call(orchestrationRecord, 'condition')) {
+    const rawCondition = orchestrationRecord.condition
+    if (!rawCondition || typeof rawCondition !== 'object' || Array.isArray(rawCondition)) {
+      throw new Error(`workflow edge ${edgeLabel} has invalid condition`)
+    }
+    const conditionRecord = rawCondition as Record<string, any>
+    const path = typeof conditionRecord.path === 'string' ? conditionRecord.path.trim() : ''
+    const operator = conditionRecord.operator
+    if (!path) throw new Error(`workflow edge ${edgeLabel} condition requires path`)
+    if (operator !== 'equals') throw new Error(`workflow edge ${edgeLabel} has invalid condition operator`)
+    if (!Object.prototype.hasOwnProperty.call(conditionRecord, 'value')) {
+      throw new Error(`workflow edge ${edgeLabel} condition operator equals requires value`)
+    }
+    orchestration.condition = { path, operator, value: conditionRecord.value }
+  }
+
+  return { id, source, target, orchestration }
 }
 
 function imageMediaType(path: string): string {
@@ -450,7 +497,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const profile = input.profile?.trim() || workflow.profile || 'default'
     const nodes = workflow.nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
     const nodeById = new Map(nodes.map(node => [node.id, node]))
-    const edges = workflow.edges.map(normalizeEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
+    const edges = workflow.edges.map(normalizeWorkflowEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
       Boolean(edge && nodeById.has(edge.source) && nodeById.has(edge.target)),
     )
     if (nodes.length === 0) {
@@ -750,7 +797,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       ;(err as any).status = 404
       throw err
     }
-    const edges = run.snapshot_edges.map(normalizeEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
+    const edges = run.snapshot_edges.map(normalizeWorkflowEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
       Boolean(edge && nodeById.has(edge.source) && nodeById.has(edge.target)),
     )
     if (nodes.length === 0) {
