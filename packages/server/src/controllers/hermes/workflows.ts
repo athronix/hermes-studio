@@ -3,6 +3,8 @@ import { getWorkflowManager, type WorkflowRerunFromNodeInput, type WorkflowRunNo
 import { listUserProfiles } from '../../db/hermes/users-store'
 import { listWorkflowRunEdgeEvaluations, listWorkflowRunLoopEpochs, listWorkflowRunNodeSessions, listWorkflowRuns } from '../../db/hermes/workflow-run-store'
 import { logger } from '../../services/logger'
+import { compileWorkflowGraphPreflight } from '../../services/workflow-manager'
+import { confirmWorkflowImport, exportWorkflowDefinition, previewWorkflowImport } from '../../services/workflow-portability'
 
 const MAX_BATCH_DELETE = 200
 
@@ -114,6 +116,43 @@ function optionalBoolean(value: unknown, name: string): { value?: boolean; error
     if (normalized === 'false') return { value: false }
   }
   return { error: `${name} must be a boolean` }
+}
+
+function importOwnerId(ctx: Context): string {
+  return String(ctx.state?.user?.id || 'anonymous')
+}
+
+export async function exportDefinition(ctx: Context) {
+  const id = requiredId(ctx)
+  if (!id) return
+  const workflow = getWorkflowManager().get(id)
+  if (!workflow) { ctx.status = 404; ctx.body = { error: 'workflow not found' }; return }
+  if (denyProfileAccess(ctx, workflow.profile)) return
+  ctx.body = exportWorkflowDefinition(workflow)
+}
+
+export async function previewImport(ctx: Context) {
+  const body = bodyRecord(ctx)
+  const profile = requestedProfile(ctx, body) || 'default'
+  if (denyProfileAccess(ctx, profile)) return
+  if (typeof body.document !== 'string') { ctx.status = 400; ctx.body = { error: 'document must be a JSON string' }; return }
+  try {
+    const preview = previewWorkflowImport(body.document, { ownerId: importOwnerId(ctx), profile, validateGraph: compileWorkflowGraphPreflight })
+    ctx.body = { ok: true, preview }
+  } catch (err: any) { ctx.status = 400; ctx.body = { error: err?.message || 'invalid workflow import' } }
+}
+
+export async function confirmImport(ctx: Context) {
+  const body = bodyRecord(ctx)
+  const profile = requestedProfile(ctx, body) || 'default'
+  if (denyProfileAccess(ctx, profile)) return
+  if (typeof body.token !== 'string' || !body.token.trim()) { ctx.status = 400; ctx.body = { error: 'token is required' }; return }
+  try {
+    const input = confirmWorkflowImport(body.token.trim(), { ownerId: importOwnerId(ctx), profile, validateGraph: compileWorkflowGraphPreflight })
+    const workflow = getWorkflowManager().create(input)
+    ctx.status = 201
+    ctx.body = { ok: true, workflow }
+  } catch (err: any) { ctx.status = 409; ctx.body = { error: err?.message || 'workflow import confirmation failed' } }
 }
 
 export async function list(ctx: Context) {

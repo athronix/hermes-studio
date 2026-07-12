@@ -7,6 +7,7 @@ const managerMock = vi.hoisted(() => ({
   runNow: vi.fn(),
   stopRun: vi.fn(),
   approveNode: vi.fn(),
+  create: vi.fn(),
 }))
 const listWorkflowRunsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunNodeSessionsMock = vi.hoisted(() => vi.fn())
@@ -14,9 +15,10 @@ const listWorkflowRunEdgeEvaluationsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunLoopEpochsMock = vi.hoisted(() => vi.fn())
 const listUserProfilesMock = vi.hoisted(() => vi.fn())
 
-vi.mock('../../packages/server/src/services/workflow-manager', () => ({
-  getWorkflowManager: () => managerMock,
-}))
+vi.mock('../../packages/server/src/services/workflow-manager', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../packages/server/src/services/workflow-manager')>()
+  return { ...actual, getWorkflowManager: () => managerMock }
+})
 
 vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
   listUserProfiles: listUserProfilesMock,
@@ -49,6 +51,7 @@ describe('workflow controller', () => {
     managerMock.runNow.mockReset()
     managerMock.stopRun.mockReset()
     managerMock.approveNode.mockReset()
+    managerMock.create.mockReset()
     listWorkflowRunNodeSessionsMock.mockReset()
     listWorkflowRunEdgeEvaluationsMock.mockReset()
     listWorkflowRunLoopEpochsMock.mockReset()
@@ -56,6 +59,31 @@ describe('workflow controller', () => {
     listWorkflowRunsMock.mockReset()
     listUserProfilesMock.mockReset()
     listUserProfilesMock.mockReturnValue([])
+  })
+
+  it('exports, previews, and confirms a portable workflow copy', async () => {
+    const source = {
+      id: 'workflow-1', name: 'Portable', profile: 'default', workspace: '/private',
+      nodes: [{ id: 'n1', type: 'agent', data: { title: 'One', agent: 'hermes', input: 'go' } }],
+      edges: [], viewport: null, created_at: 1, updated_at: 2,
+    }
+    managerMock.get.mockReturnValue(source)
+    managerMock.create.mockImplementation((input: any) => ({ id: 'workflow-copy', workspace: '/generated', created_at: 3, updated_at: 3, ...input }))
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const exportCtx = ctx({ params: { id: 'workflow-1' }, state: { user: { id: 'u1', role: 'super_admin' } } })
+    await mod.exportDefinition(exportCtx)
+    expect(exportCtx.body).toMatchObject({ format: 'hermes-studio.workflow', version: 1, definition: { name: 'Portable' } })
+    expect(JSON.stringify(exportCtx.body)).not.toContain('/private')
+
+    const previewCtx = ctx({ request: { body: { document: JSON.stringify(exportCtx.body), profile: 'default' } }, state: { user: { id: 'u1', role: 'super_admin' } } })
+    await mod.previewImport(previewCtx)
+    expect(previewCtx.body).toMatchObject({ ok: true, preview: { summary: { name: 'Portable', nodes: 1, edges: 0 } } })
+
+    const confirmCtx = ctx({ request: { body: { token: previewCtx.body.preview.token, profile: 'default' } }, state: { user: { id: 'u1', role: 'super_admin' } } })
+    await mod.confirmImport(confirmCtx)
+    expect(confirmCtx.status).toBe(201)
+    expect(managerMock.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Portable', profile: 'default' }))
+    expect(confirmCtx.body).toMatchObject({ ok: true, workflow: { id: 'workflow-copy', name: 'Portable' } })
   })
 
   it('lists run records for a workflow', async () => {
