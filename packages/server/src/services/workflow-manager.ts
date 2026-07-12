@@ -36,7 +36,7 @@ import { logger } from './logger'
 
 export type { WorkflowCreateInput, WorkflowRecord, WorkflowUpdateInput }
 
-export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'approval_rejected' | 'canceled'
+export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'skipped' | 'failed' | 'approval_rejected' | 'canceled'
 export type WorkflowRunType = 'workflow'
 export type WorkflowNodeAgent = 'hermes' | 'claude-code' | 'codex'
 
@@ -658,6 +658,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
 
     const completed = new Set<string>()
     const runningOrDone = new Set<string>()
+    const edgeDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
     const outputs = new Map<string, string>()
     const nodeSessionIds = new Map<string, string>()
     const nodeSessionRecordIds = new Map<string, string>()
@@ -694,9 +695,28 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
 
     try {
       while (completed.size < activeNodes.length) {
+        let propagatedSkip = true
+        while (propagatedSkip) {
+          propagatedSkip = false
+          for (const node of activeNodes) {
+            if (runningOrDone.has(node.id)) continue
+            const dependencies = activeIncoming.get(node.id) || []
+            if (dependencies.length === 0 || !dependencies.every(edge => completed.has(edge.source))) continue
+            if (dependencies.every(edge => edgeDecisions.has(edge)) && dependencies.some(edge => edgeDecisions.get(edge)?.status !== 'taken')) {
+              runningOrDone.add(node.id)
+              completed.add(node.id)
+              nodeStatuses[node.id] = 'skipped'
+              for (const edge of activeOutgoing.get(node.id) || []) {
+                edgeDecisions.set(edge, { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' })
+              }
+              propagatedSkip = true
+            }
+          }
+        }
         const ready = activeNodes.filter(node => {
           if (runningOrDone.has(node.id)) return false
-          return (activeIncoming.get(node.id) || []).every(edge => completed.has(edge.source))
+          const dependencies = activeIncoming.get(node.id) || []
+          return dependencies.every(edge => completed.has(edge.source) && edgeDecisions.get(edge)?.status === 'taken')
         })
         if (ready.length === 0) {
           throw new Error('workflow graph contains a cycle or blocked dependency')
@@ -795,6 +815,9 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             return { node, ok: false, approvalRejected: true, error }
           }
           outputs.set(node.id, output)
+          for (const edge of activeOutgoing.get(node.id) || []) {
+            edgeDecisions.set(edge, evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output }))
+          }
           completed.add(node.id)
           nodeStatuses[node.id] = 'completed'
           this.setRuntimeStatus(workflow.id, {

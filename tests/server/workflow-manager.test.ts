@@ -186,6 +186,34 @@ describe('workflow manager', () => {
     }
   })
 
+  it('runs only the matched success branch and skips the unmatched branch without creating a session', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'PASS' })
+    const workflow = manager.create({
+      name: `Conditional branch ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'matched', type: 'agent', data: { title: 'Matched', agent: 'hermes', input: 'matched' } },
+        { id: 'unmatched', type: 'agent', data: { title: 'Unmatched', agent: 'hermes', input: 'unmatched' } },
+      ],
+      edges: [
+        { id: 'yes', source: 'source', target: 'matched', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'exists' } } } },
+        { id: 'no', source: 'source', target: 'unmatched', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'RETRY' } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+      expect(result.nodeSessions.map(session => session.node_id).sort()).toEqual(['matched', 'source'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses).toMatchObject({ source: 'completed', matched: 'completed', unmatched: 'skipped' })
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('pauses downstream nodes until an approval-required node is approved', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const manager = new WorkflowManager()
