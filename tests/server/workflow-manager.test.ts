@@ -96,6 +96,13 @@ describe('workflow manager', () => {
     expect(workflowNodeRequiresApproval({ data: {} })).toBe(false)
   })
 
+  it('normalizes workflow node join mode and rejects malformed explicit values', async () => {
+    const { normalizeWorkflowNode } = await import('../../packages/server/src/services/workflow-manager')
+    expect(normalizeWorkflowNode({ id: 'legacy', type: 'agent', data: {} })?.data.orchestration).toEqual({ join: 'all' })
+    expect(normalizeWorkflowNode({ id: 'any', type: 'agent', data: { orchestration: { join: 'any' } } })?.data.orchestration).toEqual({ join: 'any' })
+    expect(() => normalizeWorkflowNode({ id: 'bad', type: 'agent', data: { orchestration: { join: 'some' } } })).toThrow('workflow node bad has invalid orchestration join')
+  })
+
   it('normalizes legacy and declarative workflow edges without changing legacy semantics', async () => {
     const { normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
 

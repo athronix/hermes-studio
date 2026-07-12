@@ -91,6 +91,7 @@ interface WorkflowNodeSnapshot {
     skills: string[]
     images: string[]
     approvalRequired: boolean
+    orchestration: { join: 'all' | 'any' }
   }
 }
 
@@ -174,11 +175,20 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()) : []
 }
 
-function normalizeNode(raw: unknown): WorkflowNodeSnapshot | null {
+export function normalizeWorkflowNode(raw: unknown): WorkflowNodeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : ''
   if (!id) return null
   const data = record.data && typeof record.data === 'object' ? record.data as Record<string, any> : {}
+  let join: 'all' | 'any' = 'all'
+  if (Object.prototype.hasOwnProperty.call(data, 'orchestration')) {
+    const orchestration = data.orchestration
+    if (!orchestration || typeof orchestration !== 'object' || Array.isArray(orchestration)
+      || (orchestration.join !== 'all' && orchestration.join !== 'any')) {
+      throw new Error(`workflow node ${id} has invalid orchestration join`)
+    }
+    join = orchestration.join
+  }
   return {
     id,
     type: typeof record.type === 'string' && record.type ? record.type : 'agent',
@@ -192,6 +202,7 @@ function normalizeNode(raw: unknown): WorkflowNodeSnapshot | null {
       skills: stringArray(data.skills),
       images: stringArray(data.images),
       approvalRequired: data.approvalRequired === true,
+      orchestration: { join },
     },
   }
 }
@@ -592,7 +603,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
 
     const profile = input.profile?.trim() || workflow.profile || 'default'
-    const nodes = workflow.nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
+    const nodes = workflow.nodes.map(normalizeWorkflowNode).filter(Boolean) as WorkflowNodeSnapshot[]
     const nodeById = new Map(nodes.map(node => [node.id, node]))
     const edges = workflow.edges.map(normalizeWorkflowEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
       Boolean(edge && nodeById.has(edge.source) && nodeById.has(edge.target)),
@@ -921,7 +932,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
 
     const profile = input.profile?.trim() || run.profile || workflow.profile || 'default'
-    const nodes = run.snapshot_nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
+    const nodes = run.snapshot_nodes.map(normalizeWorkflowNode).filter(Boolean) as WorkflowNodeSnapshot[]
     const nodeById = new Map(nodes.map(node => [node.id, node]))
     const targetNodeId = nodeId.trim()
     if (!targetNodeId || !nodeById.has(targetNodeId)) {
