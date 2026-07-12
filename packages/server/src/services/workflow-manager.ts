@@ -110,9 +110,13 @@ interface WorkflowEdgeCondition {
   value?: unknown
 }
 
+export const DEFAULT_WORKFLOW_LOOP_ITERATIONS = 3
+export const MAX_WORKFLOW_LOOP_ITERATIONS = 100
+
 interface WorkflowEdgeOrchestration {
   route: WorkflowEdgeRoute
   condition?: WorkflowEdgeCondition
+  feedback?: { maxIterations: number }
 }
 
 interface WorkflowEdgeSnapshot {
@@ -341,6 +345,20 @@ export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null
   }
 
   const orchestration: WorkflowEdgeOrchestration = { route }
+  if (Object.prototype.hasOwnProperty.call(orchestrationRecord, 'feedback')) {
+    const rawFeedback = orchestrationRecord.feedback
+    if (rawFeedback === true) {
+      orchestration.feedback = { maxIterations: DEFAULT_WORKFLOW_LOOP_ITERATIONS }
+    } else if (rawFeedback && typeof rawFeedback === 'object' && !Array.isArray(rawFeedback)) {
+      const maxIterations = (rawFeedback as Record<string, unknown>).maxIterations
+      if (!Number.isInteger(maxIterations) || (maxIterations as number) < 1 || (maxIterations as number) > MAX_WORKFLOW_LOOP_ITERATIONS) {
+        throw new Error(`workflow edge ${edgeLabel} has invalid feedback maxIterations`)
+      }
+      orchestration.feedback = { maxIterations: maxIterations as number }
+    } else {
+      throw new Error(`workflow edge ${edgeLabel} has invalid feedback`)
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(orchestrationRecord, 'condition')) {
     const rawCondition = orchestrationRecord.condition
     if (!rawCondition || typeof rawCondition !== 'object' || Array.isArray(rawCondition)) {

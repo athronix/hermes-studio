@@ -128,6 +128,33 @@ describe('workflow manager', () => {
     })
   })
 
+  it('normalizes bounded feedback edges with a default of three iterations', async () => {
+    const { normalizeWorkflowEdge, MAX_WORKFLOW_LOOP_ITERATIONS } = await import('../../packages/server/src/services/workflow-manager')
+    expect(normalizeWorkflowEdge({
+      id: 'feedback-default', source: 'review', target: 'implement',
+      data: { orchestration: { route: 'success', feedback: true } },
+    })?.orchestration).toEqual({ route: 'success', feedback: { maxIterations: 3 } })
+    expect(normalizeWorkflowEdge({
+      id: 'feedback-custom', source: 'review', target: 'implement',
+      data: { orchestration: { route: 'success', feedback: { maxIterations: 7 } } },
+    })?.orchestration.feedback).toEqual({ maxIterations: 7 })
+    expect(MAX_WORKFLOW_LOOP_ITERATIONS).toBeGreaterThan(7)
+  })
+
+  it('rejects unbounded or malformed feedback iteration limits', async () => {
+    const { normalizeWorkflowEdge, MAX_WORKFLOW_LOOP_ITERATIONS } = await import('../../packages/server/src/services/workflow-manager')
+    for (const maxIterations of [0, -1, 1.5, '3', MAX_WORKFLOW_LOOP_ITERATIONS + 1]) {
+      expect(() => normalizeWorkflowEdge({
+        id: `feedback-${maxIterations}`, source: 'review', target: 'implement',
+        data: { orchestration: { route: 'success', feedback: { maxIterations } } },
+      })).toThrow('has invalid feedback maxIterations')
+    }
+    expect(() => normalizeWorkflowEdge({
+      id: 'feedback-false', source: 'review', target: 'implement',
+      data: { orchestration: { route: 'success', feedback: false } },
+    })).toThrow('has invalid feedback')
+  })
+
   it('rejects malformed explicit workflow edge orchestration instead of falling back to legacy routing', async () => {
     const { normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
     expect(() => normalizeWorkflowEdge({ id: 'invalid-route', source: 'first', target: 'second', data: { orchestration: { route: 'sometimes' } } })).toThrow('workflow edge invalid-route has invalid orchestration route')
