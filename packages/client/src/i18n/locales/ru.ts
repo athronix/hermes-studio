@@ -637,6 +637,7 @@ export default {
       rerunFailed: 'Не удалось повторно запустить workflow',
       deleteNode: 'Удалить узел',
       deleteEdge: 'Удалить соединение',
+      editEdge: 'Изменить соединение',
       importWorkflow: 'Импорт Workflow',
       exportWorkflow: 'Экспорт Workflow',
       imported: 'Workflow импортирован',
@@ -644,6 +645,7 @@ export default {
       importFailed: 'Ошибка импорта Workflow',
       exportFailed: 'Ошибка экспорта Workflow',
     },
+    edgeEditor: { title: 'Изменить соединение', route: 'Маршрут', conditionPath: 'Путь условия', operator: 'Оператор', value: 'Значение', feedback: 'Цикл обратной связи', maxIterations: 'Максимум итераций', invalidIterations: 'Число итераций должно быть целым от 1 до 100' },
     batch: {
       toggle: 'Массовый выбор',
       selectAll: 'Выбрать все',

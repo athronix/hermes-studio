@@ -92,6 +92,12 @@ interface WorkflowNode {
   data: WorkflowAgentNodeData
 }
 
+interface WorkflowEdgeOrchestration {
+  route: 'success' | 'failure' | 'always'
+  condition?: { path: string; operator: string; value?: unknown }
+  feedback?: { maxIterations: number }
+}
+
 interface WorkflowEdge {
   id: string
   source: string
@@ -101,6 +107,7 @@ interface WorkflowEdge {
   type: 'smoothstep'
   animated?: boolean
   markerEnd?: MarkerType
+  data?: { orchestration?: WorkflowEdgeOrchestration }
 }
 
 interface WorkflowDocument {
@@ -121,6 +128,14 @@ const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuOpenedAt = ref(0)
 const contextMenuTarget = ref<{ type: 'node' | 'edge'; id: string } | null>(null)
+const edgeEditorVisible = ref(false)
+const edgeEditorId = ref('')
+const edgeEditorRoute = ref<'success' | 'failure' | 'always'>('success')
+const edgeEditorConditionPath = ref('')
+const edgeEditorConditionOperator = ref('equals')
+const edgeEditorConditionValue = ref('')
+const edgeEditorFeedback = ref(false)
+const edgeEditorMaxIterations = ref('3')
 const workflowRunContextMenuVisible = ref(false)
 const workflowRunContextMenuX = ref(0)
 const workflowRunContextMenuY = ref(0)
@@ -261,7 +276,10 @@ const contextMenuOptions = computed<DropdownOption[]>(() => {
     return options
   }
   if (target?.type === 'edge') {
-    return [{ key: 'delete-edge', label: t('workflow.actions.deleteEdge') }]
+    return [
+      { key: 'edit-edge', label: t('workflow.actions.editEdge') },
+      { key: 'delete-edge', label: t('workflow.actions.deleteEdge') },
+    ]
   }
   return [{ key: 'delete-node', label: t('workflow.actions.deleteNode') }]
 })
@@ -658,6 +676,7 @@ function normalizeStoredEdge(raw: unknown): WorkflowEdge | null {
     type: 'smoothstep',
     animated: Boolean(record.animated),
     markerEnd: MarkerType.ArrowClosed,
+    data: record.data && typeof record.data === 'object' ? { ...record.data } : undefined,
   }
 }
 
@@ -1627,6 +1646,47 @@ function handleNodeClick(payload: { node: { id: string } }) {
   void openWorkflowNodeSession(payload.node.id)
 }
 
+function openEdgeEditor(edgeId: string) {
+  if (selectedWorkflowRunId.value) return
+  const edge = edges.value.find(item => item.id === edgeId)
+  if (!edge) return
+  const orchestration = edge.data?.orchestration
+  edgeEditorId.value = edgeId
+  edgeEditorRoute.value = orchestration?.route || 'success'
+  edgeEditorConditionPath.value = orchestration?.condition?.path || ''
+  edgeEditorConditionOperator.value = orchestration?.condition?.operator || 'equals'
+  edgeEditorConditionValue.value = orchestration?.condition?.value == null ? '' : String(orchestration.condition.value)
+  edgeEditorFeedback.value = Boolean(orchestration?.feedback)
+  edgeEditorMaxIterations.value = String(orchestration?.feedback?.maxIterations || 3)
+  edgeEditorVisible.value = true
+}
+
+function handleEdgeClick(payload: { edge: { id: string } }) {
+  openEdgeEditor(payload.edge.id)
+}
+
+function saveEdgeEditor() {
+  const maxIterations = Number(edgeEditorMaxIterations.value)
+  if (edgeEditorFeedback.value && (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 100)) {
+    message.error(t('workflow.edgeEditor.invalidIterations'))
+    return
+  }
+  const conditionPath = edgeEditorConditionPath.value.trim()
+  const orchestration: WorkflowEdgeOrchestration = { route: edgeEditorRoute.value }
+  if (conditionPath) {
+    orchestration.condition = {
+      path: conditionPath,
+      operator: edgeEditorConditionOperator.value,
+      value: edgeEditorConditionValue.value,
+    }
+  }
+  if (edgeEditorFeedback.value) orchestration.feedback = { maxIterations }
+  edges.value = edges.value.map(edge => edge.id === edgeEditorId.value
+    ? { ...edge, data: { ...(edge.data || {}), orchestration } }
+    : edge)
+  edgeEditorVisible.value = false
+}
+
 function handleEdgeContextMenu(payload: { event: MouseEvent | TouchEvent; edge: { id: string } }) {
   openContextMenu(payload.event, { type: 'edge', id: payload.edge.id })
 }
@@ -1656,6 +1716,9 @@ function handleContextMenuSelect(key: string | number) {
   if (selectedWorkflowRunId.value) {
     closeContextMenu()
     return
+  }
+  if (key === 'edit-edge' && target?.type === 'edge') {
+    openEdgeEditor(target.id)
   }
   if (key === 'delete-node' && target?.type === 'node') {
     deleteNode(target.id)
@@ -2093,6 +2156,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           @connect="handleConnect"
           @node-click="handleNodeClick"
           @node-context-menu="handleNodeContextMenu"
+          @edge-click="handleEdgeClick"
           @edge-context-menu="handleEdgeContextMenu"
           @pane-click="closeContextMenu"
         >
@@ -2175,6 +2239,22 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
       </aside>
     </div>
     </main>
+
+    <NModal v-model:show="edgeEditorVisible" preset="card" :title="t('workflow.edgeEditor.title')" style="width: min(520px, 92vw)">
+      <div class="workflow-create-form">
+        <label class="workflow-field"><span class="workflow-field-label">{{ t('workflow.edgeEditor.route') }}</span>
+          <NSelect v-model:value="edgeEditorRoute" :options="[{ label: 'success', value: 'success' }, { label: 'failure', value: 'failure' }, { label: 'always', value: 'always' }]" />
+        </label>
+        <label class="workflow-field"><span class="workflow-field-label">{{ t('workflow.edgeEditor.conditionPath') }}</span><NInput v-model:value="edgeEditorConditionPath" /></label>
+        <label class="workflow-field"><span class="workflow-field-label">{{ t('workflow.edgeEditor.operator') }}</span>
+          <NSelect v-model:value="edgeEditorConditionOperator" :options="['equals','not_equals','contains','not_contains','exists','not_exists','greater_than','greater_than_or_equal','less_than','less_than_or_equal','in','not_in'].map(value => ({ label: value, value }))" />
+        </label>
+        <label class="workflow-field"><span class="workflow-field-label">{{ t('workflow.edgeEditor.value') }}</span><NInput v-model:value="edgeEditorConditionValue" /></label>
+        <NCheckbox v-model:checked="edgeEditorFeedback">{{ t('workflow.edgeEditor.feedback') }}</NCheckbox>
+        <label v-if="edgeEditorFeedback" class="workflow-field"><span class="workflow-field-label">{{ t('workflow.edgeEditor.maxIterations') }}</span><NInput v-model:value="edgeEditorMaxIterations" inputmode="numeric" /></label>
+        <NSpace justify="end"><NButton @click="edgeEditorVisible = false">{{ t('common.cancel') }}</NButton><NButton type="primary" @click="saveEdgeEditor">{{ t('common.save') }}</NButton></NSpace>
+      </div>
+    </NModal>
 
     <NDrawer v-model:show="createWorkflowDrawerVisible" placement="right" :width="420">
       <NDrawerContent :title="t('workflow.actions.newWorkflow')" closable>

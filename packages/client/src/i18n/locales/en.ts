@@ -732,6 +732,7 @@ export default {
       rerunFailed: 'Workflow rerun failed',
       deleteNode: 'Delete Node',
       deleteEdge: 'Delete Connection',
+      editEdge: 'Edit Connection',
       importWorkflow: 'Import Workflow',
       exportWorkflow: 'Export Workflow',
       imported: 'Workflow imported',
@@ -739,6 +740,7 @@ export default {
       importFailed: 'Workflow import failed',
       exportFailed: 'Workflow export failed',
     },
+    edgeEditor: { title: 'Edit connection', route: 'Route', conditionPath: 'Condition path', operator: 'Operator', value: 'Value', feedback: 'Feedback loop', maxIterations: 'Maximum iterations', invalidIterations: 'Maximum iterations must be an integer from 1 to 100' },
     batch: {
       toggle: 'Batch selection',
       selectAll: 'Select all',

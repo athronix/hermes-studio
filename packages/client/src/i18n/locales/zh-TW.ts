@@ -732,6 +732,7 @@ export default {
       rerunFailed: '工作流重跑失敗',
       deleteNode: '刪除節點',
       deleteEdge: '刪除連接線',
+      editEdge: '編輯連接線',
       importWorkflow: '匯入 Workflow',
       exportWorkflow: '匯出 Workflow',
       imported: 'Workflow 匯入成功',
@@ -739,6 +740,7 @@ export default {
       importFailed: 'Workflow 匯入失敗',
       exportFailed: 'Workflow 匯出失敗',
     },
+    edgeEditor: { title: '編輯連接線', route: '路由', conditionPath: '條件路徑', operator: '操作符', value: '值', feedback: '回饋循環', maxIterations: '最大迭代次數', invalidIterations: '最大迭代次數必須是 1 到 100 的整數' },
     batch: {
       toggle: '批次選擇',
       selectAll: '全選',

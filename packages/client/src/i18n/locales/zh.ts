@@ -732,6 +732,7 @@ export default {
       rerunFailed: '工作流重跑失败',
       deleteNode: '删除节点',
       deleteEdge: '删除连接线',
+      editEdge: '编辑连接线',
       importWorkflow: '导入 Workflow',
       exportWorkflow: '导出 Workflow',
       imported: 'Workflow 导入成功',
@@ -739,6 +740,7 @@ export default {
       importFailed: 'Workflow 导入失败',
       exportFailed: 'Workflow 导出失败',
     },
+    edgeEditor: { title: '编辑连接线', route: '路由', conditionPath: '条件路径', operator: '操作符', value: '值', feedback: '反馈循环', maxIterations: '最大迭代次数', invalidIterations: '最大迭代次数必须是 1 到 100 的整数' },
     batch: {
       toggle: '批量选择',
       selectAll: '全选',
