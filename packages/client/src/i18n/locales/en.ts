@@ -740,6 +740,7 @@ export default {
       importFailed: 'Workflow import failed',
       exportFailed: 'Workflow export failed',
     },
+    evidence: { title: 'Execution evidence', empty: 'No evidence recorded', node: 'Node', edge: 'Edge', loop: 'Loop' },
     edgeEditor: { title: 'Edit connection', route: 'Route', conditionPath: 'Condition path', operator: 'Operator', value: 'Value', feedback: 'Feedback loop', maxIterations: 'Maximum iterations', invalidIterations: 'Maximum iterations must be an integer from 1 to 100' },
     batch: {
       toggle: 'Batch selection',

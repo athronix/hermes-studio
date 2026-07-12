@@ -645,6 +645,7 @@ export default {
       importFailed: 'Ошибка импорта Workflow',
       exportFailed: 'Ошибка экспорта Workflow',
     },
+    evidence: { title: 'Доказательства выполнения', empty: 'Нет записей', node: 'Узел', edge: 'Ребро', loop: 'Цикл' },
     edgeEditor: { title: 'Изменить соединение', route: 'Маршрут', conditionPath: 'Путь условия', operator: 'Оператор', value: 'Значение', feedback: 'Цикл обратной связи', maxIterations: 'Максимум итераций', invalidIterations: 'Число итераций должно быть целым от 1 до 100' },
     batch: {
       toggle: 'Массовый выбор',

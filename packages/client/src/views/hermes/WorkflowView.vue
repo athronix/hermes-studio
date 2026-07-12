@@ -12,6 +12,7 @@ import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { useI18n } from 'vue-i18n'
+import { buildWorkflowEvidenceRows } from '@/utils/workflow-history'
 import WorkflowAgentNode from '@/components/hermes/workflow/WorkflowAgentNode.vue'
 import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ChatInput from '@/components/hermes/chat/ChatInput.vue'
@@ -419,6 +420,7 @@ const selectedWorkflowRun = computed(() =>
     ? workflowRuns.value.find(run => run.id === selectedWorkflowRunId.value) || null
     : null,
 )
+const selectedWorkflowEvidenceRows = computed(() => selectedWorkflowRun.value ? buildWorkflowEvidenceRows(selectedWorkflowRun.value) : [])
 
 const workflowChatPanelPendingApproval = computed(() => {
   const run = selectedWorkflowRun.value
@@ -2226,6 +2228,18 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             <div v-if="run.error" class="workflow-run-error" :title="run.error">{{ run.error }}</div>
           </button>
         </div>
+        <section v-if="selectedWorkflowRun" class="workflow-evidence" aria-label="Workflow execution evidence">
+          <div class="workflow-evidence-title">{{ t('workflow.evidence.title') }}</div>
+          <div v-if="selectedWorkflowEvidenceRows.length === 0" class="workflow-runs-empty">{{ t('workflow.evidence.empty') }}</div>
+          <div v-else class="workflow-evidence-list">
+            <div v-for="row in selectedWorkflowEvidenceRows" :key="`${row.kind}:${row.sequence}:${row.title}`" class="workflow-evidence-row">
+              <div class="workflow-evidence-topline"><span class="workflow-evidence-kind">{{ t(`workflow.evidence.${row.kind}`) }}</span><span>#{{ row.sequence }} · {{ row.status }}</span></div>
+              <strong>{{ row.title }}</strong>
+              <span :title="row.detail">{{ row.detail }}</span>
+              <code>{{ row.iterationPath }}</code>
+            </div>
+          </div>
+        </section>
         <NDropdown
           placement="bottom-start"
           trigger="manual"
@@ -2525,6 +2539,22 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
     pointer-events: auto;
   }
 }
+
+.workflow-evidence {
+  border-top: 1px solid var(--border-color);
+  padding: 12px;
+  min-height: 0;
+  max-height: 45%;
+  overflow: auto;
+}
+.workflow-evidence-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
+.workflow-evidence-list { display: flex; flex-direction: column; gap: 8px; }
+.workflow-evidence-row { display: flex; flex-direction: column; gap: 3px; padding: 8px; border-radius: 6px; background: rgba(var(--accent-primary-rgb), 0.05); font-size: 11px; color: var(--text-muted); }
+.workflow-evidence-row strong { color: var(--text-primary); font-size: 12px; }
+.workflow-evidence-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-evidence-row code { white-space: normal; word-break: break-all; color: var(--accent-primary); }
+.workflow-evidence-topline { display: flex; justify-content: space-between; gap: 8px; }
+.workflow-evidence-kind { text-transform: uppercase; font-weight: 600; }
 
 .workflow-create-form {
   display: flex;
