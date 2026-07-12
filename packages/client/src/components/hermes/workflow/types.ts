@@ -19,6 +19,7 @@ export interface WorkflowAgentNodeData {
   skills: string[]
   images: string[]
   approvalRequired: boolean
+  orchestration: { join: 'all' | 'any' }
   status: WorkflowNodeStatus
   statusError?: string | null
   readonly?: boolean
@@ -30,4 +31,4 @@ export interface WorkflowAgentNodeData {
   onUploadImages: (id: string, files: File[]) => Promise<string[]>
 }
 
-export type WorkflowAgentNodeEditableData = Pick<WorkflowAgentNodeData, 'title' | 'agent' | 'provider' | 'model' | 'apiMode' | 'input' | 'skills' | 'images' | 'approvalRequired'>
+export type WorkflowAgentNodeEditableData = Pick<WorkflowAgentNodeData, 'title' | 'agent' | 'provider' | 'model' | 'apiMode' | 'input' | 'skills' | 'images' | 'approvalRequired' | 'orchestration'>

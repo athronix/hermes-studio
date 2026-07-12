@@ -176,6 +176,16 @@ async function uploadImages(files: File[]) {
         :placeholder="t('workflow.node.apiMode')"
         @update:value="value => updateField('apiMode', value as CodingAgentApiMode)"
       />
+      <label class="node-field-row">
+        <span>{{ t('workflow.node.join') }}</span>
+        <NSelect
+          :value="data.orchestration?.join || 'all'"
+          :options="[{ label: t('workflow.node.joinAll'), value: 'all' }, { label: t('workflow.node.joinAny'), value: 'any' }]"
+          size="small"
+          :disabled="data.readonly"
+          @update:value="value => updateField('orchestration', { join: value as 'all' | 'any' })"
+        />
+      </label>
       <label class="node-toggle-row">
         <span>{{ t('workflow.node.approvalRequired') }}</span>
         <NSwitch

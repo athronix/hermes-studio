@@ -386,6 +386,7 @@ function makeNode(
       skills: data.skills || [],
       images: data.images || [],
       approvalRequired: data.approvalRequired === true,
+      orchestration: { join: data.orchestration?.join === 'any' ? 'any' : 'all' },
       status: data.status || 'idle',
       agentOptions: agentOptions.value,
       skillOptions: skillOptionsForAgent(data.agent || agentOptions.value[0]?.value || 'hermes'),
@@ -607,6 +608,7 @@ function serializeWorkflowNodes(source: WorkflowNode[]): unknown[] {
       skills: [...node.data.skills],
       images: [...node.data.images],
       approvalRequired: node.data.approvalRequired === true,
+      orchestration: { join: node.data.orchestration?.join === 'any' ? 'any' : 'all' },
     },
   }))
 }
@@ -653,6 +655,7 @@ function normalizeStoredNode(raw: unknown, index: number): WorkflowNode {
       skills: Array.isArray(data.skills) ? data.skills.filter(item => typeof item === 'string') : [],
       images: Array.isArray(data.images) ? data.images.filter(item => typeof item === 'string') : [],
       approvalRequired: data.approvalRequired === true,
+      orchestration: { join: data.orchestration?.join === 'any' ? 'any' : 'all' },
       status: 'idle',
     },
   )
