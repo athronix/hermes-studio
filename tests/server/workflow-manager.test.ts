@@ -190,6 +190,38 @@ describe('workflow manager', () => {
     ])).toThrow('feedback edge retry does not form a single-entry natural loop')
   })
 
+  it('assigns the nearest unique parent for laminar nested loops and allows disjoint loops', async () => {
+    const { compileWorkflowLoops, normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
+    const edge = (id: string, source: string, target: string, feedback = false) => normalizeWorkflowEdge({
+      id, source, target, data: feedback ? { orchestration: { route: 'success', feedback: true } } : undefined,
+    })!
+    const nested = compileWorkflowLoops(['entry', 'outer-h', 'inner-h', 'inner-l', 'outer-l', 'exit'], [
+      edge('entry-outer', 'entry', 'outer-h'), edge('outer-inner', 'outer-h', 'inner-h'),
+      edge('inner-forward', 'inner-h', 'inner-l'), edge('inner-outer-l', 'inner-l', 'outer-l'), edge('outer-exit', 'outer-l', 'exit'),
+      edge('outer-retry', 'outer-l', 'outer-h', true), edge('inner-retry', 'inner-l', 'inner-h', true),
+    ])
+    expect(nested.map(loop => [loop.id, loop.parentLoopId, loop.bodyNodeIds])).toEqual([
+      ['loop:outer-retry', null, ['outer-h', 'inner-h', 'inner-l', 'outer-l']],
+      ['loop:inner-retry', 'loop:outer-retry', ['inner-h', 'inner-l']],
+    ])
+    const disjoint = compileWorkflowLoops(['a', 'b', 'c', 'd'], [
+      edge('a-b', 'a', 'b'), edge('c-d', 'c', 'd'), edge('left-retry', 'b', 'a', true), edge('right-retry', 'd', 'c', true),
+    ])
+    expect(disjoint.map(loop => loop.parentLoopId)).toEqual([null, null])
+  })
+
+  it('rejects partially overlapping loop bodies that are not laminar', async () => {
+    const { validateLaminarWorkflowLoops } = await import('../../packages/server/src/services/workflow-manager')
+    expect(() => validateLaminarWorkflowLoops([
+      { id: 'loop:left', bodyNodeIds: ['a', 'shared'], parentLoopId: null },
+      { id: 'loop:right', bodyNodeIds: ['shared', 'b'], parentLoopId: null },
+    ] as any)).toThrow('workflow loops loop:left and loop:right partially overlap')
+    expect(() => validateLaminarWorkflowLoops([
+      { id: 'loop:first', bodyNodeIds: ['a', 'b'], parentLoopId: null },
+      { id: 'loop:second', bodyNodeIds: ['a', 'b'], parentLoopId: null },
+    ] as any)).toThrow('workflow loops loop:first and loop:second have identical bodies')
+  })
+
   it('evaluates equals conditions through own properties only', async () => {
     const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
 

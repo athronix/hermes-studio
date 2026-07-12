@@ -395,6 +395,34 @@ export interface CompiledWorkflowLoop {
   parentLoopId: string | null
 }
 
+export function validateLaminarWorkflowLoops(loops: CompiledWorkflowLoop[]): CompiledWorkflowLoop[] {
+  const sets = new Map(loops.map(loop => [loop.id, new Set(loop.bodyNodeIds)]))
+  const contains = (outer: Set<string>, inner: Set<string>) => [...inner].every(id => outer.has(id))
+  for (let i = 0; i < loops.length; i += 1) {
+    for (let j = i + 1; j < loops.length; j += 1) {
+      const left = loops[i], right = loops[j]
+      const leftSet = sets.get(left.id)!, rightSet = sets.get(right.id)!
+      const intersects = [...leftSet].some(id => rightSet.has(id))
+      if (!intersects) continue
+      const leftContainsRight = contains(leftSet, rightSet)
+      const rightContainsLeft = contains(rightSet, leftSet)
+      if (leftContainsRight && rightContainsLeft) {
+        throw new Error(`workflow loops ${left.id} and ${right.id} have identical bodies`)
+      }
+      if (!leftContainsRight && !rightContainsLeft) {
+        throw new Error(`workflow loops ${left.id} and ${right.id} partially overlap`)
+      }
+    }
+  }
+  for (const loop of loops) {
+    const body = sets.get(loop.id)!
+    const parents = loops.filter(candidate => candidate.id !== loop.id && contains(sets.get(candidate.id)!, body))
+      .sort((left, right) => left.bodyNodeIds.length - right.bodyNodeIds.length || left.id.localeCompare(right.id))
+    loop.parentLoopId = parents[0]?.id || null
+  }
+  return loops
+}
+
 export function compileWorkflowLoops(nodeIds: string[], edges: WorkflowEdgeSnapshot[]): CompiledWorkflowLoop[] {
   const nodeSet = new Set(nodeIds)
   const forwardEdges = edges.filter(edge => !edge.orchestration.feedback)
@@ -446,7 +474,7 @@ export function compileWorkflowLoops(nodeIds: string[], edges: WorkflowEdgeSnaps
     }
   }
 
-  return edges.filter(edge => edge.orchestration.feedback).map(edge => {
+  const loops = edges.filter(edge => edge.orchestration.feedback).map(edge => {
     const edgeId = edge.id || `${edge.source}->${edge.target}`
     const reachableFromHeader = walk([edge.target], outgoing)
     if (!reachableFromHeader.has(edge.source)) {
@@ -462,6 +490,7 @@ export function compileWorkflowLoops(nodeIds: string[], edges: WorkflowEdgeSnaps
       bodyNodeIds, maxIterations: edge.orchestration.feedback!.maxIterations, parentLoopId: null,
     }
   })
+  return validateLaminarWorkflowLoops(loops)
 }
 
 function imageMediaType(path: string): string {
