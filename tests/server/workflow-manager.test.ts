@@ -163,6 +163,18 @@ describe('workflow manager', () => {
     )).toEqual({ status: 'matched', reason: 'path_not_found' })
   })
 
+  it('evaluates edge routes before conditions and returns auditable decisions', async () => {
+    const { evaluateWorkflowEdgeRoute } = await import('../../packages/server/src/services/workflow-manager')
+    const context = { output: { status: 'PASS' } }
+    const condition = { path: 'output.status', operator: 'equals', value: 'PASS' } as const
+
+    expect(evaluateWorkflowEdgeRoute({ route: 'success', condition }, 'success', context)).toMatchObject({ status: 'taken', routeMatched: true, condition: { status: 'matched' } })
+    expect(evaluateWorkflowEdgeRoute({ route: 'success', condition }, 'failure', context)).toEqual({ status: 'not_taken', routeMatched: false, reason: 'route_not_matched' })
+    expect(evaluateWorkflowEdgeRoute({ route: 'failure' }, 'failure', context)).toEqual({ status: 'taken', routeMatched: true })
+    expect(evaluateWorkflowEdgeRoute({ route: 'always' }, 'failure', context)).toEqual({ status: 'taken', routeMatched: true })
+    expect(evaluateWorkflowEdgeRoute({ route: 'always', condition: { ...condition, value: 'RETRY' } }, 'success', context)).toMatchObject({ status: 'not_taken', routeMatched: true, reason: 'condition_not_matched' })
+  })
+
   it('rejects dangerous condition paths before evaluation', async () => {
     const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
 

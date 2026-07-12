@@ -270,6 +270,25 @@ export function evaluateWorkflowEdgeCondition(
     : { status: 'not_matched', actual: current, reason: 'not_equal' }
 }
 
+export type WorkflowEdgeDecision =
+  | { status: 'taken'; routeMatched: true; condition?: WorkflowConditionEvaluation }
+  | { status: 'not_taken'; routeMatched: false; reason: 'route_not_matched' }
+  | { status: 'not_taken'; routeMatched: true; reason: 'condition_not_matched'; condition: WorkflowConditionEvaluation }
+
+export function evaluateWorkflowEdgeRoute(
+  orchestration: WorkflowEdgeOrchestration,
+  sourceOutcome: 'success' | 'failure',
+  context: unknown,
+): WorkflowEdgeDecision {
+  const routeMatched = orchestration.route === 'always' || orchestration.route === sourceOutcome
+  if (!routeMatched) return { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
+  if (!orchestration.condition) return { status: 'taken', routeMatched: true }
+  const condition = evaluateWorkflowEdgeCondition(orchestration.condition, context)
+  return condition.status === 'matched'
+    ? { status: 'taken', routeMatched: true, condition }
+    : { status: 'not_taken', routeMatched: true, reason: 'condition_not_matched', condition }
+}
+
 export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const source = typeof record.source === 'string' && record.source.trim() ? record.source.trim() : ''
