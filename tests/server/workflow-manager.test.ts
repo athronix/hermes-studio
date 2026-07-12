@@ -492,6 +492,45 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('skips an unmatched conditional node inside a loop iteration without creating a session', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      const output = request.input.includes('header') ? 'use-required' : request.input.includes('required') ? 'required-ok' : 'latch-ok'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Conditional loop body ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'required', type: 'agent', data: { title: 'Required', agent: 'hermes', input: 'required' } },
+        { id: 'optional', type: 'agent', data: { title: 'Optional', agent: 'hermes', input: 'optional' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch', orchestration: { join: 'any' } } },
+      ], edges: [
+        { id: 'header-required', source: 'header', target: 'required' },
+        { id: 'header-optional', source: 'header', target: 'optional', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'use-optional' } } } },
+        { id: 'required-latch', source: 'required', target: 'latch' },
+        { id: 'optional-latch', source: 'optional', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['header', 'required', 'latch'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.optional).toBe('skipped')
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => ['header-optional', 'optional-latch'].includes(item.edge_id)).map(item => [item.edge_id, item.source_outcome, item.status])).toEqual([
+        ['header-optional', 'success', 'not_taken'],
+        ['optional-latch', 'skipped', 'not_taken'],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('records a failed loop epoch when an agent fails during an iteration', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')

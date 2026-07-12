@@ -939,7 +939,32 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
             const epochStartedAt = Date.now()
             const iterationExitDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
+            const iterationForwardDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
             for (const node of ordered) {
+              const incomingForwardEdges = forwardEdges.filter(edge => edge.target === node.id)
+              const joinDecision = evaluateWorkflowNodeJoin(
+                node.data.orchestration.join,
+                incomingForwardEdges.map(edge => iterationForwardDecisions.get(edge)),
+              )
+              if (joinDecision === 'skipped') {
+                nodeStatuses[node.id] = 'skipped'
+                const iterationPath = [{ loopId: loop.id, iteration }]
+                for (const edge of [...forwardEdges, ...loopExitEdges].filter(item => item.source === node.id)) {
+                  const decision: WorkflowEdgeDecision = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
+                  createWorkflowRunEdgeEvaluation({
+                    run_id: run.id, workflow_id: workflow.id,
+                    edge_id: edge.id || `${edge.source}->${edge.target}`,
+                    source_node_id: edge.source, source_execution_id: `${node.id}@${loop.id}:${iteration}`, iteration_path: iterationPath,
+                    target_node_id: edge.target, source_outcome: 'skipped', status: decision.status,
+                    route: edge.orchestration.route, reason: decision.reason,
+                    sequence: edgeEvidenceSequence++, orchestration: edge.orchestration, condition_evaluation: null,
+                  })
+                  if (loopExitEdges.includes(edge)) iterationExitDecisions.set(edge, decision)
+                  else iterationForwardDecisions.set(edge, decision)
+                }
+                continue
+              }
+              if (joinDecision !== 'ready') throw new Error(`workflow loop node ${node.id} has unresolved dependencies`)
               executionCount += 1
               if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
                 throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
@@ -1006,6 +1031,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                   condition_evaluation: 'condition' in decision ? decision.condition : null,
                 })
                 if (loopExitEdges.includes(edge)) iterationExitDecisions.set(edge, decision)
+                else iterationForwardDecisions.set(edge, decision)
               }
               } catch (err) {
                 const message = err instanceof Error ? err.message : String(err)
