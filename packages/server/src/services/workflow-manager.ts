@@ -493,6 +493,58 @@ export function compileWorkflowLoops(nodeIds: string[], edges: WorkflowEdgeSnaps
   return validateLaminarWorkflowLoops(loops)
 }
 
+export interface CompiledWorkflowGraph {
+  nodes: WorkflowNodeSnapshot[]
+  edges: WorkflowEdgeSnapshot[]
+  loops: CompiledWorkflowLoop[]
+  startNodeIds: string[]
+}
+
+export function compileWorkflowGraphPreflight(
+  rawNodes: unknown[], rawEdges: unknown[], requestedStartNodeIds: string[] = [],
+): CompiledWorkflowGraph {
+  const nodes = rawNodes.map((raw, index) => {
+    const node = normalizeWorkflowNode(raw)
+    if (!node) throw new Error(`workflow node at index ${index} is invalid`)
+    return node
+  })
+  if (nodes.length === 0) throw new Error('workflow has no nodes')
+  const nodeIds = new Set<string>()
+  for (const node of nodes) {
+    if (nodeIds.has(node.id)) throw new Error(`workflow has duplicate node id: ${node.id}`)
+    nodeIds.add(node.id)
+  }
+  const edges = rawEdges.map((raw, index) => {
+    const edge = normalizeWorkflowEdge(raw)
+    if (!edge) throw new Error(`workflow edge at index ${index} is invalid`)
+    return edge
+  })
+  const edgeIds = new Set<string>()
+  for (const edge of edges) {
+    const edgeId = edge.id || `${edge.source}->${edge.target}`
+    if (edgeIds.has(edgeId)) throw new Error(`workflow has duplicate edge id: ${edgeId}`)
+    edgeIds.add(edgeId)
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      throw new Error(`workflow edge ${edgeId} references missing node`)
+    }
+  }
+  const loops = compileWorkflowLoops(nodes.map(node => node.id), edges)
+  const forwardIncoming = new Map(nodes.map(node => [node.id, 0]))
+  for (const edge of edges) if (!edge.orchestration.feedback) forwardIncoming.set(edge.target, forwardIncoming.get(edge.target)! + 1)
+  let startNodeIds: string[]
+  if (requestedStartNodeIds.length > 0) {
+    const unique = new Set<string>()
+    startNodeIds = requestedStartNodeIds.map(id => id.trim()).filter(id => {
+      if (!id || unique.has(id)) return false
+      unique.add(id)
+      return true
+    })
+    for (const id of startNodeIds) if (!nodeIds.has(id)) throw new Error(`workflow start node does not exist: ${id}`)
+  } else startNodeIds = nodes.filter(node => forwardIncoming.get(node.id) === 0).map(node => node.id)
+  if (startNodeIds.length === 0) throw new Error('workflow has no start nodes')
+  return { nodes, edges, loops, startNodeIds }
+}
+
 function imageMediaType(path: string): string {
   const lower = path.toLowerCase()
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
@@ -745,16 +797,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
 
     const profile = input.profile?.trim() || workflow.profile || 'default'
-    const nodes = workflow.nodes.map(normalizeWorkflowNode).filter(Boolean) as WorkflowNodeSnapshot[]
+    const compiledGraph = compileWorkflowGraphPreflight(workflow.nodes, workflow.edges, input.startNodeIds || [])
+    const nodes = compiledGraph.nodes
+    const edges = compiledGraph.edges
     const nodeById = new Map(nodes.map(node => [node.id, node]))
-    const edges = workflow.edges.map(normalizeWorkflowEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
-      Boolean(edge && nodeById.has(edge.source) && nodeById.has(edge.target)),
-    )
-    if (nodes.length === 0) {
-      const err = new Error('workflow has no nodes')
-      ;(err as any).status = 400
-      throw err
-    }
 
     const incoming = new Map<string, WorkflowEdgeSnapshot[]>()
     const outgoing = new Map<string, WorkflowEdgeSnapshot[]>()
@@ -766,14 +812,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       incoming.get(edge.target)!.push(edge)
       outgoing.get(edge.source)!.push(edge)
     }
-    const defaultStartIds = nodes.filter(node => (incoming.get(node.id) || []).length === 0).map(node => node.id)
-    const requestedStartIds = (input.startNodeIds || []).filter(id => nodeById.has(id))
-    const startNodeIds = requestedStartIds.length > 0 ? requestedStartIds : defaultStartIds
-    if (startNodeIds.length === 0) {
-      const err = new Error('workflow has no start nodes')
-      ;(err as any).status = 400
-      throw err
-    }
+    const startNodeIds = compiledGraph.startNodeIds
     const activeIds = reachableFrom(startNodeIds, outgoing)
     const activeNodes = nodes.filter(node => activeIds.has(node.id))
     const activeEdges = edges.filter(edge => activeIds.has(edge.source) && activeIds.has(edge.target))

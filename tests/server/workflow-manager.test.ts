@@ -295,6 +295,44 @@ describe('workflow manager', () => {
     }
   })
 
+  it('rejects invalid workflow graphs before creating a run or starting an agent', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    const make = (name: string, edges: unknown[]) => manager.create({
+      name: `Preflight ${name} ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'a', type: 'agent', data: { title: 'A', agent: 'hermes', input: 'a' } },
+        { id: 'b', type: 'agent', data: { title: 'B', agent: 'hermes', input: 'b' } },
+      ], edges,
+    })
+    const dangling = make('dangling', [{ id: 'dangling', source: 'a', target: 'missing' }])
+    const cycle = make('cycle', [{ id: 'a-b', source: 'a', target: 'b' }, { id: 'b-a', source: 'b', target: 'a' }])
+    try {
+      await expect(manager.runNow(dangling.id)).rejects.toThrow('workflow edge dangling references missing node')
+      await expect(manager.runNow(cycle.id)).rejects.toThrow('workflow forward graph must be acyclic')
+      expect(listWorkflowRuns(dangling.id)).toEqual([])
+      expect(listWorkflowRuns(cycle.id)).toEqual([])
+      expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
+    } finally { await manager.delete(dangling.id); await manager.delete(cycle.id) }
+  })
+
+  it('rejects duplicate graph identities and invalid explicit start nodes during preflight', async () => {
+    const { compileWorkflowGraphPreflight } = await import('../../packages/server/src/services/workflow-manager')
+    const node = (id: string) => ({ id, type: 'agent', data: { title: id, agent: 'hermes' } })
+    expect(() => compileWorkflowGraphPreflight([node('a'), node('a')], [])).toThrow('workflow has duplicate node id: a')
+    expect(() => compileWorkflowGraphPreflight([node('a'), node('b')], [
+      { id: 'same', source: 'a', target: 'b' }, { id: 'same', source: 'a', target: 'b' },
+    ])).toThrow('workflow has duplicate edge id: same')
+    expect(() => compileWorkflowGraphPreflight([node('a')], [], ['missing'])).toThrow('workflow start node does not exist: missing')
+    expect(() => compileWorkflowGraphPreflight([node('a'), {}], [])).toThrow('workflow node at index 1 is invalid')
+    expect(() => compileWorkflowGraphPreflight([node('a')], [{}])).toThrow('workflow edge at index 0 is invalid')
+    expect(compileWorkflowGraphPreflight([node('a'), node('b')], [], ['b', 'b', 'a']).startNodeIds).toEqual(['b', 'a'])
+  })
+
   it('runs only the matched success branch and skips the unmatched branch without creating a session', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
