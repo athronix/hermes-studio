@@ -423,6 +423,70 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('records a timed_out loop epoch for the runAndWait timeout contract', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => ({
+      ok: false, error: `chat-run timed out after ${options.timeoutMs}ms`,
+    }))
+    const workflow = manager.create({
+      name: `Timed out loop epoch ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 25 })
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'chat-run timed out after 25ms' })
+      expect(result.nodeSessions.map(session => [session.execution_id, session.status, session.error])).toEqual([
+        ['header@loop:retry:0', 'failed', 'chat-run timed out after 25ms'],
+      ])
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => ({ status: epoch.status, exitReason: epoch.exit_reason }))).toEqual([
+        { status: 'timed_out', exitReason: 'chat-run timed out after 25ms' },
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('fails closed when timed_out loop epoch evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_timed_out_loop_epoch BEFORE INSERT ON workflow_run_loop_epochs
+      WHEN NEW.status = 'timed_out' BEGIN SELECT RAISE(ABORT, 'timed out loop epoch write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => ({
+      ok: false, error: `chat-run timed out after ${options.timeoutMs}ms`,
+    }))
+    const workflow = manager.create({
+      name: `Timed out epoch persistence ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 25 })
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('timed out loop epoch write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_timed_out_loop_epoch')
+      await manager.delete(workflow.id)
+    }
+  })
+
   it('records a canceled loop epoch without letting an aborted agent overwrite canceled state', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRuns, listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')

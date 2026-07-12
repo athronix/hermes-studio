@@ -110,7 +110,7 @@ export interface WorkflowRunLoopEpochRecord {
   loop_id: string
   iteration: number
   iteration_path: unknown[]
-  status: 'completed' | 'failed' | 'canceled'
+  status: 'completed' | 'failed' | 'canceled' | 'timed_out'
   exit_reason: string | null
   sequence: number
   started_at: number

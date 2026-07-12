@@ -597,6 +597,10 @@ function reachableFrom(startIds: string[], outgoing: Map<string, WorkflowEdgeSna
   return visited
 }
 
+function isChatRunWaitTimeout(message: string, timeoutMs?: number): boolean {
+  return typeof timeoutMs === 'number' && timeoutMs > 0 && message === `chat-run timed out after ${timeoutMs}ms`
+}
+
 export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
   private readonly runtimeStatuses = new Map<string, WorkflowRuntimeStatus>()
   private readonly canceledRunIds = new Set<string>()
@@ -929,6 +933,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 const persistedRun = getWorkflowRun(run.id)
                 const canceled = this.canceledRunIds.has(run.id) || persistedRun?.status === 'canceled'
                 const finalMessage = canceled ? (persistedRun?.error || 'Workflow run canceled') : message
+                const timedOut = !canceled && isChatRunWaitTimeout(message, input.timeoutMs)
                 updateWorkflowRunNodeSession(nodeSession.id, {
                   status: canceled ? 'canceled' : 'failed', finished_at: Date.now(), error: finalMessage,
                 })
@@ -936,7 +941,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 try {
                   createWorkflowRunLoopEpoch({
                     run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
-                    iteration_path: iterationPath, status: canceled ? 'canceled' : 'failed', exit_reason: finalMessage,
+                    iteration_path: iterationPath, status: canceled ? 'canceled' : timedOut ? 'timed_out' : 'failed', exit_reason: finalMessage,
                     sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
                   })
                 } catch (evidenceError) {
