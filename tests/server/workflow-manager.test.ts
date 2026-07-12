@@ -334,6 +334,39 @@ describe('workflow manager', () => {
     expect(compileWorkflowGraphPreflight([node('a'), node('b')], [], ['b', 'b', 'a']).startNodeIds).toEqual(['b', 'a'])
   })
 
+  it('calculates static execution bounds for disjoint and nested loop membership', async () => {
+    const { calculateWorkflowStaticExecutionBound } = await import('../../packages/server/src/services/workflow-manager')
+    const loop = (id: string, bodyNodeIds: string[], maxIterations: number) => ({ id, bodyNodeIds, maxIterations }) as any
+    expect(calculateWorkflowStaticExecutionBound(['plain'], [])).toBe(1)
+    expect(calculateWorkflowStaticExecutionBound(['a', 'b', 'plain'], [
+      loop('left', ['a'], 3), loop('right', ['b'], 5),
+    ])).toBe(9)
+    expect(calculateWorkflowStaticExecutionBound(['outer-only', 'inner'], [
+      loop('outer', ['outer-only', 'inner'], 3), loop('inner', ['inner'], 4),
+    ])).toBe(15)
+  })
+
+  it('rejects a loop whose static execution bound exceeds the server run budget before persistence', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { MAX_WORKFLOW_RUN_EXECUTIONS, WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    expect(MAX_WORKFLOW_RUN_EXECUTIONS).toBe(1000)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    const nodes = Array.from({ length: 11 }, (_, index) => ({
+      id: `n${index}`, type: 'agent', data: { title: `N${index}`, agent: 'hermes', input: `n${index}` },
+    }))
+    const edges = Array.from({ length: 10 }, (_, index) => ({ id: `e${index}`, source: `n${index}`, target: `n${index + 1}` }))
+    edges.push({ id: 'retry', source: 'n10', target: 'n0', data: { orchestration: { route: 'success', feedback: { maxIterations: 100 } } } } as any)
+    const workflow = manager.create({ name: `Over budget loop ${Date.now()}`, profile: 'default', nodes, edges })
+    try {
+      await expect(manager.runNow(workflow.id)).rejects.toThrow('workflow static execution bound 1100 exceeds run budget 1000')
+      expect(listWorkflowRuns(workflow.id)).toEqual([])
+      expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('executes a bounded top-level feedback loop with distinct iteration identities', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')

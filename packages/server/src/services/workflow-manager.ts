@@ -113,6 +113,7 @@ interface WorkflowEdgeCondition {
 
 export const DEFAULT_WORKFLOW_LOOP_ITERATIONS = 3
 export const MAX_WORKFLOW_LOOP_ITERATIONS = 100
+export const MAX_WORKFLOW_RUN_EXECUTIONS = 1000
 
 interface WorkflowEdgeOrchestration {
   route: WorkflowEdgeRoute
@@ -597,6 +598,31 @@ function reachableFrom(startIds: string[], outgoing: Map<string, WorkflowEdgeSna
   return visited
 }
 
+export function calculateWorkflowStaticExecutionBound(
+  activeNodeIds: Iterable<string>,
+  loops: CompiledWorkflowLoop[],
+): number {
+  let total = 0
+  for (const nodeId of activeNodeIds) {
+    let visits = 1
+    for (const loop of loops) {
+      if (!loop.bodyNodeIds.includes(nodeId)) continue
+      visits *= loop.maxIterations
+      if (!Number.isSafeInteger(visits) || visits > MAX_WORKFLOW_RUN_EXECUTIONS) return visits
+    }
+    total += visits
+    if (!Number.isSafeInteger(total) || total > MAX_WORKFLOW_RUN_EXECUTIONS) return total
+  }
+  return total
+}
+
+function assertWorkflowRunExecutionBudget(activeNodeIds: Iterable<string>, loops: CompiledWorkflowLoop[]): void {
+  const bound = calculateWorkflowStaticExecutionBound(activeNodeIds, loops)
+  if (!Number.isSafeInteger(bound) || bound > MAX_WORKFLOW_RUN_EXECUTIONS) {
+    throw new Error(`workflow static execution bound ${bound} exceeds run budget ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
+  }
+}
+
 function isChatRunWaitTimeout(message: string, timeoutMs?: number): boolean {
   return typeof timeoutMs === 'number' && timeoutMs > 0 && message === `chat-run timed out after ${timeoutMs}ms`
 }
@@ -822,6 +848,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const activeIds = reachableFrom(startNodeIds, outgoing)
     const activeNodes = nodes.filter(node => activeIds.has(node.id))
     const activeEdges = edges.filter(edge => activeIds.has(edge.source) && activeIds.has(edge.target))
+    assertWorkflowRunExecutionBudget(activeIds, compiledGraph.loops)
     const activeIncoming = new Map<string, WorkflowEdgeSnapshot[]>()
     const activeOutgoing = new Map<string, WorkflowEdgeSnapshot[]>()
     for (const node of activeNodes) {
@@ -882,10 +909,15 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         const outputs = new Map<string, string>()
         let sequence = 0
         let edgeEvidenceSequence = 0
+        let executionCount = 0
         try {
           for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
             const epochStartedAt = Date.now()
             for (const node of ordered) {
+              executionCount += 1
+              if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
+                throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
+              }
               const nodeSessionId = randomUUID()
               const executionId = `${node.id}@${loop.id}:${iteration}`
               const iterationPath = [{ loopId: loop.id, iteration }]
