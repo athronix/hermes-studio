@@ -1022,6 +1022,61 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('enforces one absolute deadline across sequential DAG executions', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let now = 5000
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const receivedTimeouts: Array<number | undefined> = []
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => {
+      receivedTimeouts.push(options.timeoutMs)
+      if (receivedTimeouts.length === 1) { now += 60; return { ok: true, output: 'first' } }
+      return { ok: false, error: `chat-run timed out after ${options.timeoutMs}ms` }
+    })
+    const workflow = manager.create({
+      name: `DAG run deadline ${now}`, profile: 'default',
+      nodes: [
+        { id: 'first', type: 'agent', data: { title: 'First', agent: 'hermes', input: 'first' } },
+        { id: 'second', type: 'agent', data: { title: 'Second', agent: 'hermes', input: 'second' } },
+      ], edges: [{ id: 'next', source: 'first', target: 'second' }],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 100 })
+      expect(receivedTimeouts).toEqual([100, 40])
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'workflow run timed out after 100ms' })
+      expect(result.nodeSessions.map(session => [session.node_id, session.status])).toEqual([
+        ['first', 'completed'], ['second', 'failed'],
+      ])
+    } finally { nowSpy.mockRestore(); await manager.delete(workflow.id) }
+  })
+
+  it('times out and removes a pending DAG approval at the absolute run deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(7000)
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review' })
+    const workflow = manager.create({
+      name: 'DAG approval deadline', profile: 'default',
+      nodes: [{ id: 'review', type: 'agent', data: { title: 'Review', agent: 'hermes', input: 'review', approvalRequired: true } }],
+      edges: [],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id, { timeoutMs: 100 })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.review).toBe('pending_approval')
+      await vi.advanceTimersByTimeAsync(100)
+      const result = await runPromise
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'workflow run timed out after 100ms' })
+      expect(result.nodeSessions.map(session => [session.status, session.error])).toEqual([['failed', 'workflow run timed out after 100ms']])
+      expect(manager.approveNode(workflow.id, result.run.id, 'review', true)).toBe(false)
+    } finally { vi.useRealTimers(); await manager.delete(workflow.id) }
+  })
+
   it('runs only the matched success branch and skips the unmatched branch without creating a session', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
