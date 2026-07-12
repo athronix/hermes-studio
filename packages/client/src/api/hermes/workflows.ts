@@ -117,6 +117,19 @@ export interface WorkflowRunLoopEpochRecord {
   finished_at: number
 }
 
+export interface WorkflowExportEnvelope {
+  format: 'hermes-studio.workflow'
+  version: 1
+  definition: { name: string; nodes: unknown[]; edges: unknown[]; viewport: WorkflowViewport | Record<string, unknown> | null }
+}
+
+export interface WorkflowImportPreview {
+  token: string
+  digest: string
+  expiresAt: number
+  summary: { name: string; nodes: number; edges: number }
+}
+
 export interface WorkflowRunNowRequest {
   start_node_ids?: string[]
   input?: string | null
@@ -181,6 +194,24 @@ export async function batchDeleteWorkflows(ids: string[]): Promise<WorkflowBatch
     method: 'POST',
     body: JSON.stringify({ ids }),
   })
+}
+
+export async function exportWorkflow(id: string): Promise<WorkflowExportEnvelope> {
+  return request<WorkflowExportEnvelope>(`/api/hermes/workflows/${encodeURIComponent(id)}/export`)
+}
+
+export async function previewWorkflowImport(document: string, profile?: string | null): Promise<WorkflowImportPreview> {
+  const res = await request<{ ok: true; preview: WorkflowImportPreview }>('/api/hermes/workflows/import/preview', {
+    method: 'POST', body: JSON.stringify({ document, profile }),
+  })
+  return res.preview
+}
+
+export async function confirmWorkflowImport(token: string, profile?: string | null): Promise<WorkflowRecord> {
+  const res = await request<{ ok: true; workflow: WorkflowRecord }>('/api/hermes/workflows/import/confirm', {
+    method: 'POST', body: JSON.stringify({ token, profile }),
+  })
+  return res.workflow
 }
 
 export async function listWorkflowRuns(id: string, limit = 100): Promise<WorkflowRunRecord[]> {
