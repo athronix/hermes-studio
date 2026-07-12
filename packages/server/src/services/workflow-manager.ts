@@ -385,6 +385,85 @@ export function normalizeWorkflowEdge(raw: unknown): WorkflowEdgeSnapshot | null
   return { id, source, target, orchestration }
 }
 
+export interface CompiledWorkflowLoop {
+  id: string
+  feedbackEdgeId: string
+  headerNodeId: string
+  latchNodeId: string
+  bodyNodeIds: string[]
+  maxIterations: number
+  parentLoopId: string | null
+}
+
+export function compileWorkflowLoops(nodeIds: string[], edges: WorkflowEdgeSnapshot[]): CompiledWorkflowLoop[] {
+  const nodeSet = new Set(nodeIds)
+  const forwardEdges = edges.filter(edge => !edge.orchestration.feedback)
+  const outgoing = new Map(nodeIds.map(id => [id, [] as string[]]))
+  const incoming = new Map(nodeIds.map(id => [id, [] as string[]]))
+  const indegree = new Map(nodeIds.map(id => [id, 0]))
+  for (const edge of forwardEdges) {
+    if (!nodeSet.has(edge.source) || !nodeSet.has(edge.target)) continue
+    outgoing.get(edge.source)!.push(edge.target)
+    incoming.get(edge.target)!.push(edge.source)
+    indegree.set(edge.target, indegree.get(edge.target)! + 1)
+  }
+  const queue = nodeIds.filter(id => indegree.get(id) === 0)
+  const topological: string[] = []
+  for (let index = 0; index < queue.length; index += 1) {
+    const id = queue[index]
+    topological.push(id)
+    for (const target of outgoing.get(id) || []) {
+      indegree.set(target, indegree.get(target)! - 1)
+      if (indegree.get(target) === 0) queue.push(target)
+    }
+  }
+  if (topological.length !== nodeIds.length) throw new Error('workflow forward graph must be acyclic')
+
+  const walk = (starts: string[], adjacency: Map<string, string[]>): Set<string> => {
+    const visited = new Set<string>()
+    const stack = [...starts]
+    while (stack.length) {
+      const id = stack.pop()!
+      if (visited.has(id)) continue
+      visited.add(id)
+      for (const next of adjacency.get(id) || []) stack.push(next)
+    }
+    return visited
+  }
+  const starts = nodeIds.filter(id => (incoming.get(id) || []).length === 0)
+  const dominators = new Map<string, Set<string>>()
+  for (const id of topological) {
+    const predecessors = incoming.get(id) || []
+    if (starts.includes(id) || predecessors.length === 0) dominators.set(id, new Set([id]))
+    else {
+      const intersection = new Set(dominators.get(predecessors[0]) || [])
+      for (const predecessor of predecessors.slice(1)) {
+        const candidate = dominators.get(predecessor) || new Set<string>()
+        for (const value of [...intersection]) if (!candidate.has(value)) intersection.delete(value)
+      }
+      intersection.add(id)
+      dominators.set(id, intersection)
+    }
+  }
+
+  return edges.filter(edge => edge.orchestration.feedback).map(edge => {
+    const edgeId = edge.id || `${edge.source}->${edge.target}`
+    const reachableFromHeader = walk([edge.target], outgoing)
+    if (!reachableFromHeader.has(edge.source)) {
+      throw new Error(`feedback edge ${edgeId} has no forward path from ${edge.target} to ${edge.source}`)
+    }
+    if (!dominators.get(edge.source)?.has(edge.target)) {
+      throw new Error(`feedback edge ${edgeId} does not form a single-entry natural loop`)
+    }
+    const canReachLatch = walk([edge.source], incoming)
+    const bodyNodeIds = nodeIds.filter(id => reachableFromHeader.has(id) && canReachLatch.has(id))
+    return {
+      id: `loop:${edgeId}`, feedbackEdgeId: edgeId, headerNodeId: edge.target, latchNodeId: edge.source,
+      bodyNodeIds, maxIterations: edge.orchestration.feedback!.maxIterations, parentLoopId: null,
+    }
+  })
+}
+
 function imageMediaType(path: string): string {
   const lower = path.toLowerCase()
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'

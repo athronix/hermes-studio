@@ -161,6 +161,35 @@ describe('workflow manager', () => {
     expect(() => normalizeWorkflowEdge({ id: 'missing-value', source: 'first', target: 'second', data: { orchestration: { route: 'success', condition: { path: 'output.status', operator: 'equals' } } } })).toThrow('workflow edge missing-value condition operator equals requires value')
   })
 
+  it('compiles a bounded single-entry natural loop from an explicit feedback edge', async () => {
+    const { compileWorkflowLoops, normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
+    const nodes = ['entry', 'implement', 'review', 'exit']
+    const edges = [
+      normalizeWorkflowEdge({ id: 'entry-implement', source: 'entry', target: 'implement' })!,
+      normalizeWorkflowEdge({ id: 'implement-review', source: 'implement', target: 'review' })!,
+      normalizeWorkflowEdge({ id: 'review-exit', source: 'review', target: 'exit' })!,
+      normalizeWorkflowEdge({ id: 'retry', source: 'review', target: 'implement', data: { orchestration: { route: 'success', feedback: { maxIterations: 5 } } } })!,
+    ]
+    expect(compileWorkflowLoops(nodes, edges)).toEqual([{
+      id: 'loop:retry', feedbackEdgeId: 'retry', headerNodeId: 'implement', latchNodeId: 'review',
+      bodyNodeIds: ['implement', 'review'], maxIterations: 5, parentLoopId: null,
+    }])
+  })
+
+  it('rejects ordinary cycles and feedback edges without a forward path', async () => {
+    const { compileWorkflowLoops, normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
+    const edge = (id: string, source: string, target: string, feedback = false) => normalizeWorkflowEdge({
+      id, source, target, data: feedback ? { orchestration: { route: 'success', feedback: true } } : undefined,
+    })!
+    expect(() => compileWorkflowLoops(['a', 'b'], [edge('a-b', 'a', 'b'), edge('b-a', 'b', 'a')])).toThrow('workflow forward graph must be acyclic')
+    expect(() => compileWorkflowLoops(['a', 'b', 'c'], [edge('a-b', 'a', 'b'), edge('retry', 'c', 'a', true)])).toThrow('feedback edge retry has no forward path from a to c')
+    expect(() => compileWorkflowLoops(['entry', 'header', 'body', 'latch'], [
+      edge('entry-header', 'entry', 'header'), edge('header-body', 'header', 'body'),
+      edge('body-latch', 'body', 'latch'), edge('entry-body', 'entry', 'body'),
+      edge('retry', 'latch', 'header', true),
+    ])).toThrow('feedback edge retry does not form a single-entry natural loop')
+  })
+
   it('evaluates equals conditions through own properties only', async () => {
     const { evaluateWorkflowEdgeCondition } = await import('../../packages/server/src/services/workflow-manager')
 
