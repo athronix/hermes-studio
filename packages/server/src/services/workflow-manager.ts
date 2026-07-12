@@ -783,6 +783,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     runId: string
     node: WorkflowNodeSnapshot
     nodeStatuses: Record<string, WorkflowRuntimeState>
+    timeoutMs?: number
+    timeoutError?: string
   }): Promise<boolean> {
     if (!workflowNodeRequiresApproval(args.node)) return true
     if (this.canceledRunIds.has(args.runId) || getWorkflowRun(args.runId)?.status === 'canceled') return false
@@ -806,10 +808,19 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       resolve: resolveApproval,
     })
 
+    let timer: ReturnType<typeof setTimeout> | null = null
     try {
-      const approved = await approval
+      const approved = args.timeoutMs !== undefined
+        ? await Promise.race([
+            approval,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error(args.timeoutError || 'Workflow node approval timed out')), args.timeoutMs)
+            }),
+          ])
+        : await approval
       return approved && !this.canceledRunIds.has(args.runId) && getWorkflowRun(args.runId)?.status !== 'canceled'
     } finally {
+      if (timer) clearTimeout(timer)
       this.pendingNodeApprovals.delete(key)
     }
   }
@@ -956,8 +967,14 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               }, { profile, user: input.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
               if (!runResult.ok) throw new Error(runResult.error || `node ${node.id} failed`)
               const output = lastAssistantOutput(nodeSessionId, runResult.output)
+              const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+              if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) {
+                throw new Error(`workflow run timed out after ${input.timeoutMs}ms`)
+              }
               const approved = await this.waitForNodeApproval({
                 workflowId: workflow.id, runId: run.id, node, nodeStatuses,
+                timeoutMs: approvalTimeoutMs,
+                timeoutError: `workflow run timed out after ${input.timeoutMs}ms`,
               })
               if (!approved) throw new Error('Workflow node approval rejected')
               outputs.set(node.id, output)
@@ -980,7 +997,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 const persistedRun = getWorkflowRun(run.id)
                 const canceled = this.canceledRunIds.has(run.id) || persistedRun?.status === 'canceled'
                 const finalMessage = canceled ? (persistedRun?.error || 'Workflow run canceled') : message
-                const timedOut = !canceled && isChatRunWaitTimeout(message, remainingTimeoutMs)
+                const timedOut = !canceled && (
+                  isChatRunWaitTimeout(message, remainingTimeoutMs)
+                  || message === `workflow run timed out after ${input.timeoutMs}ms`
+                )
                 const approvalRejected = !canceled && message === 'Workflow node approval rejected'
                 updateWorkflowRunNodeSession(nodeSession.id, {
                   status: canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed', finished_at: Date.now(), error: finalMessage,

@@ -524,6 +524,83 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('times out and removes a pending loop approval at the run deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review me' })
+    const workflow = manager.create({
+      name: 'Approval deadline loop', profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header', approvalRequired: true } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id, { timeoutMs: 100 })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.header).toBe('pending_approval')
+      await vi.advanceTimersByTimeAsync(100)
+      const result = await runPromise
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'workflow run timed out after 100ms' })
+      expect(result.nodeSessions.map(session => [session.status, session.error])).toEqual([['failed', 'workflow run timed out after 100ms']])
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => [epoch.status, epoch.exit_reason])).toEqual([
+        ['timed_out', 'workflow run timed out after 100ms'],
+      ])
+      expect(manager.approveNode(workflow.id, result.run.id, 'header', true)).toBe(false)
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+      await manager.delete(workflow.id)
+    }
+  })
+
+  it('fails closed when approval-deadline loop epoch evidence cannot be persisted', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3000)
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_approval_deadline_epoch BEFORE INSERT ON workflow_run_loop_epochs
+      WHEN NEW.status = 'timed_out' AND NEW.exit_reason = 'workflow run timed out after 100ms'
+      BEGIN SELECT RAISE(ABORT, 'approval deadline epoch write failed'); END`)
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review me' })
+    const workflow = manager.create({
+      name: 'Approval deadline evidence', profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header', approvalRequired: true } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id, { timeoutMs: 100 })
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(100)
+      const result = await runPromise
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('approval deadline epoch write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(manager.approveNode(workflow.id, result.run.id, 'header', true)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      db.exec('DROP TRIGGER IF EXISTS fail_approval_deadline_epoch')
+      await manager.delete(workflow.id)
+    }
+  })
+
   it('records an approval_rejected loop epoch and stops the iteration', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
