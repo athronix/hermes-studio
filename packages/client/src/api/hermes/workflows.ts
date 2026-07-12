@@ -61,6 +61,7 @@ export interface WorkflowRunRecord {
   error: string | null
   node_sessions?: WorkflowRunNodeSessionRecord[]
   edge_evaluations?: WorkflowRunEdgeEvaluationRecord[]
+  loop_epochs?: WorkflowRunLoopEpochRecord[]
 }
 
 export interface WorkflowRunNodeSessionRecord {
@@ -100,6 +101,20 @@ export interface WorkflowRunEdgeEvaluationRecord {
   orchestration: unknown
   condition_evaluation: unknown | null
   evaluated_at: number
+}
+
+export interface WorkflowRunLoopEpochRecord {
+  id: string
+  run_id: string
+  workflow_id: string
+  loop_id: string
+  iteration: number
+  iteration_path: unknown[]
+  status: 'completed' | 'failed' | 'canceled'
+  exit_reason: string | null
+  sequence: number
+  started_at: number
+  finished_at: number
 }
 
 export interface WorkflowRunNowRequest {

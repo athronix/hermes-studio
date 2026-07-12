@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { getWorkflowManager, type WorkflowRerunFromNodeInput, type WorkflowRunNowInput, type WorkflowUpdateInput } from '../../services/workflow-manager'
 import { listUserProfiles } from '../../db/hermes/users-store'
-import { listWorkflowRunEdgeEvaluations, listWorkflowRunNodeSessions, listWorkflowRuns } from '../../db/hermes/workflow-run-store'
+import { listWorkflowRunEdgeEvaluations, listWorkflowRunLoopEpochs, listWorkflowRunNodeSessions, listWorkflowRuns } from '../../db/hermes/workflow-run-store'
 import { logger } from '../../services/logger'
 
 const MAX_BATCH_DELETE = 200
@@ -157,6 +157,7 @@ export async function listRuns(ctx: Context) {
       ...run,
       node_sessions: listWorkflowRunNodeSessions(run.id),
       edge_evaluations: listWorkflowRunEdgeEvaluations(run.id),
+      loop_epochs: listWorkflowRunLoopEpochs(run.id),
     })),
   }
 }
