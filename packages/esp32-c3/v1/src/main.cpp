@@ -279,6 +279,7 @@ void mcuSocketLoop();
 bool waitForMcuSocketReady(uint32_t timeoutMs);
 void enqueueNoDevicePrompt(const String &interactionId);
 void enqueueTokenInvalidPromptAndClearActive(const String &interactionId, const String &url = "");
+void clearActiveDeviceState();
 String activeDeviceEndpoint(const __FlashStringHelper *path);
 String activeDeviceEndpoint(const char *path);
 bool mcuSocketMatchesActiveTarget();
@@ -4253,6 +4254,23 @@ void handleMcuWebSocketText(uint8_t clientId, const String &message) {
     }
     return;
   }
+  if (type == F("mcu.remote.disconnected")) {
+    String machineId = jsonStringValue(message, F("machineId"));
+    bool activeMachineMatches = machineId.length() == 0 ||
+                                activeDeviceKey.startsWith(machineId + F("|"));
+    if (mcuSocketRelayUrl.length() == 0 || !activeMachineMatches) return;
+    lastAudioDetail = F("remote client disconnected");
+    if (mcuAudioPlaying) finishMcuAudio(true);
+    clearMcuAudioQueue();
+    if (mcuInteractionActive) {
+      markMcuInteraction(mcuInteractionId, F("failed"), F("REMOTE OFFLINE"));
+    } else {
+      setOledStatus(OledMode::Error, F("REMOTE"), F("OFFLINE"), 0);
+    }
+    Serial.printf("Remote MCU target disconnected machine=%s\n", machineId.c_str());
+    clearActiveDeviceState();
+    return;
+  }
   if (type == F("auth.invalid")) {
     String interactionId = jsonStringValue(message, F("interactionId"));
     String url = jsonStringValue(message, F("url"));
@@ -4915,6 +4933,15 @@ void triggerBootVoiceTurn() {
     Serial.println(F("Voice trigger failed: WIFI OFFLINE"));
     return;
   }
+  if (mcuAuthToken.length() == 0 || activeDeviceUrl.length() == 0 || selectedProfile.length() == 0) {
+    lastAudioDetail = F("MCU login required before recording");
+    setOledStatus(OledMode::Error, F("LOGIN"), F("REQUIRED"), 0);
+    Serial.printf("Voice trigger blocked: LOGIN REQUIRED url=%d token=%d profile=%d\n",
+                  activeDeviceUrl.length() > 0 ? 1 : 0,
+                  mcuAuthToken.length() > 0 ? 1 : 0,
+                  selectedProfile.length() > 0 ? 1 : 0);
+    return;
+  }
 
   String interruptedInteractionId = mcuInteractionId;
   if (mcuAudioPlaying) {
@@ -4930,18 +4957,6 @@ void triggerBootVoiceTurn() {
   }
 
   String interactionId = String(F("mcu-voice-")) + millis();
-  if (activeDeviceUrl.length() == 0 || mcuAuthToken.length() == 0) {
-    markMcuInteraction(interactionId, F("failed"), F("NO DEVICE"));
-    Serial.println(F("Voice trigger failed: NO DEVICE"));
-    enqueueNoDevicePrompt(interactionId);
-    return;
-  }
-  if (selectedProfile.length() == 0) {
-    markMcuInteraction(interactionId, F("failed"), F("NO PROFILE"));
-    Serial.println(F("Voice trigger failed: NO PROFILE"));
-    broadcastMcuStatus();
-    return;
-  }
   if (!waitForMcuSocketReady(8000)) {
     markMcuInteraction(interactionId, F("failed"), F("SOCKET OFF"));
     Serial.printf("Voice trigger failed: SOCKET OFF activeUrl=%s token=%d profile=%s connected=%d namespace=%d\n",
