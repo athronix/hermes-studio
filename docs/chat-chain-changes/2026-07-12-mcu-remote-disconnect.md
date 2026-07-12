@@ -12,3 +12,8 @@ its stale login. Matching v1 and v2 firmware stops queued audio, ends the active
 interaction, clears the saved remote target and login, and disconnects its
 Socket transport. Long-press voice capture also requires a local target, token,
 and Profile before it can enter `LISTEN`.
+
+Remote machine discovery now releases the Relay Socket transport before opening
+its HTTPS request and caps both TCP connect and TLS handshake time. This avoids
+freezing the MCU web server for the platform's 120-second default TLS handshake
+timeout when the device page is opened during Relay startup or reconnect.

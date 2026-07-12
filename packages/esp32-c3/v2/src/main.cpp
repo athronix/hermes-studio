@@ -107,6 +107,7 @@ constexpr uint32_t kLanDiscoveryStaleMs = 30000;
 constexpr int kMaxLanDevices = 8;
 constexpr int kMaxManualDevices = 8;
 constexpr uint32_t kMcuLoginTimeoutMs = 8000;
+constexpr uint32_t kMcuRemoteTlsHandshakeTimeoutSec = 5;
 constexpr uint32_t kMcuSocketReconnectMs = 3000;
 const char kRemoteDeviceLookupUrl[] = "https://api.hermes-studio.ai";
 constexpr int kMaxProfiles = 8;
@@ -2217,25 +2218,44 @@ void queueRelayUrl(String urls[], int *count, const String &url) {
 
 void fetchRemoteDevicesFromRelay() {
   String endpoint = String(kRemoteDeviceLookupUrl) + F("/global-agent/device/") + mcuDeviceCode();
-  HTTPClient http;
-  http.setTimeout(kMcuLoginTimeoutMs);
-  if (!http.begin(endpoint)) return;
-  int code = http.GET();
-  String body = http.getString();
-  http.end();
+  bool restoreRelaySocket = mcuSocketRelayUrl.length() > 0 && (wsReady || mcuSocketConnected);
+  if (restoreRelaySocket) {
+    Serial.printf("Remote discovery releasing Socket.IO heap=%lu\n", static_cast<unsigned long>(ESP.getFreeHeap()));
+    disconnectMcuSocketClient();
+    delay(20);
+    yield();
+  }
+
+  int code = -1;
+  String body;
+  {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setHandshakeTimeout(kMcuRemoteTlsHandshakeTimeoutSec);
+    HTTPClient http;
+    http.setConnectTimeout(kMcuRemoteTlsHandshakeTimeoutSec * 1000);
+    http.setTimeout(kMcuLoginTimeoutMs);
+    if (http.begin(client, endpoint)) {
+      code = http.GET();
+      body = http.getString();
+      http.end();
+    }
+  }
+
   if (code == 404) {
     Serial.println(F("Remote machine discovery skipped: unofficial device code"));
-    return;
-  }
-  if (code == 429) {
+  } else if (code == 429) {
     Serial.println(F("Remote machine discovery skipped: rate limited"));
-    return;
-  }
-  if (code < 200 || code >= 300) {
+  } else if (code < 200 || code >= 300) {
     Serial.printf("Remote machine discovery failed code=%d body=%s\n", code, body.substring(0, 160).c_str());
-    return;
+  } else {
+    rememberRemoteMachineList(body);
   }
-  rememberRemoteMachineList(body);
+
+  if (restoreRelaySocket && activeDeviceUrl.length() > 0 && mcuAuthToken.length() > 0) {
+    Serial.printf("Remote discovery reconnecting Socket.IO heap=%lu\n", static_cast<unsigned long>(ESP.getFreeHeap()));
+    connectMcuSocketClient();
+  }
 }
 
 void refreshRemoteDevices() {
