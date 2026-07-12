@@ -664,6 +664,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const nodeSessionRecordIds = new Map<string, string>()
     const nodeStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const]))
     let sequence = 0
+    let firstNodeFailure: { node: WorkflowNodeSnapshot; error: string } | null = null
 
     const failRun = (message: string) => {
       if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
@@ -788,12 +789,17 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             }
             updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
             nodeStatuses[node.id] = 'failed'
+            completed.add(node.id)
+            if (!firstNodeFailure) firstNodeFailure = { node, error }
+            for (const edge of activeOutgoing.get(node.id) || []) {
+              edgeDecisions.set(edge, evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error }))
+            }
             this.setRuntimeStatus(workflow.id, {
               status: 'running',
               runId: run.id,
               nodeStatuses: { ...nodeStatuses },
             })
-            return { node, ok: false, error }
+            return { node, ok: false, handledFailure: true, error }
           }
           const output = lastAssistantOutput(nodeSessionId, runResult.output)
           const approved = await this.waitForNodeApproval({
@@ -829,7 +835,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           return { node, ok: true }
         }))
 
-        const failed = results.find(result => !result.ok)
+        const failed = results.find(result => !result.ok && !('handledFailure' in result && result.handledFailure))
         if (failed) {
           for (const node of activeNodes) {
             if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
@@ -850,6 +856,12 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         }
       }
 
+      if (firstNodeFailure) {
+        const failure = firstNodeFailure as { node: WorkflowNodeSnapshot; error: string }
+        const message = `Node ${failure.node.data.title || failure.node.id} failed: ${failure.error}`
+        const failedRun = failRun(message)
+        return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+      }
       const finishedAt = Date.now()
       const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
       this.setRuntimeStatus(workflow.id, {

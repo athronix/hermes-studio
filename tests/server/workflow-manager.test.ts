@@ -214,6 +214,40 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('runs failure and always branches after a failed node while skipping its success branch', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait
+      .mockResolvedValueOnce({ ok: false, error: 'source failed' })
+      .mockResolvedValue({ ok: true, output: 'handled' })
+    const workflow = manager.create({
+      name: `Failure branch ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'on-success', type: 'agent', data: { title: 'Success', agent: 'hermes', input: 'success' } },
+        { id: 'on-failure', type: 'agent', data: { title: 'Failure', agent: 'hermes', input: 'failure' } },
+        { id: 'always', type: 'agent', data: { title: 'Always', agent: 'hermes', input: 'always' } },
+      ],
+      edges: [
+        { id: 'success', source: 'source', target: 'on-success', data: { orchestration: { route: 'success' } } },
+        { id: 'failure', source: 'source', target: 'on-failure', data: { orchestration: { route: 'failure' } } },
+        { id: 'always', source: 'source', target: 'always', data: { orchestration: { route: 'always' } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
+      expect(result.nodeSessions.map(session => session.node_id).sort()).toEqual(['always', 'on-failure', 'source'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses).toMatchObject({
+        source: 'failed', 'on-success': 'skipped', 'on-failure': 'completed', always: 'completed',
+      })
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('pauses downstream nodes until an approval-required node is approved', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const manager = new WorkflowManager()
