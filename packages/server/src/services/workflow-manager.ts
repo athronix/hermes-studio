@@ -1094,6 +1094,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           }
           const outsideEdges = activeEdges.filter(edge => outsideNodeIds.has(edge.source) && outsideNodeIds.has(edge.target))
           const outsideDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
+          let firstOutsideFailure: string | null = null
           for (const outsideNode of outsideNodes) {
             const targetIncomingEdges = activeEdges.filter(edge => edge.target === outsideNode.id && (
               loopBody.has(edge.source) || outsideNodeIds.has(edge.source)
@@ -1160,7 +1161,22 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                   : runResult.error || `node ${outsideNode.id} failed`
                 updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
                 nodeStatuses[outsideNode.id] = 'failed'
-                throw new Error(error)
+                if (error === runTimeoutMessage) throw new Error(error)
+                firstOutsideFailure ||= error
+                for (const edge of outsideEdges.filter(item => item.source === outsideNode.id)) {
+                  const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { output: '' })
+                  createWorkflowRunEdgeEvaluation({
+                    run_id: run.id, workflow_id: workflow.id,
+                    edge_id: edge.id || `${edge.source}->${edge.target}`,
+                    source_node_id: edge.source, source_execution_id: outsideNode.id, iteration_path: [],
+                    target_node_id: edge.target, source_outcome: 'failure', status: decision.status,
+                    route: edge.orchestration.route, reason: 'reason' in decision ? decision.reason : null,
+                    sequence: edgeEvidenceSequence++, orchestration: edge.orchestration,
+                    condition_evaluation: 'condition' in decision ? decision.condition : null,
+                  })
+                  outsideDecisions.set(edge, decision)
+                }
+                continue
               }
               const output = lastAssistantOutput(nodeSessionId, runResult.output)
               const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
@@ -1204,8 +1220,9 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             }
           }
           const finishedAt = Date.now()
-          const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
-          this.setRuntimeStatus(workflow.id, { status: 'completed', runId: run.id, completedAt: finishedAt, error: null, nodeStatuses: { ...nodeStatuses } })
+          const finalStatus = firstOutsideFailure ? 'failed' : 'completed'
+          const completedRun = updateWorkflowRun(run.id, { status: finalStatus, finished_at: finishedAt, error: firstOutsideFailure }) || run
+          this.setRuntimeStatus(workflow.id, { status: finalStatus, runId: run.id, completedAt: finishedAt, error: firstOutsideFailure, nodeStatuses: { ...nodeStatuses } })
           return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)

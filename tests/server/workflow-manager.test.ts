@@ -1148,6 +1148,44 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('routes a failed post-loop node through failure and always edges', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      if (request.input.includes('fails-after')) return { ok: false, error: 'post-loop boom' }
+      const output = request.input.includes('latch') ? 'exit' : 'ok'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Post-loop failure ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+        { id: 'fails-after', type: 'agent', data: { title: 'Fails', agent: 'hermes', input: 'fails-after' } },
+        { id: 'failure-handler', type: 'agent', data: { title: 'Failure', agent: 'hermes', input: 'failure-handler' } },
+        { id: 'always-handler', type: 'agent', data: { title: 'Always', agent: 'hermes', input: 'always-handler' } },
+        { id: 'success-handler', type: 'agent', data: { title: 'Success', agent: 'hermes', input: 'success-handler' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+        { id: 'exit', source: 'latch', target: 'fails-after' },
+        { id: 'on-failure', source: 'fails-after', target: 'failure-handler', data: { orchestration: { route: 'failure' } } },
+        { id: 'on-always', source: 'fails-after', target: 'always-handler', data: { orchestration: { route: 'always' } } },
+        { id: 'on-success', source: 'fails-after', target: 'success-handler', data: { orchestration: { route: 'success' } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('post-loop boom')
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['header', 'latch', 'fails-after', 'failure-handler', 'always-handler'])
+      expect(result.nodeSessions.some(session => session.node_id === 'success-handler')).toBe(false)
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('dispatches multiple loop exit targets only from persisted final-iteration evidence and skips untaken targets', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
