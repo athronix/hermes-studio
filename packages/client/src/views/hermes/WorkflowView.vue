@@ -13,6 +13,7 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { useI18n } from 'vue-i18n'
 import { buildWorkflowEvidenceRows } from '@/utils/workflow-history'
+import { createConnectedAgentTransaction, type CanvasTransaction } from '@/utils/workflow-canvas'
 import WorkflowAgentNode from '@/components/hermes/workflow/WorkflowAgentNode.vue'
 import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ChatInput from '@/components/hermes/chat/ChatInput.vue'
@@ -137,6 +138,8 @@ const edgeEditorConditionOperator = ref('equals')
 const edgeEditorConditionValue = ref('')
 const edgeEditorFeedback = ref(false)
 const edgeEditorMaxIterations = ref('3')
+const connectionStartNodeId = ref<string | null>(null)
+const lastCanvasTransaction = ref<CanvasTransaction<WorkflowNode, WorkflowEdge> | null>(null)
 const workflowRunContextMenuVisible = ref(false)
 const workflowRunContextMenuX = ref(0)
 const workflowRunContextMenuY = ref(0)
@@ -1618,6 +1621,46 @@ function handleConnect(connection: Connection) {
   }]
 }
 
+function handleConnectStart(payload: { nodeId?: string; handleType?: string }) {
+  connectionStartNodeId.value = payload.handleType === 'source' ? payload.nodeId || null : null
+}
+
+function handleConnectEnd(event?: MouseEvent | TouchEvent) {
+  const source = connectionStartNodeId.value
+  connectionStartNodeId.value = null
+  if (!source || !event || selectedWorkflowRunId.value || !activeWorkflowId.value) return
+  const target = event.target as Element | null
+  if (target?.closest('.vue-flow__handle, .vue-flow__node')) return
+  const touch = 'changedTouches' in event ? event.changedTouches[0] : null
+  const clientX = touch?.clientX ?? ('clientX' in event ? event.clientX : 0)
+  const clientY = touch?.clientY ?? ('clientY' in event ? event.clientY : 0)
+  const nodeId = `agent-${nextNodeIndex.value}`
+  const position = screenToFlowCoordinate({ x: clientX, y: clientY })
+  const node = makeNode(nodeId, t('workflow.newNodeTitle', { count: nextNodeIndex.value }), position)
+  const transaction = createConnectedAgentTransaction<WorkflowNode, WorkflowEdge>(
+    { nodes: nodes.value, edges: edges.value },
+    { source, nodeId, title: node.data.title, position, nodeData: node.data },
+  )
+  transaction.after.nodes[transaction.after.nodes.length - 1] = node
+  transaction.after.edges[transaction.after.edges.length - 1] = {
+    ...transaction.after.edges[transaction.after.edges.length - 1], animated: true, markerEnd: MarkerType.ArrowClosed,
+  }
+  nodes.value = transaction.after.nodes
+  edges.value = transaction.after.edges
+  lastCanvasTransaction.value = transaction
+  nextNodeIndex.value += 1
+  ensureSkillOptionsForVisibleNodes()
+}
+
+function undoLastCanvasTransaction() {
+  const transaction = lastCanvasTransaction.value
+  if (!transaction || selectedWorkflowRunId.value) return
+  nodes.value = transaction.before.nodes
+  edges.value = transaction.before.edges
+  nextNodeIndex.value = Math.max(1, nextNodeIndex.value - 1)
+  lastCanvasTransaction.value = null
+}
+
 function deleteNode(nodeId: string) {
   nodes.value = nodes.value.filter(node => node.id !== nodeId)
   edges.value = edges.value.filter(edge => edge.source !== nodeId && edge.target !== nodeId)
@@ -1999,6 +2042,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           <input ref="workflowImportInputRef" class="workflow-import-input" type="file" accept="application/json,.json" @change="handleWorkflowImport" />
           <NButton v-if="!selectedWorkflowRunId" quaternary size="small" @click="openWorkflowImport">{{ t('workflow.actions.importWorkflow') }}</NButton>
           <NButton v-if="!selectedWorkflowRunId" quaternary size="small" :disabled="!activeWorkflowId" @click="exportActiveWorkflow">{{ t('workflow.actions.exportWorkflow') }}</NButton>
+          <NButton v-if="!selectedWorkflowRunId" quaternary size="small" :disabled="!lastCanvasTransaction" @click="undoLastCanvasTransaction">{{ t('workflow.actions.undo') }}</NButton>
           <NTooltip v-if="!selectedWorkflowRunId" trigger="hover">
             <template #trigger>
               <NButton quaternary size="small" circle :aria-label="t('workflow.actions.addNode')" @click="addAgentNode">
@@ -2159,6 +2203,8 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           :default-edge-options="{ type: 'smoothstep', markerEnd: MarkerType.ArrowClosed }"
           class="workflow-flow"
           @connect="handleConnect"
+          @connect-start="handleConnectStart"
+          @connect-end="handleConnectEnd"
           @node-click="handleNodeClick"
           @node-context-menu="handleNodeContextMenu"
           @edge-click="handleEdgeClick"

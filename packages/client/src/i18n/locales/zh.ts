@@ -733,6 +733,7 @@ export default {
       deleteNode: '删除节点',
       deleteEdge: '删除连接线',
       editEdge: '编辑连接线',
+      undo: '撤销',
       importWorkflow: '导入 Workflow',
       exportWorkflow: '导出 Workflow',
       imported: 'Workflow 导入成功',

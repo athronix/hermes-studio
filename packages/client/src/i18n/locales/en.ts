@@ -733,6 +733,7 @@ export default {
       deleteNode: 'Delete Node',
       deleteEdge: 'Delete Connection',
       editEdge: 'Edit Connection',
+      undo: 'Undo',
       importWorkflow: 'Import Workflow',
       exportWorkflow: 'Export Workflow',
       imported: 'Workflow imported',

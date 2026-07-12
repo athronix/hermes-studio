@@ -638,6 +638,7 @@ export default {
       deleteNode: 'Удалить узел',
       deleteEdge: 'Удалить соединение',
       editEdge: 'Изменить соединение',
+      undo: 'Отменить',
       importWorkflow: 'Импорт Workflow',
       exportWorkflow: 'Экспорт Workflow',
       imported: 'Workflow импортирован',
