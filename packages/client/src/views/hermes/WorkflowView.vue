@@ -727,10 +727,10 @@ async function loadWorkflows() {
   try {
     let records: WorkflowRecord[]
     try {
-      records = await listWorkflowsSocket()
-    } catch (socketErr) {
-      console.warn('Failed to load workflows from socket, falling back to HTTP:', socketErr)
       records = await listWorkflowsApi()
+    } catch (httpErr) {
+      console.warn('Failed to load workflows from HTTP, falling back to socket:', httpErr)
+      records = await listWorkflowsSocket()
     }
     const docs = records.map(workflowDocumentFromRecord)
     const previousActiveId = activeWorkflowId.value

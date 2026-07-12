@@ -14,6 +14,7 @@ interface MockHermesApiOptions {
   tokenValidationStatus?: number
   initialProfileName?: 'default' | 'research'
   sessions?: unknown[]
+  workflows?: unknown[]
 }
 
 const sampleModelGroup = {
@@ -157,6 +158,21 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
         return
       }
       await route.fulfill(jsonResponse({ error: 'Method not allowed' }, 405))
+      return
+    }
+
+    if (pathname === '/api/hermes/skills') {
+      await route.fulfill(jsonResponse({ skills: [] }))
+      return
+    }
+
+    if (/^\/api\/hermes\/workflows\/[^/]+\/runs$/.test(pathname)) {
+      await route.fulfill(jsonResponse({ runs: [] }))
+      return
+    }
+
+    if (pathname === '/api/hermes/workflows') {
+      await route.fulfill(jsonResponse({ workflows: options.workflows ?? [] }, tokenValidationStatus))
       return
     }
 
