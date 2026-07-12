@@ -1,8 +1,8 @@
 # ESP32-C3 Firmware v2
 
-PlatformIO project for the 16MB ESP32-C3 hardware revision. Firmware v2 uses
-the same application logic as v1 and overrides only version and board-specific
-constants through `src/main.cpp`.
+PlatformIO project for the 16MB ESP32-C3 hardware revision. Firmware v2 started
+from the v1 application logic but keeps an independent `src/main.cpp`, so v2
+hardware and audio tuning cannot change the v1 source or release firmware.
 
 ## Hardware
 
@@ -14,7 +14,8 @@ constants through `src/main.cpp`.
 - Power amplifier enable: GPIO11
 - ES8311 address: `0x18`
 - ES8311 DAC volume register: `0xBF` (0dB)
-- Default playback volume: 100%
+- Default playback volume: 80%
+- Playback gain: displayed percentage × 1.5, with a 100% UI maximum and soft limiter
 - OLED address: `0x3C` or `0x3D`
 
 The custom partition table intentionally retains v1's proven 4MB dual-OTA
