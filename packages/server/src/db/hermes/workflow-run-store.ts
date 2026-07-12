@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import { getDb, jsonDelete, jsonGet, jsonGetAll, jsonSet } from '../index'
-import { WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUNS_TABLE } from './schemas'
+import { WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUNS_TABLE } from './schemas'
 
 export type WorkflowRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
 export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'approval_rejected' | 'canceled'
@@ -18,6 +18,12 @@ export interface WorkflowRunRecord {
   finished_at: number | null
   created_at: number
   error: string | null
+}
+
+export interface WorkflowRunEdgeEvaluationRecord {
+  id: string; run_id: string; workflow_id: string; edge_id: string; source_node_id: string; target_node_id: string
+  source_outcome: 'success' | 'failure'; status: 'taken' | 'not_taken' | 'error'; route: 'success' | 'failure' | 'always'
+  reason: string | null; sequence: number; orchestration: unknown; condition_evaluation: unknown | null; evaluated_at: number
 }
 
 export interface WorkflowRunNodeSessionRecord {
@@ -88,6 +94,35 @@ function rowToNodeSessionRecord(row: Record<string, any>): WorkflowRunNodeSessio
     updated_at: Number(row.updated_at || 0),
     error: row.error == null || row.error === '' ? null : String(row.error),
   }
+}
+
+function parseObjectJson(value: unknown): unknown {
+  if (value == null || value === '') return null
+  if (typeof value !== 'string') return value
+  try { return JSON.parse(value) } catch { return null }
+}
+
+function rowToEdgeEvaluationRecord(row: Record<string, any>): WorkflowRunEdgeEvaluationRecord {
+  return { id: String(row.id), run_id: String(row.run_id), workflow_id: String(row.workflow_id), edge_id: String(row.edge_id),
+    source_node_id: String(row.source_node_id), target_node_id: String(row.target_node_id), source_outcome: row.source_outcome,
+    status: row.status, route: row.route, reason: row.reason == null ? null : String(row.reason), sequence: Number(row.sequence),
+    orchestration: parseObjectJson(row.orchestration_json ?? row.orchestration),
+    condition_evaluation: parseObjectJson(row.condition_evaluation_json ?? row.condition_evaluation), evaluated_at: Number(row.evaluated_at) }
+}
+
+export function createWorkflowRunEdgeEvaluation(input: Omit<WorkflowRunEdgeEvaluationRecord, 'id' | 'evaluated_at'> & { id?: string; evaluated_at?: number }): WorkflowRunEdgeEvaluationRecord {
+  const record = { ...input, id: input.id?.trim() || randomUUID(), reason: input.reason ?? null, evaluated_at: input.evaluated_at ?? Date.now() } as WorkflowRunEdgeEvaluationRecord
+  const row = { ...record, orchestration_json: JSON.stringify(record.orchestration), condition_evaluation_json: record.condition_evaluation == null ? null : JSON.stringify(record.condition_evaluation) }
+  const db = getDb()
+  if (!db) { jsonSet(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, record.id, row as any); return record }
+  db.prepare(`INSERT INTO ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} (id, run_id, workflow_id, edge_id, source_node_id, target_node_id, source_outcome, status, route, reason, sequence, orchestration_json, condition_evaluation_json, evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.id, record.run_id, record.workflow_id, record.edge_id, record.source_node_id, record.target_node_id, record.source_outcome, record.status, record.route, record.reason, record.sequence, row.orchestration_json, row.condition_evaluation_json, record.evaluated_at)
+  return record
+}
+
+export function listWorkflowRunEdgeEvaluations(runId: string): WorkflowRunEdgeEvaluationRecord[] {
+  const db = getDb()
+  if (!db) return Object.values(jsonGetAll(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)).map(rowToEdgeEvaluationRecord).filter(item => item.run_id === runId).sort((a,b) => a.sequence - b.sequence)
+  return (db.prepare(`SELECT * FROM ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} WHERE run_id = ? ORDER BY sequence ASC`).all(runId) as Record<string, any>[]).map(rowToEdgeEvaluationRecord)
 }
 
 export function createWorkflowRun(input: {
@@ -206,6 +241,9 @@ export function deleteWorkflowRun(id: string): boolean {
   if (!existing) return false
   const db = getDb()
   if (!db) {
+    for (const record of Object.values(jsonGetAll(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)).map(rowToEdgeEvaluationRecord)) {
+      if (record.run_id === id) jsonDelete(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, record.id)
+    }
     for (const record of Object.values(jsonGetAll(WORKFLOW_RUN_NODE_SESSIONS_TABLE)).map(rowToNodeSessionRecord)) {
       if (record.run_id === id) jsonDelete(WORKFLOW_RUN_NODE_SESSIONS_TABLE, record.id)
     }
@@ -214,6 +252,7 @@ export function deleteWorkflowRun(id: string): boolean {
   }
   db.exec('BEGIN')
   try {
+    db.prepare(`DELETE FROM ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE} WHERE run_id = ?`).run(id)
     db.prepare(`DELETE FROM ${WORKFLOW_RUN_NODE_SESSIONS_TABLE} WHERE run_id = ?`).run(id)
     db.prepare(`DELETE FROM ${WORKFLOW_RUNS_TABLE} WHERE id = ?`).run(id)
     db.exec('COMMIT')

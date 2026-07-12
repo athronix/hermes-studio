@@ -456,6 +456,32 @@ describe('workflow manager', () => {
     }
   })
 
+  it('stores edge evaluations append-only and deletes them atomically with the run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const {
+      createWorkflowRun, createWorkflowRunEdgeEvaluation, deleteWorkflowRun,
+      listWorkflowRunEdgeEvaluations,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const run = createWorkflowRun({ workflow_id: `evidence-${Date.now()}`, status: 'running' })
+    createWorkflowRunEdgeEvaluation({
+      run_id: run.id, workflow_id: run.workflow_id, edge_id: 'edge-a', source_node_id: 'source',
+      target_node_id: 'target', source_outcome: 'success', status: 'not_taken', route: 'success',
+      reason: 'condition_not_matched', sequence: 2, orchestration: { route: 'success' },
+      condition_evaluation: { status: 'not_matched', actual: 'RETRY', reason: 'not_equal' },
+    })
+    createWorkflowRunEdgeEvaluation({
+      run_id: run.id, workflow_id: run.workflow_id, edge_id: 'edge-b', source_node_id: 'source',
+      target_node_id: 'other', source_outcome: 'success', status: 'taken', route: 'always',
+      sequence: 1, orchestration: { route: 'always' }, condition_evaluation: null,
+    })
+    expect(listWorkflowRunEdgeEvaluations(run.id).map(item => [item.edge_id, item.sequence, item.status])).toEqual([
+      ['edge-b', 1, 'taken'], ['edge-a', 2, 'not_taken'],
+    ])
+    expect(deleteWorkflowRun(run.id)).toBe(true)
+    expect(listWorkflowRunEdgeEvaluations(run.id)).toEqual([])
+  })
+
   it('reruns incomplete external upstream dependencies for downstream joins', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const {

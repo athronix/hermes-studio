@@ -227,6 +227,20 @@ export const WORKFLOW_RUN_NODE_SESSIONS_INDEXES = {
   uniq_workflow_run_node_sessions_run_node: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_sessions_run_node ON workflow_run_node_sessions(run_id, node_id)',
 }
 
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE = 'workflow_run_edge_evaluations'
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', edge_id: 'TEXT NOT NULL',
+  source_node_id: 'TEXT NOT NULL', target_node_id: 'TEXT NOT NULL', source_outcome: 'TEXT NOT NULL',
+  status: 'TEXT NOT NULL', route: 'TEXT NOT NULL', reason: 'TEXT', sequence: 'INTEGER NOT NULL',
+  orchestration_json: "TEXT NOT NULL DEFAULT '{}'", condition_evaluation_json: 'TEXT', evaluated_at: 'INTEGER NOT NULL',
+}
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES = {
+  idx_workflow_run_edge_evaluations_run_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_run_sequence ON workflow_run_edge_evaluations(run_id, sequence)',
+  idx_workflow_run_edge_evaluations_edge: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_edge ON workflow_run_edge_evaluations(edge_id)',
+}
+
 // ============================================================================
 // Compression Snapshot (compression-snapshot.ts)
 // ============================================================================
@@ -826,6 +840,9 @@ export function initAllHermesTables(): void {
     })
     syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
       indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    })
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
     })
 
     // Compression snapshot
