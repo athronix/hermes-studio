@@ -14,6 +14,7 @@ export interface WorkflowRunRecord {
   status: WorkflowRunStatus
   snapshot_nodes: unknown[]
   snapshot_edges: unknown[]
+  compiled_loops: unknown[]
   started_at: number | null
   finished_at: number | null
   created_at: number
@@ -69,6 +70,7 @@ function rowToRunRecord(row: Record<string, any>): WorkflowRunRecord {
     status: String(row.status || 'queued') as WorkflowRunStatus,
     snapshot_nodes: parseArrayJson(row.snapshot_nodes_json ?? row.snapshot_nodes),
     snapshot_edges: parseArrayJson(row.snapshot_edges_json ?? row.snapshot_edges),
+    compiled_loops: parseArrayJson(row.compiled_loops_json ?? row.compiled_loops),
     started_at: row.started_at == null ? null : Number(row.started_at),
     finished_at: row.finished_at == null ? null : Number(row.finished_at),
     created_at: Number(row.created_at || 0),
@@ -134,6 +136,7 @@ export function createWorkflowRun(input: {
   status?: WorkflowRunStatus
   snapshot_nodes?: unknown[]
   snapshot_edges?: unknown[]
+  compiled_loops?: unknown[]
   started_at?: number | null
   error?: string | null
 }): WorkflowRunRecord {
@@ -147,6 +150,7 @@ export function createWorkflowRun(input: {
     status: input.status || 'queued',
     snapshot_nodes: input.snapshot_nodes || [],
     snapshot_edges: input.snapshot_edges || [],
+    compiled_loops: input.compiled_loops || [],
     started_at: input.started_at ?? null,
     finished_at: null,
     created_at: now,
@@ -161,6 +165,7 @@ export function createWorkflowRun(input: {
     status: record.status,
     snapshot_nodes_json: JSON.stringify(record.snapshot_nodes),
     snapshot_edges_json: JSON.stringify(record.snapshot_edges),
+    compiled_loops_json: JSON.stringify(record.compiled_loops),
     started_at: record.started_at,
     finished_at: record.finished_at,
     created_at: record.created_at,
@@ -174,8 +179,8 @@ export function createWorkflowRun(input: {
   db.prepare(`
     INSERT INTO ${WORKFLOW_RUNS_TABLE} (
       id, workflow_id, profile, workspace, start_node_ids_json, status,
-      snapshot_nodes_json, snapshot_edges_json, started_at, finished_at, created_at, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      snapshot_nodes_json, snapshot_edges_json, compiled_loops_json, started_at, finished_at, created_at, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.id,
     row.workflow_id,
@@ -185,6 +190,7 @@ export function createWorkflowRun(input: {
     row.status,
     row.snapshot_nodes_json,
     row.snapshot_edges_json,
+    row.compiled_loops_json,
     row.started_at,
     row.finished_at,
     row.created_at,
@@ -215,6 +221,7 @@ export function updateWorkflowRun(id: string, patch: {
       start_node_ids_json: JSON.stringify(next.start_node_ids),
       snapshot_nodes_json: JSON.stringify(next.snapshot_nodes),
       snapshot_edges_json: JSON.stringify(next.snapshot_edges),
+      compiled_loops_json: JSON.stringify(next.compiled_loops),
     } as any)
     return next
   }

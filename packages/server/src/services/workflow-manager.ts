@@ -836,6 +836,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       status: 'running',
       snapshot_nodes: workflow.nodes,
       snapshot_edges: workflow.edges,
+      compiled_loops: compiledGraph.loops,
       started_at: startedAt,
     })
     this.canceledRunIds.delete(run.id)
@@ -1153,20 +1154,14 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
 
     const profile = input.profile?.trim() || run.profile || workflow.profile || 'default'
-    const nodes = run.snapshot_nodes.map(normalizeWorkflowNode).filter(Boolean) as WorkflowNodeSnapshot[]
+    const compiledGraph = compileWorkflowGraphPreflight(run.snapshot_nodes, run.snapshot_edges, run.start_node_ids)
+    const nodes = compiledGraph.nodes
+    const edges = compiledGraph.edges
     const nodeById = new Map(nodes.map(node => [node.id, node]))
     const targetNodeId = nodeId.trim()
     if (!targetNodeId || !nodeById.has(targetNodeId)) {
       const err = new Error('workflow node not found in run snapshot')
       ;(err as any).status = 404
-      throw err
-    }
-    const edges = run.snapshot_edges.map(normalizeWorkflowEdge).filter((edge): edge is WorkflowEdgeSnapshot =>
-      Boolean(edge && nodeById.has(edge.source) && nodeById.has(edge.target)),
-    )
-    if (nodes.length === 0) {
-      const err = new Error('workflow run snapshot has no nodes')
-      ;(err as any).status = 400
       throw err
     }
 

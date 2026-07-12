@@ -620,6 +620,16 @@ describe('workflow manager', () => {
     }
   })
 
+  it('round-trips the compiled loop snapshot with a workflow run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, deleteWorkflowRun, getWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const compiledLoops = [{ id: 'loop:retry', feedbackEdgeId: 'retry', headerNodeId: 'a', latchNodeId: 'b', bodyNodeIds: ['a', 'b'], maxIterations: 3, parentLoopId: null }]
+    const run = createWorkflowRun({ workflow_id: `snapshot-${Date.now()}`, compiled_loops: compiledLoops })
+    expect(getWorkflowRun(run.id)?.compiled_loops).toEqual(compiledLoops)
+    expect(deleteWorkflowRun(run.id)).toBe(true)
+  })
+
   it('stores edge evaluations append-only and deletes them atomically with the run', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const {
@@ -644,6 +654,25 @@ describe('workflow manager', () => {
     ])
     expect(deleteWorkflowRun(run.id)).toBe(true)
     expect(listWorkflowRunEdgeEvaluations(run.id)).toEqual([])
+  })
+
+  it('rejects an invalid rerun snapshot before deleting sessions or mutating the run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    const nodes = [{ id: 'a', type: 'agent', data: { title: 'A', agent: 'hermes', input: 'a' } }]
+    const workflow = manager.create({ name: `Invalid rerun ${Date.now()}`, profile: 'default', nodes, edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'canceled', snapshot_nodes: nodes, snapshot_edges: [{ id: 'bad', source: 'a', target: 'missing' }] })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'a', session_id: 'existing-a', status: 'canceled' })
+    try {
+      await expect(manager.rerunFromNode(workflow.id, run.id, 'a')).rejects.toThrow('workflow edge bad references missing node')
+      expect(getWorkflowRun(run.id)?.status).toBe('canceled')
+      expect(listWorkflowRunNodeSessions(run.id).map(item => item.session_id)).toEqual(['existing-a'])
+      expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
+    } finally { await manager.delete(workflow.id) }
   })
 
   it('reruns incomplete external upstream dependencies for downstream joins', async () => {

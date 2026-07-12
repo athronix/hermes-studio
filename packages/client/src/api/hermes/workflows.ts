@@ -53,6 +53,7 @@ export interface WorkflowRunRecord {
   status: WorkflowRunStatus
   snapshot_nodes: unknown[]
   snapshot_edges: unknown[]
+  compiled_loops: unknown[]
   started_at: number | null
   finished_at: number | null
   created_at: number
