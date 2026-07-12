@@ -849,13 +849,89 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       nodeStatuses: Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const])),
     })
 
+    const nodeStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const]))
+
+    const topLevelLoops = compiledGraph.loops.filter(loop => loop.parentLoopId === null)
+    if (compiledGraph.loops.length === 1 && topLevelLoops.length === 1) {
+      const loop = topLevelLoops[0]
+      const loopBody = new Set(loop.bodyNodeIds)
+      const feedbackEdge = activeEdges.find(edge => edge.id === loop.feedbackEdgeId)!
+      const loopOnly = activeNodes.every(node => loopBody.has(node.id)) && activeEdges.every(edge =>
+        loopBody.has(edge.source) && loopBody.has(edge.target),
+      )
+      if (loopOnly) {
+        const forwardEdges = activeEdges.filter(edge => !edge.orchestration.feedback)
+        const ordered: WorkflowNodeSnapshot[] = []
+        const indegree = new Map(loop.bodyNodeIds.map(id => [id, 0]))
+        for (const edge of forwardEdges) indegree.set(edge.target, (indegree.get(edge.target) || 0) + 1)
+        const queue = loop.bodyNodeIds.filter(id => indegree.get(id) === 0)
+        for (let index = 0; index < queue.length; index += 1) {
+          const id = queue[index]
+          ordered.push(nodeById.get(id)!)
+          for (const edge of forwardEdges.filter(item => item.source === id)) {
+            indegree.set(edge.target, indegree.get(edge.target)! - 1)
+            if (indegree.get(edge.target) === 0) queue.push(edge.target)
+          }
+        }
+        const outputs = new Map<string, string>()
+        let sequence = 0
+        try {
+          for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
+            for (const node of ordered) {
+              const nodeSessionId = randomUUID()
+              const executionId = `${node.id}@${loop.id}:${iteration}`
+              const iterationPath = [{ loopId: loop.id, iteration }]
+              const target = resolveWorkflowNodeRunTarget(node.data.agent)
+              const nodeSession = createWorkflowRunNodeSession({
+                run_id: run.id, workflow_id: workflow.id, node_id: node.id,
+                execution_id: executionId, iteration_path: iterationPath,
+                session_id: nodeSessionId, profile, agent: target.agent,
+                agent_mode: node.data.agent === 'hermes' ? '' : 'scoped', status: 'running',
+                sequence: sequence++, started_at: Date.now(),
+              })
+              nodeStatuses[node.id] = 'running'
+              this.setRuntimeStatus(workflow.id, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
+              const assembledInput = await this.buildNodeUserMessage({
+                node, incomingEdges: forwardEdges.filter(edge => edge.target === node.id),
+                nodeById, outputs, overrideInput: iteration === 0 && startNodeIds.includes(node.id) ? input.input : undefined,
+                profile,
+              })
+              const runResult = await chatRun.runAndWait({
+                session_id: nodeSessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
+                profile, workspace: workflow.workspace, model: node.data.model || undefined,
+                provider: node.data.provider || undefined, mode: node.data.agent === 'hermes' ? undefined : 'scoped',
+                coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
+              }, { profile, user: input.user, timeoutMs: input.timeoutMs, approvalChoice: 'once' })
+              if (!runResult.ok) throw new Error(runResult.error || `node $4{node.id} failed`)
+              outputs.set(node.id, lastAssistantOutput(nodeSessionId, runResult.output))
+              updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
+              nodeStatuses[node.id] = 'completed'
+            }
+            if (iteration + 1 < loop.maxIterations) {
+              const decision = evaluateWorkflowEdgeRoute(feedbackEdge.orchestration, 'success', { output: outputs.get(loop.latchNodeId) || '' })
+              if (decision.status !== 'taken') break
+            }
+          }
+          const finishedAt = Date.now()
+          const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
+          this.setRuntimeStatus(workflow.id, { status: 'completed', runId: run.id, completedAt: finishedAt, error: null, nodeStatuses: { ...nodeStatuses } })
+          return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const finishedAt = Date.now()
+          const failedRun = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || run
+          this.setRuntimeStatus(workflow.id, { status: 'failed', runId: run.id, completedAt: finishedAt, error: message, nodeStatuses: { ...nodeStatuses } })
+          return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+        }
+      }
+    }
+
     const completed = new Set<string>()
     const runningOrDone = new Set<string>()
     const edgeDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
     const outputs = new Map<string, string>()
     const nodeSessionIds = new Map<string, string>()
     const nodeSessionRecordIds = new Map<string, string>()
-    const nodeStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const]))
     let sequence = 0
     let edgeEvidenceSequence = 0
     const recordEdgeDecision = (

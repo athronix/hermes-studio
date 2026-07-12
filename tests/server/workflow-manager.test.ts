@@ -333,6 +333,37 @@ describe('workflow manager', () => {
     expect(compileWorkflowGraphPreflight([node('a'), node('b')], [], ['b', 'b', 'a']).startNodeIds).toEqual(['b', 'a'])
   })
 
+  it('executes a bounded top-level feedback loop with distinct iteration identities', async () => {
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    chatRunMock.runAndWait.mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Bounded loop ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'completed', error: null })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(6)
+      expect(result.nodeSessions.map(session => [session.node_id, session.execution_id, session.iteration_path])).toEqual([
+        ['header', 'header@loop:retry:0', [{ loopId: 'loop:retry', iteration: 0 }]],
+        ['latch', 'latch@loop:retry:0', [{ loopId: 'loop:retry', iteration: 0 }]],
+        ['header', 'header@loop:retry:1', [{ loopId: 'loop:retry', iteration: 1 }]],
+        ['latch', 'latch@loop:retry:1', [{ loopId: 'loop:retry', iteration: 1 }]],
+        ['header', 'header@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
+        ['latch', 'latch@loop:retry:2', [{ loopId: 'loop:retry', iteration: 2 }]],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('runs only the matched success branch and skips the unmatched branch without creating a session', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
