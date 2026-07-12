@@ -1457,6 +1457,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       ;(err as any).status = 400
       throw err
     }
+    assertWorkflowRunExecutionBudget(activeIds, compiledGraph.loops)
     const activeNodes = nodes.filter(node => activeIds.has(node.id))
     const outputs = new Map<string, string>()
     const nodeStatuses: Record<string, WorkflowRuntimeState> = {}

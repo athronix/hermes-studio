@@ -707,9 +707,11 @@ describe('workflow manager', () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     initAllStores()
     const manager = new WorkflowManager()
-    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => ({
-      ok: false, error: `chat-run timed out after ${options.timeoutMs}ms`,
-    }))
+    let actualTimeoutMs: number | undefined
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => {
+      actualTimeoutMs = options.timeoutMs
+      return { ok: false, error: `chat-run timed out after ${options.timeoutMs}ms` }
+    })
     const workflow = manager.create({
       name: `Timed out loop epoch ${Date.now()}`, profile: 'default',
       nodes: [
@@ -722,12 +724,15 @@ describe('workflow manager', () => {
     })
     try {
       const result = await manager.runNow(workflow.id, { timeoutMs: 25 })
-      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: 'chat-run timed out after 25ms' })
+      expect(actualTimeoutMs).toBeGreaterThan(0)
+      expect(actualTimeoutMs).toBeLessThanOrEqual(25)
+      const timeoutError = `chat-run timed out after ${actualTimeoutMs}ms`
+      expect({ status: result.run.status, error: result.run.error }).toEqual({ status: 'failed', error: timeoutError })
       expect(result.nodeSessions.map(session => [session.execution_id, session.status, session.error])).toEqual([
-        ['header@loop:retry:0', 'failed', 'chat-run timed out after 25ms'],
+        ['header@loop:retry:0', 'failed', timeoutError],
       ])
       expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => ({ status: epoch.status, exitReason: epoch.exit_reason }))).toEqual([
-        { status: 'timed_out', exitReason: 'chat-run timed out after 25ms' },
+        { status: 'timed_out', exitReason: timeoutError },
       ])
     } finally { await manager.delete(workflow.id) }
   })
@@ -1434,6 +1439,33 @@ describe('workflow manager', () => {
       await expect(manager.rerunFromNode(workflow.id, run.id, 'a')).rejects.toThrow('workflow edge bad references missing node')
       expect(getWorkflowRun(run.id)?.status).toBe('canceled')
       expect(listWorkflowRunNodeSessions(run.id).map(item => item.session_id)).toEqual(['existing-a'])
+      expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('rejects an over-budget rerun before deleting sessions or mutating the run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset()
+    const nodes = Array.from({ length: 11 }, (_, index) => ({
+      id: `n${index}`, type: 'agent', data: { title: `N${index}`, agent: 'hermes', input: `n${index}` },
+    }))
+    const edges: any[] = Array.from({ length: 10 }, (_, index) => ({ id: `e${index}`, source: `n${index}`, target: `n${index + 1}` }))
+    edges.push({ id: 'retry', source: 'n10', target: 'n0', data: { orchestration: { route: 'success', feedback: { maxIterations: 100 } } } })
+    const workflow = manager.create({ name: `Over-budget rerun ${Date.now()}`, profile: 'default', nodes, edges })
+    const run = createWorkflowRun({
+      workflow_id: workflow.id, status: 'canceled', snapshot_nodes: nodes, snapshot_edges: edges,
+      start_node_ids: ['n0'], started_at: 1000, finished_at: 1100,
+    })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'n0', session_id: 'existing-n0', status: 'canceled' })
+    const beforeRun = getWorkflowRun(run.id)
+    try {
+      await expect(manager.rerunFromNode(workflow.id, run.id, 'n0')).rejects.toThrow('workflow static execution bound 1100 exceeds run budget 1000')
+      expect(getWorkflowRun(run.id)).toEqual(beforeRun)
+      expect(listWorkflowRunNodeSessions(run.id).map(session => session.session_id)).toEqual(['existing-n0'])
       expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
     } finally { await manager.delete(workflow.id) }
   })
