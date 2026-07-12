@@ -910,6 +910,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         let sequence = 0
         let edgeEvidenceSequence = 0
         let executionCount = 0
+        const runDeadline = input.timeoutMs && input.timeoutMs > 0 ? startedAt + input.timeoutMs : null
         try {
           for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
             const epochStartedAt = Date.now()
@@ -917,6 +918,16 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
               executionCount += 1
               if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) {
                 throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
+              }
+              const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+              if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+                const timeoutMessage = `workflow run timed out after ${input.timeoutMs}ms`
+                createWorkflowRunLoopEpoch({
+                  run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration,
+                  iteration_path: [{ loopId: loop.id, iteration }], status: 'timed_out', exit_reason: timeoutMessage,
+                  sequence: iteration, started_at: epochStartedAt, finished_at: Date.now(),
+                })
+                throw new Error(timeoutMessage)
               }
               const nodeSessionId = randomUUID()
               const executionId = `${node.id}@${loop.id}:${iteration}`
@@ -942,7 +953,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 profile, workspace: workflow.workspace, model: node.data.model || undefined,
                 provider: node.data.provider || undefined, mode: node.data.agent === 'hermes' ? undefined : 'scoped',
                 coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
-              }, { profile, user: input.user, timeoutMs: input.timeoutMs, approvalChoice: 'once' })
+              }, { profile, user: input.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
               if (!runResult.ok) throw new Error(runResult.error || `node ${node.id} failed`)
               const output = lastAssistantOutput(nodeSessionId, runResult.output)
               const approved = await this.waitForNodeApproval({
@@ -969,7 +980,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
                 const persistedRun = getWorkflowRun(run.id)
                 const canceled = this.canceledRunIds.has(run.id) || persistedRun?.status === 'canceled'
                 const finalMessage = canceled ? (persistedRun?.error || 'Workflow run canceled') : message
-                const timedOut = !canceled && isChatRunWaitTimeout(message, input.timeoutMs)
+                const timedOut = !canceled && isChatRunWaitTimeout(message, remainingTimeoutMs)
                 const approvalRejected = !canceled && message === 'Workflow node approval rejected'
                 updateWorkflowRunNodeSession(nodeSession.id, {
                   status: canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed', finished_at: Date.now(), error: finalMessage,

@@ -346,6 +346,74 @@ describe('workflow manager', () => {
     ])).toBe(15)
   })
 
+  it('passes only the remaining run deadline to each loop execution', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let now = 1000
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const receivedTimeouts: Array<number | undefined> = []
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (_request: unknown, options: { timeoutMs?: number }) => {
+      receivedTimeouts.push(options.timeoutMs)
+      now += 40
+      return { ok: true, output: 'continue' }
+    })
+    const workflow = manager.create({
+      name: `Run deadline remaining ${now}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 100 })
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toBe('workflow run timed out after 100ms')
+      expect(receivedTimeouts).toEqual([100, 60, 20])
+      expect(result.nodeSessions.map(session => session.execution_id)).toEqual([
+        'header@loop:retry:0', 'latch@loop:retry:0', 'header@loop:retry:1',
+      ])
+    } finally { nowSpy.mockRestore(); await manager.delete(workflow.id) }
+  })
+
+  it('fails closed when run-deadline loop epoch evidence cannot be persisted', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { getDb } = await import('../../packages/server/src/db')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const db = getDb()!
+    db.exec(`CREATE TRIGGER fail_deadline_loop_epoch BEFORE INSERT ON workflow_run_loop_epochs
+      WHEN NEW.status = 'timed_out' AND NEW.exit_reason LIKE 'workflow run timed out%'
+      BEGIN SELECT RAISE(ABORT, 'run deadline epoch write failed'); END`)
+    const manager = new WorkflowManager()
+    let now = 2000
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    chatRunMock.runAndWait.mockReset().mockImplementation(async () => { now += 60; return { ok: true, output: 'continue' } })
+    const workflow = manager.create({
+      name: `Deadline evidence failure ${now}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { timeoutMs: 100 })
+      expect(result.run.status).toBe('failed')
+      expect(result.run.error).toContain('run deadline epoch write failed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+      expect(result.nodeSessions).toHaveLength(2)
+    } finally {
+      nowSpy.mockRestore(); db.exec('DROP TRIGGER IF EXISTS fail_deadline_loop_epoch'); await manager.delete(workflow.id)
+    }
+  })
+
   it('rejects a loop whose static execution bound exceeds the server run budget before persistence', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
