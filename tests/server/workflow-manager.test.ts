@@ -571,6 +571,48 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('executes arbitrary-depth nested loops inside a broader DAG with canonical paths', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const agent = (id: string) => ({ id, type: 'agent', data: { title: id, agent: 'hermes', input: id } })
+    const feedback = (id: string, source: string, target: string) => ({
+      id, source, target, data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } },
+    })
+    const workflow = manager.create({
+      name: `Deep nested loops ${Date.now()}`, profile: 'default',
+      nodes: ['pre', 'outer-h', 'middle-h', 'inner-h', 'inner-l', 'middle-l', 'outer-l', 'post'].map(agent),
+      edges: [
+        { id: 'pre-outer', source: 'pre', target: 'outer-h' },
+        { id: 'outer-middle', source: 'outer-h', target: 'middle-h' },
+        { id: 'middle-inner', source: 'middle-h', target: 'inner-h' },
+        { id: 'inner-forward', source: 'inner-h', target: 'inner-l' },
+        { id: 'inner-middle', source: 'inner-l', target: 'middle-l' },
+        { id: 'middle-outer', source: 'middle-l', target: 'outer-l' },
+        { id: 'outer-post', source: 'outer-l', target: 'post' },
+        feedback('inner-retry', 'inner-l', 'inner-h'),
+        feedback('middle-retry', 'middle-l', 'middle-h'),
+        feedback('outer-retry', 'outer-l', 'outer-h'),
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(30)
+      const innerSessions = result.nodeSessions.filter(session => session.node_id === 'inner-h')
+      expect(innerSessions).toHaveLength(8)
+      expect(innerSessions.at(-1)?.iteration_path).toEqual([
+        { loopId: 'loop:outer-retry', iteration: 1 },
+        { loopId: 'loop:middle-retry', iteration: 1 },
+        { loopId: 'loop:inner-retry', iteration: 1 },
+      ])
+      expect(result.nodeSessions.find(session => session.node_id === 'pre')?.iteration_path).toEqual([])
+      expect(result.nodeSessions.find(session => session.node_id === 'post')?.iteration_path).toEqual([])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('skips an unmatched conditional node inside a loop iteration without creating a session', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
