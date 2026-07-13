@@ -2,8 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { createMcuSpeechSegmenter } from '@/api/hermes/mcu-interaction'
+import { transcribeSpeech } from '@/api/hermes/stt'
+import { fetchSttSettings, type SttProviderSettingsResponse } from '@/api/hermes/stt-settings'
 import { synthesizeSpeech } from '@/api/hermes/tts'
 import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
+import { useMicRecorder } from '@/composables/useMicRecorder'
 import { useGlobalSpeech } from '@/composables/useSpeech'
 import { useSttSettings } from '@/composables/useSttSettings'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
@@ -45,6 +48,12 @@ const browserRecognition = useBrowserSpeechRecognition({
     failedWithReason: reason => t('chat.voiceInput.browserSpeechFailedWithReason', { error: reason }),
   },
 })
+const fallbackRecorder = useMicRecorder({
+  messages: {
+    unsupported: t('chat.voiceInput.microphoneUnsupported'),
+    recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
+  },
+})
 
 const mode = ref<VoiceStageMode>('idle')
 const sessionActive = ref(false)
@@ -61,6 +70,7 @@ let restartTimer: ReturnType<typeof setTimeout> | null = null
 let visualizerFrame: number | null = null
 let visualizerStream: MediaStream | null = null
 let visualizerContext: AudioContext | null = null
+let visualizerOwnsStream = false
 let activeSegmentAudio: HTMLAudioElement | null = null
 let activeSegmentAudioUrl: string | null = null
 let finishActiveSegmentAudio: (() => void) | null = null
@@ -73,6 +83,9 @@ let playbackGeneration = 0
 let ttsSegmentIndex = 0
 let speechQueueRunning = false
 let activeSynthesisCount = 0
+let activeFallbackSetting: SttProviderSettingsResponse | null = null
+let fallbackSettingPromise: Promise<SttProviderSettingsResponse | null> | null = null
+let handlingRecognitionFailure = false
 const speechQueueIdleWaiters = new Set<() => void>()
 const synthesisControllers = new Set<AbortController>()
 const synthesisJobs: SpeechSynthesisJob[] = []
@@ -328,20 +341,27 @@ function resetResponseSpeechState() {
 function stopVisualizer() {
   if (visualizerFrame !== null) cancelAnimationFrame(visualizerFrame)
   visualizerFrame = null
-  for (const track of visualizerStream?.getTracks() || []) track.stop()
+  if (visualizerOwnsStream) {
+    for (const track of visualizerStream?.getTracks() || []) track.stop()
+  }
   visualizerStream = null
+  visualizerOwnsStream = false
   if (visualizerContext) void visualizerContext.close().catch(() => undefined)
   visualizerContext = null
   audioLevel.value = 0
 }
 
-async function startVisualizer() {
+async function startVisualizer(sourceStream?: MediaStream | null) {
   stopVisualizer()
-  if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === 'undefined') return
+  if (typeof AudioContext === 'undefined') return
+  if (!sourceStream && !navigator.mediaDevices?.getUserMedia) return
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const ownsStream = !sourceStream
+    const stream = sourceStream || await navigator.mediaDevices.getUserMedia({ audio: true })
     if (mode.value !== 'listening') {
-      for (const track of stream.getTracks()) track.stop()
+      if (ownsStream) {
+        for (const track of stream.getTracks()) track.stop()
+      }
       return
     }
     const context = new AudioContext()
@@ -351,6 +371,7 @@ async function startVisualizer() {
     context.createMediaStreamSource(stream).connect(analyser)
     const samples = new Uint8Array(analyser.frequencyBinCount)
     visualizerStream = stream
+    visualizerOwnsStream = ownsStream
     visualizerContext = context
 
     const updateLevel = () => {
@@ -365,6 +386,20 @@ async function startVisualizer() {
   } catch {
     // Voice capture remains usable even when the decorative analyser is unavailable.
   }
+}
+
+async function loadActiveFallbackSetting() {
+  if (fallbackSettingPromise) return fallbackSettingPromise
+
+  fallbackSettingPromise = fetchSttSettings()
+    .then((response) => {
+      const provider = response.activeProvider
+      if (!provider || provider === 'browser') return null
+      return response.providers.find(row => row.provider === provider && row.secrets?.apiKey === '[stored]') || null
+    })
+    .catch(() => null)
+
+  return fallbackSettingPromise
 }
 
 function setError(cause: unknown) {
@@ -390,31 +425,30 @@ async function startCapture() {
   activeSpeechSegment.value = null
   responseStartedAt.value = 0
   sessionActive.value = true
+  activeFallbackSetting = await loadActiveFallbackSetting()
 
   try {
-    await browserRecognition.start({ language: browserCaptureLanguage() })
+    if (activeFallbackSetting) {
+      try {
+        await fallbackRecorder.start()
+      } catch {
+        activeFallbackSetting = null
+      }
+    }
+    await browserRecognition.start({
+      language: browserCaptureLanguage(),
+      continuous: false,
+    })
     mode.value = 'listening'
-    void startVisualizer()
+    void startVisualizer(fallbackRecorder.stream.value)
   } catch (cause) {
+    fallbackRecorder.cancel()
     setError(cause)
   }
 }
 
-async function stopCapture() {
-  if (mode.value !== 'listening') return
-  clearTimers()
-  stopVisualizer()
-  mode.value = 'processing'
-  let transcript = ''
-
-  try {
-    transcript = await browserRecognition.stop()
-  } catch (cause) {
-    setError(cause)
-    return
-  }
-
-  transcript = normalizeText(transcript)
+async function submitTranscript(value: string) {
+  const transcript = normalizeText(value)
   submittedTranscript.value = transcript
   if (!transcript) {
     mode.value = 'idle'
@@ -429,10 +463,75 @@ async function stopCapture() {
   await chatStore.sendMessage(transcript)
 }
 
+async function handleRecognitionFailure() {
+  if ((mode.value !== 'listening' && mode.value !== 'processing') || handlingRecognitionFailure || !browserRecognition.error.value) return
+  handlingRecognitionFailure = true
+  clearTimers()
+  mode.value = 'processing'
+
+  try {
+    if (browserRecognition.errorCode.value === 'network' && activeFallbackSetting) {
+      const audio = await fallbackRecorder.stop()
+      stopVisualizer()
+      if (audio.size <= 0) {
+        setError(browserRecognition.error.value)
+        return
+      }
+
+      const settings = activeFallbackSetting.settings
+      const result = await transcribeSpeech({
+        audio,
+        provider: activeFallbackSetting.provider,
+        language: typeof settings.language === 'string' ? settings.language : undefined,
+        prompt: typeof settings.prompt === 'string' ? settings.prompt : undefined,
+      })
+      await submitTranscript(result.text)
+      return
+    }
+
+    fallbackRecorder.cancel()
+    stopVisualizer()
+    setError(browserRecognition.errorCode.value === 'network'
+      ? t('realtimeVoice.networkUnavailableNoFallback')
+      : browserRecognition.error.value)
+  } catch (cause) {
+    fallbackRecorder.cancel()
+    stopVisualizer()
+    setError(cause)
+  } finally {
+    handlingRecognitionFailure = false
+  }
+}
+
+async function stopCapture() {
+  if (mode.value !== 'listening') return
+  clearTimers()
+  mode.value = 'processing'
+  let transcript = ''
+
+  try {
+    transcript = await browserRecognition.stop()
+  } catch (cause) {
+    if (browserRecognition.error.value) {
+      void handleRecognitionFailure()
+    } else {
+      setError(cause)
+    }
+    return
+  }
+
+  if (fallbackRecorder.state.value.status !== 'idle') {
+    await fallbackRecorder.stop().catch(() => undefined)
+  }
+  stopVisualizer()
+  await submitTranscript(transcript)
+}
+
 async function stopActiveTurn() {
   clearTimers()
-  stopVisualizer()
   browserRecognition.cancel()
+  fallbackRecorder.cancel()
+  stopVisualizer()
   waitingForResponse.value = false
   resetResponseSpeechState()
   speech.stop(true)
@@ -668,8 +767,9 @@ function closeStage() {
   abortSpeechSynthesis()
   stopPreparedSegmentAudio()
   clearTimers()
-  stopVisualizer()
   browserRecognition.cancel()
+  fallbackRecorder.cancel()
+  stopVisualizer()
   speech.stop(true)
   emit('close')
 }
@@ -681,6 +781,9 @@ watch(currentTranscript, (value) => {
     silenceTimer = null
     if (mode.value === 'listening') void stopCapture()
   }, SILENCE_COMMIT_MS)
+})
+watch(() => browserRecognition.error.value, () => {
+  void handleRecognitionFailure()
 })
 
 watch(
@@ -708,8 +811,9 @@ onBeforeUnmount(() => {
   abortSpeechSynthesis()
   stopPreparedSegmentAudio()
   clearTimers()
-  stopVisualizer()
   browserRecognition.cancel()
+  fallbackRecorder.cancel()
+  stopVisualizer()
   speech.stop(true)
   document.body.style.overflow = previousBodyOverflow
   document.documentElement.style.overflow = previousDocumentOverflow

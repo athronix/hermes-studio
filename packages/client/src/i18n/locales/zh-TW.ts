@@ -492,6 +492,7 @@ export default {
     browserTts: '瀏覽器',
     untitledSession: '未命名對話',
     sessionMissing: '目前對話無法使用。',
+    networkUnavailableNoFallback: '瀏覽器語音辨識網路無法使用，且目前沒有設定可用的備用 STT。',
     liveTranscript: '即時轉寫',
     transcriptPlaceholder: '輕觸語音核心，然後開始說話',
     recentTurns: '最近對話',

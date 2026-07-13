@@ -492,6 +492,7 @@ export default {
     browserTts: 'Browser',
     untitledSession: 'Untitled conversation',
     sessionMissing: 'The conversation is unavailable.',
+    networkUnavailableNoFallback: 'Browser speech recognition is offline and no usable fallback STT is currently configured.',
     liveTranscript: 'Live transcript',
     transcriptPlaceholder: 'Tap the voice core and start speaking',
     recentTurns: 'Recent turns',
