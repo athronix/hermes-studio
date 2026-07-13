@@ -118,9 +118,10 @@ describe('workflow store', () => {
       deleteWorkflowRun,
       getWorkflowRun,
       listWorkflowRunNodeSessions,
+      updateWorkflowRun,
     } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     const workflow = createWorkflow({ name: 'Runs', profile: 'default' })
-    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'completed' })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running' })
     createWorkflowRunNodeSession({
       run_id: run.id,
       workflow_id: workflow.id,
@@ -128,6 +129,7 @@ describe('workflow store', () => {
       session_id: 'session-1',
       status: 'completed',
     })
+    updateWorkflowRun(run.id, { status: 'completed', finished_at: Date.now() })
 
     expect(listWorkflowRunNodeSessions(run.id)).toHaveLength(1)
     expect(deleteWorkflowRun(run.id)).toBe(true)

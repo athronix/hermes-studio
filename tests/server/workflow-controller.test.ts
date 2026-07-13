@@ -219,6 +219,30 @@ describe('workflow controller', () => {
   })
 
 
+  it('fails closed when a fresh execution resolves before durable acceptance', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    managerMock.runNow.mockResolvedValue({ run: { id: 'run-1', status: 'completed' }, nodeSessions: [] })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1' } })
+
+    await mod.runNow(c)
+
+    expect(c.status).toBe(500)
+    expect(c.body).toEqual({ error: 'workflow execution completed before durable acceptance' })
+  })
+
+  it('returns a fresh execution failure instead of reporting acceptance', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    managerMock.runNow.mockRejectedValue(new Error('workflow run persistence failed'))
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1' } })
+
+    await mod.runNow(c)
+
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: 'workflow run persistence failed' })
+  })
+
   it('returns one run detail with the same Node, Edge, and Loop evidence contract', async () => {
     managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
     getWorkflowRunWithEvidenceMock.mockReturnValue({
@@ -278,6 +302,32 @@ describe('workflow controller', () => {
     }))
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
+  })
+
+  it('fails closed when a rerun resolves before durable acceptance', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    managerMock.rerunFromNode.mockResolvedValue({ run: { id: 'run-1', status: 'completed' }, nodeSessions: [] })
+    getWorkflowRunWithEvidenceMock.mockReturnValue({ id: 'run-1', workflow_id: 'workflow-1', profile: 'default', status: 'completed', snapshot_nodes: [], snapshot_edges: [], node_sessions: [], edge_evaluations: [], loop_epochs: [] })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-1' }, request: { body: { node_id: 'node-1' } } })
+
+    await mod.rerunFromNode(c)
+
+    expect(c.status).toBe(500)
+    expect(c.body).toEqual({ error: 'workflow rerun completed before durable acceptance' })
+  })
+
+  it('returns a rerun failure instead of reporting acceptance', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    managerMock.rerunFromNode.mockRejectedValue(new Error('workflow rerun reset failed'))
+    getWorkflowRunWithEvidenceMock.mockReturnValue({ id: 'run-1', workflow_id: 'workflow-1', profile: 'default', status: 'completed', snapshot_nodes: [], snapshot_edges: [], node_sessions: [], edge_evaluations: [], loop_epochs: [] })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-1' }, request: { body: { node_id: 'node-1' } } })
+
+    await mod.rerunFromNode(c)
+
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: 'workflow rerun reset failed' })
   })
 
   it('deletes a workflow run through the workflow manager', async () => {

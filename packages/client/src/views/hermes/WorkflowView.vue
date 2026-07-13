@@ -79,7 +79,10 @@ const appStore = useAppStore()
 const chatStore = useChatStore()
 const profilesStore = useProfilesStore()
 const message = useMessage()
-const { screenToFlowCoordinate, getViewport, setViewport, setNodes, setEdges, updateNodeInternals } = useVueFlow('hermes-workflow')
+const {
+  screenToFlowCoordinate, getViewport, setViewport, setNodes, setEdges, updateNodeInternals,
+  findNode, addSelectedNodes, removeSelectedElements,
+} = useVueFlow('hermes-workflow')
 const defaultViewport: WorkflowViewport = { x: 80, y: 80, zoom: 0.75 }
 const workflowBodyRef = ref<HTMLElement | null>(null)
 const workflowCanvasRef = ref<HTMLElement | null>(null)
@@ -1736,11 +1739,18 @@ async function handleConnectEnd(event?: MouseEvent | TouchEvent) {
   transaction.after.edges[transaction.after.edges.length - 1] = {
     ...transaction.after.edges[transaction.after.edges.length - 1], animated: true, markerEnd: MarkerType.ArrowClosed,
   }
-  setNodes(transaction.after.nodes.map(item => ({ ...item, selected: item.id === nodeId })))
+  setNodes(transaction.after.nodes)
   await nextTick()
   updateNodeInternals([nodeId])
-  await nextTick()
   setEdges(transaction.after.edges)
+  await nextTick()
+  // Selection lives in Vue Flow's internal store, not in our definition
+  // array. Apply it after the release gesture has committed Node + Edge.
+  window.setTimeout(() => {
+    removeSelectedElements()
+    const createdNode = findNode(nodeId)
+    if (createdNode) addSelectedNodes([createdNode])
+  }, 0)
   lastCanvasTransaction.value = transaction
   nextNodeIndex.value += 1
   ensureSkillOptionsForVisibleNodes()

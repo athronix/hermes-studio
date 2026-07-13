@@ -426,11 +426,19 @@ export async function rerunFromNode(ctx: Context) {
     })
     await assertWorkflowExecutionCapabilities(frozenRun.profile, preflight.activeNodes)
     let accept!: (run: unknown) => void
-    const accepted = new Promise(resolve => { accept = resolve })
+    const accepted = new Promise<{ kind: 'accepted' }>(resolve => {
+      accept = () => resolve({ kind: 'accepted' })
+    })
     const execution = manager.rerunFromNode(id, runId, nodeId, {
       ...runInput, onAccepted: accept,
     })
-    await Promise.race([accepted, execution.then(result => result.run)])
+    const outcome = await Promise.race([
+      accepted,
+      execution.then(() => ({ kind: 'completed-before-acceptance' as const })),
+    ])
+    if (outcome.kind !== 'accepted') {
+      throw Object.assign(new Error('workflow rerun completed before durable acceptance'), { status: 500 })
+    }
     void execution.catch((err: any) => {
       const message = err?.message || 'failed to rerun workflow'
       logger.error(err, '[workflow] async rerun failed for workflow %s run %s node %s', id, runId, nodeId)
@@ -441,7 +449,7 @@ export async function rerunFromNode(ctx: Context) {
       })
     })
   } catch (err: any) {
-    ctx.status = err?.status === 409 ? 409 : 400
+    ctx.status = typeof err?.status === 'number' && err.status >= 400 && err.status <= 599 ? err.status : 400
     ctx.body = { error: err?.message || 'workflow rerun preflight failed' }
     return
   }
@@ -619,16 +627,24 @@ export async function runNow(ctx: Context) {
     const preflight = await preflightWorkflowExecutionDefinition(workflow.nodes, workflow.edges, workflow.profile, runInput.startNodeIds || [])
     await assertWorkflowExecutionCapabilities(workflow.profile, preflight.activeNodes)
     let accept!: (run: unknown) => void
-    const accepted = new Promise(resolve => { accept = resolve })
+    const accepted = new Promise<{ kind: 'accepted' }>(resolve => {
+      accept = () => resolve({ kind: 'accepted' })
+    })
     const execution = manager.runNow(id, { ...runInput, onAccepted: accept })
-    await Promise.race([accepted, execution.then(result => result.run)])
+    const outcome = await Promise.race([
+      accepted,
+      execution.then(() => ({ kind: 'completed-before-acceptance' as const })),
+    ])
+    if (outcome.kind !== 'accepted') {
+      throw Object.assign(new Error('workflow execution completed before durable acceptance'), { status: 500 })
+    }
     void execution.catch((err: any) => {
       const message = err?.message || 'failed to run workflow'
       logger.error(err, '[workflow] async run failed for workflow %s', id)
       manager.setRuntimeStatus(id, { status: 'failed', completedAt: Date.now(), error: message })
     })
   } catch (err: any) {
-    ctx.status = err?.status === 409 ? 409 : 400
+    ctx.status = typeof err?.status === 'number' && err.status >= 400 && err.status <= 599 ? err.status : 400
     ctx.body = { error: err?.message || 'workflow preflight failed' }
     return
   }

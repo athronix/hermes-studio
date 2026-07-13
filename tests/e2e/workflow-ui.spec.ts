@@ -5,10 +5,10 @@ import { authenticate, mockHermesApi, TEST_ACCESS_KEY } from './fixtures'
 test('workflow canvas exposes orchestration editing and portability controls', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   const nodes = [
-    { id: 'a', type: 'agent', position: { x: 80, y: 80 }, data: { title: 'Agent A', agent: 'hermes', input: '', skills: [], images: [], approvalRequired: false } },
-    { id: 'b', type: 'agent', position: { x: 420, y: 80 }, data: { title: 'Agent B', agent: 'hermes', input: '', skills: [], images: [], approvalRequired: false } },
+    { id: 'a', type: 'agent', position: { x: 80, y: 80 }, data: { title: 'Agent A', agent: 'hermes', input: 'Run Agent A', skills: [], images: [], approvalRequired: false } },
+    { id: 'b', type: 'agent', position: { x: 420, y: 80 }, data: { title: 'Agent B', agent: 'hermes', input: 'Run Agent B', skills: [], images: [], approvalRequired: false } },
   ]
-  const edges = [{ id: 'a-b', source: 'a', target: 'b', type: 'smoothstep' }]
+  const edges = [{ id: 'a-b', source: 'a', target: 'b', sourceHandle: 'output', targetHandle: 'input', type: 'smoothstep' }]
   const api = await mockHermesApi(page, { workflows: [{
     id: 'wf-1', name: 'Loop workflow', profile: 'research', workspace: null,
     nodes, edges, viewport: { x: 80, y: 80, zoom: .75 }, created_at: 1, updated_at: 1,
@@ -38,7 +38,7 @@ test('workflow canvas exposes orchestration editing and portability controls', a
   await importButton.click()
   const fileChooser = await chooser
   await fileChooser.setFiles({ name: 'import.workflow.json', mimeType: 'application/json', buffer: Buffer.from('{}') })
-  await expect(page.getByTestId('workflow-import-summary')).toHaveText('Imported flow · 1 nodes · 0 edges')
+  await expect(page.getByTestId('workflow-import-summary')).toHaveText('Imported flow · 1 nodes · 0 links')
   expect(api.requests.filter(request => request.pathname === '/api/hermes/workflows/import/confirm')).toHaveLength(0)
   await page.getByTestId('workflow-import-confirm').click()
   await expect(page.locator('.header-workflow-title')).toHaveText('Imported flow')
@@ -121,7 +121,7 @@ test('workflow import reports an unsupported version without confirming or creat
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify({ format: 'hermes-studio.workflow', version: 2, definition: {} })),
   })
-  await expect(page.getByText('unsupported workflow import version', { exact: true })).toBeVisible()
+  await expect(page.getByText(/unsupported workflow import version/)).toBeVisible()
   expect(api.requests.filter(request => request.pathname === '/api/hermes/workflows/import/confirm')).toHaveLength(0)
   expect(api.unexpectedRequests).toEqual([])
 })

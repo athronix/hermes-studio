@@ -208,6 +208,17 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       return
     }
 
+    if (/^\/api\/hermes\/workflows\/[^/]+$/.test(pathname) && request.method() === 'PATCH') {
+      const workflowId = pathname.split('/').at(-1)
+      const workflow: any = (options.workflows || []).find((item: any) => item?.id === workflowId)
+      let patch: Record<string, unknown> = {}
+      try { patch = JSON.parse(request.postData() || '{}') } catch {}
+      await route.fulfill(workflow
+        ? jsonResponse({ workflow: { ...workflow, ...patch, updated_at: Date.now() } })
+        : jsonResponse({ error: 'workflow not found' }, 404))
+      return
+    }
+
     if (pathname === '/api/hermes/workflows') {
       await route.fulfill(jsonResponse({ workflows: options.workflows ?? [] }, tokenValidationStatus))
       return
