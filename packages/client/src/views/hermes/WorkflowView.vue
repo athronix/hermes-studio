@@ -493,6 +493,7 @@ onMounted(() => {
   mobileQuery.addEventListener('change', handleMobileChange)
   window.addEventListener('hermes:open-page-sidebar', openPageSidebar)
   window.addEventListener('resize', handleWorkflowChatPanelViewportResize)
+  window.addEventListener('keydown', handleWorkflowUndoShortcut)
   handleWorkflowChatPanelViewportResize()
   void initializeWorkflowPage()
 })
@@ -501,6 +502,7 @@ onUnmounted(() => {
   mobileQuery?.removeEventListener('change', handleMobileChange)
   window.removeEventListener('hermes:open-page-sidebar', openPageSidebar)
   window.removeEventListener('resize', handleWorkflowChatPanelViewportResize)
+  window.removeEventListener('keydown', handleWorkflowUndoShortcut)
   stopWorkflowChatResize()
   removeWorkflowStatusListener?.()
   removeWorkflowStatusListener = null
@@ -1765,6 +1767,15 @@ function undoLastCanvasTransaction() {
   lastCanvasTransaction.value = null
 }
 
+function handleWorkflowUndoShortcut(event: KeyboardEvent) {
+  if (event.defaultPrevented || !event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'z') return
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.closest('input, textarea, select, [contenteditable], [role="textbox"], [role="combobox"]')) return
+  if (!lastCanvasTransaction.value || selectedWorkflowRunId.value) return
+  event.preventDefault()
+  undoLastCanvasTransaction()
+}
+
 function deleteNode(nodeId: string) {
   nodes.value = nodes.value.filter(node => node.id !== nodeId)
   edges.value = edges.value.filter(edge => edge.source !== nodeId && edge.target !== nodeId)
@@ -2185,7 +2196,6 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             </template>
             {{ t('workflow.actions.exportWorkflow') }}
           </NTooltip>
-          <NButton v-if="!selectedWorkflowRunId" quaternary size="small" :disabled="!lastCanvasTransaction" @click="undoLastCanvasTransaction">{{ t('workflow.actions.undo') }}</NButton>
           <NTooltip v-if="!selectedWorkflowRunId" trigger="hover">
             <template #trigger>
               <NButton quaternary size="small" circle :aria-label="t('workflow.actions.addNode')" @click="addAgentNode">
