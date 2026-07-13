@@ -13,6 +13,10 @@ const testState = vi.hoisted(() => ({
   maxActiveRequests: 0,
   audioInstances: [] as MockAudio[],
   recognitionStopResult: '',
+  browserRecognition: null as any,
+  recorder: null as any,
+  sttSettingsResponse: { providers: [], activeProvider: 'browser' } as any,
+  transcribeSpeech: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -36,9 +40,11 @@ vi.mock('@/stores/hermes/chat', async () => {
 vi.mock('@/composables/useBrowserSpeechRecognition', async () => {
   const { ref } = await import('vue')
   return {
-    useBrowserSpeechRecognition: () => ({
+    useBrowserSpeechRecognition: () => (testState.browserRecognition = {
       transcript: ref(''),
       partialTranscript: ref(''),
+      error: ref<Error | null>(null),
+      errorCode: ref<string | null>(null),
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockImplementation(async () => testState.recognitionStopResult),
       cancel: vi.fn(),
@@ -46,6 +52,34 @@ vi.mock('@/composables/useBrowserSpeechRecognition', async () => {
     }),
   }
 })
+
+vi.mock('@/composables/useMicRecorder', async () => {
+  const { ref, shallowRef } = await import('vue')
+  return {
+    useMicRecorder: () => (testState.recorder = {
+      state: ref({ status: 'idle', error: null, startedAt: null, mimeType: null }),
+      stream: shallowRef(null),
+      start: vi.fn().mockImplementation(async () => {
+        testState.recorder.state.value = { status: 'recording', error: null, startedAt: Date.now(), mimeType: 'audio/webm' }
+      }),
+      stop: vi.fn().mockImplementation(async () => {
+        testState.recorder.state.value = { status: 'idle', error: null, startedAt: null, mimeType: null }
+        return new Blob(['fallback audio'], { type: 'audio/webm' })
+      }),
+      cancel: vi.fn().mockImplementation(() => {
+        testState.recorder.state.value = { status: 'idle', error: null, startedAt: null, mimeType: null }
+      }),
+    }),
+  }
+})
+
+vi.mock('@/api/hermes/stt-settings', () => ({
+  fetchSttSettings: vi.fn(async () => testState.sttSettingsResponse),
+}))
+
+vi.mock('@/api/hermes/stt', () => ({
+  transcribeSpeech: testState.transcribeSpeech,
+}))
 
 vi.mock('@/composables/useSttSettings', async () => {
   const { ref } = await import('vue')
@@ -157,6 +191,16 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     testState.maxActiveRequests = 0
     testState.audioInstances = []
     testState.recognitionStopResult = ''
+    testState.browserRecognition = null
+    testState.recorder = null
+    testState.sttSettingsResponse = { providers: [], activeProvider: 'browser' }
+    testState.transcribeSpeech.mockReset()
+    testState.transcribeSpeech.mockResolvedValue({
+      text: '备用识别文本',
+      provider: 'openai',
+      model: 'gpt-4o-transcribe',
+      durationMs: 10,
+    })
     vi.stubGlobal('Audio', MockAudio)
     vi.stubGlobal('URL', {
       createObjectURL: vi.fn((blob: Blob) => `blob:voice-${blob.size}-${Math.random()}`),
@@ -253,6 +297,57 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
 
     expect(testState.store.stopStreaming).toHaveBeenCalledTimes(1)
     expect(wrapper.classes()).toContain('voice-stage--idle')
+    wrapper.unmount()
+  })
+
+  it.each(['openai', 'custom', 'doubao'] as const)(
+    'falls back to the currently active %s STT provider on browser network errors',
+    async (provider) => {
+    testState.sttSettingsResponse = {
+      activeProvider: provider,
+      providers: [{
+        provider,
+        settings: { language: 'zh-CN', prompt: '中英混合' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: Date.now(),
+      }],
+    }
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    expect(testState.recorder.start).toHaveBeenCalledTimes(1)
+    expect(testState.browserRecognition.start).toHaveBeenCalledWith({
+      language: 'zh-CN',
+      continuous: false,
+    })
+
+    testState.browserRecognition.errorCode.value = 'network'
+    testState.browserRecognition.error.value = new Error('network')
+    await settle()
+
+    expect(testState.transcribeSpeech).toHaveBeenCalledWith(expect.objectContaining({
+      provider,
+      language: 'zh-CN',
+      prompt: '中英混合',
+    }))
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('备用识别文本')
+    wrapper.unmount()
+    },
+  )
+
+  it('shows a direct network error when the active STT setting has no backend fallback', async () => {
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    testState.browserRecognition.errorCode.value = 'network'
+    testState.browserRecognition.error.value = new Error('network')
+    await settle()
+
+    expect(testState.transcribeSpeech).not.toHaveBeenCalled()
+    expect(wrapper.classes()).toContain('voice-stage--error')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.networkUnavailableNoFallback')
     wrapper.unmount()
   })
 })
