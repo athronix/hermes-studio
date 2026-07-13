@@ -96,17 +96,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     ],
   },
   {
-    label: 'Google Gemini OAuth',
-    value: 'google-gemini-cli',
-    builtin: true,
-    base_url: 'cloudcode-pa://google',
-    models: [
-      'gemini-3.1-pro-preview',
-      'gemini-3-pro-preview',
-      'gemini-3-flash-preview',
-    ],
-  },
-  {
     label: 'DeepSeek',
     value: 'deepseek',
     builtin: true,
@@ -198,6 +187,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       'grok-4.20-0309-reasoning',
       'grok-4.20-0309-non-reasoning',
       'grok-4.20-multi-agent-0309',
+    ],
+  },
+  {
+    label: 'Qwen OAuth (Portal)',
+    value: 'qwen-oauth',
+    builtin: true,
+    base_url: 'https://portal.qwen.ai/v1',
+    api_mode: 'chat_completions',
+    models: [
+      'qwen3.5-plus',
+      'qwen3-coder-plus',
+      'qwen3-coder-next',
     ],
   },
   {

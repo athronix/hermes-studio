@@ -21,7 +21,7 @@
 ## 第一版实现约束
 
 - Ekko Agent 自主管理 SQLite 数据库，不复用 server 的业务数据库。
-- 数据目录固定在 `HERMES_WEB_UI_HOME/ekko`，默认是 `~/.hermes-web-ui/ekko`。
+- 生产数据目录固定在 `HERMES_WEB_UI_HOME/ekko`，默认是 `~/.hermes-web-ui/ekko`；开发环境使用 `packages/ekko-agent/sql-data`，便于通过 Navicat 直接查看。
 - 数据库使用通用名称 `ekko.db`，不命名为 `memory.db`，便于后续容纳 Ekko Agent 的其他持久化组件。
 - `src/database.ts` 专门管理目录创建、连接、事务和按组件版本迁移；记忆模块通过 `SqliteMemoryStore` 使用数据库。
 - 数据库初始化失败时，记忆能力降级关闭，但不能阻断 Agent 正常回复。
@@ -705,7 +705,8 @@ status = active
 第一版统一存放在 Web UI 状态目录：
 
 ```txt
-HERMES_WEB_UI_HOME/ekko/ekko.db
+packages/ekko-agent/sql-data/ekko-agent.db  # development
+HERMES_WEB_UI_HOME/ekko/ekko.db             # production
 ```
 
 没有配置状态目录时，默认路径是：
@@ -714,8 +715,9 @@ HERMES_WEB_UI_HOME/ekko/ekko.db
 ~/.hermes-web-ui/ekko/ekko.db
 ```
 
-scope 通过表字段隔离，不按 workspace 或 user 拆分数据库文件。`ekko.db`
-是 Ekko Agent 的通用数据库，由 `src/database.ts` 统一管理连接、事务和组件迁移。
+scope 通过表字段隔离，不按 workspace 或 user 拆分数据库文件。开发环境的
+`ekko-agent.db` 与生产环境的 `ekko.db` 都是 Ekko Agent 的通用数据库，
+由 `src/database.ts` 统一管理连接、事务和组件迁移。
 
 ### 表结构
 

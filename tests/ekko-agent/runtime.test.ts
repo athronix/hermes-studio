@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRuntime,
   AgentToolRegistry,
@@ -241,6 +243,48 @@ describe('ekko-agent runtime', () => {
       { role: 'assistant', content: 'tool said from-tool' },
     ])
     expect(result.steps.map(step => step.type)).toEqual(['model', 'tool', 'model'])
+  })
+
+  it('sanitizes base64 tool results before the next model request', async () => {
+    const dataUrl = `data:image/png;base64,${Buffer.from('runtime-avatar').toString('base64')}`
+    const avatarTool: AgentTool = {
+      definition: {
+        name: 'profiles_list',
+        description: 'List profiles',
+        parameters: { type: 'object' },
+      },
+      async execute() {
+        return {
+          ok: true,
+          content: JSON.stringify({ profiles: [{ avatar: { type: 'image', dataUrl } }] }),
+        }
+      },
+    }
+    const tools = new AgentToolRegistry()
+    tools.register(avatarTool)
+    let assetUrl = ''
+    const client = modelClient((request, call) => {
+      if (call === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call_profiles', name: 'profiles_list', arguments: {} }],
+          finishReason: 'tool_calls',
+        }
+      }
+      const toolMessage = request.messages.find(message => message.role === 'tool')
+      expect(toolMessage?.content).not.toContain('base64')
+      assetUrl = JSON.parse(toolMessage?.content || '{}').profiles[0].avatar.dataUrl
+      expect(assetUrl).toMatch(/^file:\/\//)
+      return { content: 'done', finishReason: 'stop' }
+    })
+
+    try {
+      const result = await new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+        .run({ messages: ['list profiles'] })
+      expect(result.output.content).toBe('done')
+    } finally {
+      if (assetUrl) await rm(fileURLToPath(assetUrl), { force: true })
+    }
   })
 
   it('discovers and executes MCP tools from the run tool context', async () => {

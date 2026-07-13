@@ -21,8 +21,21 @@ afterEach(async () => {
 
 describe('EkkoDatabaseManager', () => {
   it('uses the generic Ekko data directory and database name', () => {
-    expect(resolveEkkoDataDirectory({ webUiHome })).toBe(join(webUiHome, 'ekko'))
-    expect(resolveEkkoDatabasePath({ webUiHome })).toBe(join(webUiHome, 'ekko', 'ekko.db'))
+    const env = { NODE_ENV: 'test' }
+    expect(resolveEkkoDataDirectory({ webUiHome, env })).toBe(join(webUiHome, 'ekko'))
+    expect(resolveEkkoDatabasePath({ webUiHome, env })).toBe(join(webUiHome, 'ekko', 'ekko.db'))
+  })
+
+  it('uses a Navicat-compatible package-local SQLite file in development', () => {
+    const packageRoot = join(webUiHome, 'packages', 'ekko-agent')
+    const options = { packageRoot, env: { NODE_ENV: 'development' } }
+    expect(resolveEkkoDataDirectory(options)).toBe(join(packageRoot, 'sql-data'))
+    expect(resolveEkkoDatabasePath(options)).toBe(join(packageRoot, 'sql-data', 'ekko-agent.db'))
+
+    const manager = new EkkoDatabaseManager(options)
+    expect(manager.connection.prepare('PRAGMA journal_mode').get()).toMatchObject({ journal_mode: 'delete' })
+    expect(existsSync(join(packageRoot, 'sql-data', 'ekko-agent.db'))).toBe(true)
+    manager.close()
   })
 
   it('owns the connection and component migrations', () => {

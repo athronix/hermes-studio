@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { resolveEkkoDatabasePath, type EkkoDataPathOptions } from './memory/paths'
+import { isEkkoDevelopmentEnvironment, resolveEkkoDatabasePath, type EkkoDataPathOptions } from './memory/paths'
 
 export interface EkkoDatabaseMigration {
   component: string
@@ -15,20 +15,26 @@ export interface EkkoDatabaseOptions extends EkkoDataPathOptions {
 
 export class EkkoDatabaseManager {
   readonly databasePath: string
+  private readonly development: boolean
   private database?: DatabaseSync
 
   constructor(options: EkkoDatabaseOptions = {}) {
     this.databasePath = options.databasePath || resolveEkkoDatabasePath(options)
+    this.development = isEkkoDevelopmentEnvironment(options.env ?? process.env)
   }
 
   get connection(): DatabaseSync {
     if (!this.database) {
       mkdirSync(dirname(this.databasePath), { recursive: true })
       this.database = new DatabaseSync(this.databasePath)
-      this.database.exec('PRAGMA journal_mode=WAL')
-      this.database.exec('PRAGMA synchronous=NORMAL')
-      this.database.exec('PRAGMA busy_timeout=5000')
-      this.database.exec('PRAGMA foreign_keys=ON')
+      if (this.development) {
+        this.database.exec('PRAGMA journal_mode=DELETE')
+      } else {
+        this.database.exec('PRAGMA journal_mode=WAL')
+        this.database.exec('PRAGMA synchronous=NORMAL')
+        this.database.exec('PRAGMA busy_timeout=5000')
+        this.database.exec('PRAGMA foreign_keys=ON')
+      }
       this.database.exec(`
         CREATE TABLE IF NOT EXISTS schema_migrations (
           component TEXT NOT NULL,

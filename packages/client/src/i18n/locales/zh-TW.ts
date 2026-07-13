@@ -1453,12 +1453,6 @@ export default {
     anthropicSubmitCode: '提交代碼',
     anthropicApproved: '登入成功！',
     anthropicExpired: '授權已過期，請重試。',
-    geminiLoginTitle: 'Google Gemini OAuth 登入',
-    geminiWaiting: '請在開啟的 Google 頁面完成授權。授權完成後視窗會自動關閉。',
-    geminiOpenLink: '開啟 Google 授權頁',
-    geminiCopyLink: '複製授權連結',
-    geminiApproved: '登入成功！',
-    geminiExpired: '授權連結已過期，請重試。',
   },
 
   // 設定檔

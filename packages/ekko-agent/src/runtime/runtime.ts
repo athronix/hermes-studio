@@ -11,6 +11,7 @@ import type { AgentOutputMessage } from '../model/messages'
 import type { AgentMessage, AgentToolCall, ModelRequest, ModelResponse } from '../model/types'
 import type { AgentSkill } from '../skills/types'
 import { AgentToolRegistry, createDefaultToolRegistry } from '../tools/registry'
+import { sanitizeAgentToolResult } from '../tools/tool-result-sanitizer'
 import type { AgentToolContext, AgentToolResult } from '../tools/types'
 import type { AgentRuntimeEvent } from './events'
 import { buildSystemPrompt } from './system-prompt'
@@ -396,7 +397,8 @@ export class AgentRuntime {
 
     try {
       throwIfAborted(signal)
-      const result = await this.tools.execute(toolCall.name, toolCall.arguments, context)
+      const rawResult = await this.tools.execute(toolCall.name, toolCall.arguments, context)
+      const result = await sanitizeAgentToolResult(rawResult)
       throwIfAborted(signal)
       emit({
         type: result.ok ? 'tool.completed' : 'tool.failed',

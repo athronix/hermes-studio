@@ -1,4 +1,5 @@
 import type { ModelProviderConfig, ModelProviderType, ModelRequestStyle } from './types'
+import { authorizedModelProviderPreset } from './authorized-providers'
 
 export interface ResolveModelProviderConfigInput {
   provider: string
@@ -27,6 +28,8 @@ export function requestStyleFromApiMode(apiMode?: string): ModelRequestStyle | u
 export function inferredRequestStyleForConfig(provider: string, baseUrl = ''): ModelRequestStyle {
   const key = provider.toLowerCase()
   const url = baseUrl.toLowerCase()
+  const authorizedPreset = authorizedModelProviderPreset(key)
+  if (authorizedPreset) return authorizedPreset.requestStyle
   if (url.endsWith('/anthropic') || url.includes('api.anthropic.com')) return 'anthropic-messages'
   if (key.includes('gemini') || key.includes('google') || url.includes('generativelanguage.googleapis.com')) return 'gemini-contents'
   if (url.includes('api.openai.com') || url.includes('api.x.ai')) return 'openai-responses'
@@ -54,13 +57,15 @@ export function createProviderConfig(input: {
   model: string
   timeoutMs?: number
 }): ModelProviderConfig {
+  const authorizedPreset = authorizedModelProviderPreset(input.provider, input.apiKey)
   return {
-    id: input.provider || 'openai',
+    id: authorizedPreset?.id || input.provider || 'openai',
     type: providerTypeForStyle(input.provider, input.requestStyle),
     requestStyle: input.requestStyle,
-    baseUrl: input.baseUrl || undefined,
+    baseUrl: input.baseUrl || authorizedPreset?.baseUrl,
     apiKey: input.apiKey || undefined,
     defaultModel: input.model,
+    headers: authorizedPreset?.headers,
     timeoutMs: input.timeoutMs,
   }
 }

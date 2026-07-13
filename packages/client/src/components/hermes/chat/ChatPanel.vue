@@ -38,6 +38,7 @@ import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import SettingsCircuitBadge from "@/components/layout/SettingsCircuitBadge.vue";
 import { isStoredSuperAdmin } from "@/api/client";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
+import { canScopedCodingAgentUseProvider, usesServerManagedProviderAuth } from "@/utils/codingAgentProviders";
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
@@ -426,8 +427,6 @@ const hiddenDefaultWorkspaces = computed(() => {
   return defaultWorkspaces.value.filter(ws => !visible.has(ws));
 });
 
-const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(["openai-codex", "copilot", "xai-oauth", "nous", "google-gemini-cli", "claude-oauth"]);
-
 const showEkkoAgentEntry = import.meta.env.DEV;
 const newChatAgentOptions = computed(() => {
   const options = [
@@ -457,14 +456,10 @@ function getModelGroupsForProfile(profile: string) {
   return profileModels?.groups || [];
 }
 
-function isCodingAgentAuthProvider(provider?: string) {
-  return CODING_AGENT_AUTH_PROVIDER_KEYS.has(String(provider || "").toLowerCase());
-}
-
 function isNewChatProviderAllowed(group: AvailableModelGroup) {
   const mode = newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value;
   if (!(newChatAgent.value !== "hermes" && mode === "scoped")) return true;
-  return !isCodingAgentAuthProvider(group.provider);
+  return canScopedCodingAgentUseProvider(newChatAgent.value as ChatCodingAgentId, group.provider);
 }
 
 function getSelectableModelGroupsForProfile(profile: string) {
@@ -549,8 +544,14 @@ const newChatUsesProviderModel = computed(() => !isNewChatGlobalCodingAgent.valu
 const newChatNeedsBaseUrl = computed(() =>
   isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.base_url,
 );
+const newChatUsesServerAuth = computed(() =>
+  usesServerManagedProviderAuth(newChatAgent.value as ChatCodingAgentId, selectedNewChatProviderGroup.value?.provider),
+);
 const newChatNeedsApiKey = computed(() =>
-  isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.api_key,
+  isNewChatCodingAgent.value &&
+  effectiveNewChatAgentMode.value === "scoped" &&
+  !newChatUsesServerAuth.value &&
+  !selectedNewChatProviderGroup.value?.api_key,
 );
 const canConfirmNewChat = computed(() => {
   if (!newChatProfile.value) return false;
@@ -1086,7 +1087,9 @@ const isSessionModelExternalCodingAgent = computed(() =>
 const sessionModelBaseGroups = computed(() =>
   sessionModelProfile.value
     ? getModelGroupsForProfile(sessionModelProfile.value).filter((group) => (
-        !isSessionModelScopedCodingAgent.value || !isCodingAgentAuthProvider(group.provider)
+        !isSessionModelScopedCodingAgent.value ||
+        !sessionModelCodingAgentId.value ||
+        canScopedCodingAgentUseProvider(sessionModelCodingAgentId.value, group.provider)
       ))
     : [],
 );

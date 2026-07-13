@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   AgentToolError,
@@ -8,6 +9,7 @@ import {
   TerminalExecTool,
   WriteFileTool,
   createDefaultToolRegistry,
+  sanitizeAgentToolResult,
 } from '../../packages/ekko-agent/src/index'
 
 let workspaceRoot = ''
@@ -22,6 +24,29 @@ afterEach(async () => {
 })
 
 describe('ekko-agent tools', () => {
+  it('materializes tool-result data URLs in the system temp area', async () => {
+    const toolAssets = path.join(workspaceRoot, 'system-temp', 'ekko-agent', 'tool-assets')
+    const dataUrl = `data:image/png;base64,${Buffer.from('avatar-png').toString('base64')}`
+    const result = await sanitizeAgentToolResult({
+      ok: true,
+      content: JSON.stringify({
+        profiles: [{
+          name: 'default',
+          avatar: { type: 'image', dataUrl, updatedAt: 123 },
+        }],
+      }),
+      data: { avatar: { dataUrl } },
+    }, { tempRoot: toolAssets })
+
+    expect(result.content).not.toContain('base64')
+    const parsed = JSON.parse(result.content)
+    const url = parsed.profiles[0].avatar.dataUrl
+    expect(url).toMatch(/^file:\/\//)
+    expect(fileURLToPath(url)).toContain(toolAssets)
+    await expect(readFile(fileURLToPath(url), 'utf8')).resolves.toBe('avatar-png')
+    expect(JSON.stringify(result.data)).not.toContain('base64')
+  })
+
   it('writes and reads files inside the workspace', async () => {
     const writer = new WriteFileTool()
     const reader = new ReadFileTool()

@@ -19,7 +19,6 @@ const MINIMAX_CN_PROVIDER = 'minimax-cn'
 
 const STEPFUN_PROVIDER = 'stepfun'
 const XAI_OAUTH_PROVIDER = 'xai-oauth'
-const GEMINI_OAUTH_PROVIDER = 'google-gemini-cli'
 const CLAUDE_OAUTH_PROVIDER = 'claude-oauth'
 const ANTHROPIC_PROVIDER = 'anthropic'
 const GPT_5_5_MODEL = 'gpt-5.5'
@@ -259,9 +258,9 @@ describe('provider presets', () => {
     expect(PROVIDER_ENV_MAP[XAI_OAUTH_PROVIDER]).toEqual({ api_key_env: '', base_url_env: '' })
   })
 
-  it('treats Google Gemini OAuth as OAuth-only for availability checks', () => {
-    expect(PROVIDER_ENV_MAP[GEMINI_OAUTH_PROVIDER]).toEqual({ api_key_env: '', base_url_env: '' })
-    expect(modelsForProvider(SERVER_PROVIDER_PRESETS, GEMINI_OAUTH_PROVIDER)).toContain('gemini-3.1-pro-preview')
+  it('does not expose the retired Gemini CLI OAuth provider', () => {
+    expect(PROVIDER_ENV_MAP).not.toHaveProperty('google-gemini-cli')
+    expect(SERVER_PROVIDER_PRESETS.find(candidate => candidate.value === 'google-gemini-cli')).toBeUndefined()
   })
 
   it('treats Claude OAuth as OAuth-only while keeping Anthropic API key separate', () => {

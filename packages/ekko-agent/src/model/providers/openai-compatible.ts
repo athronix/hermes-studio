@@ -26,7 +26,11 @@ import type {
 
 interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
+  content: string | null | Array<{
+    type: 'text'
+    text: string
+    cache_control?: { type: 'ephemeral' }
+  }>
   name?: string
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
@@ -72,6 +76,7 @@ interface OpenAIChatPayload {
     include_usage: boolean
   }
   metadata?: Record<string, unknown>
+  vl_high_resolution_images?: true
 }
 
 interface OpenAIChatResponse {
@@ -245,9 +250,10 @@ export class OpenAICompatibleModelClient implements ModelClient {
 }
 
 export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelRequest): OpenAIChatPayload {
+  const isQwenOAuth = config.id === 'qwen-oauth'
   return {
     model: request.model ?? config.defaultModel,
-    messages: request.messages.map(toOpenAIChatMessage),
+    messages: request.messages.map(message => toOpenAIChatMessage(message, isQwenOAuth)),
     temperature: request.temperature,
     max_tokens: request.maxTokens,
     tools: request.tools?.map(toOpenAIToolDefinition),
@@ -255,6 +261,7 @@ export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelR
     stream: request.stream,
     stream_options: request.stream ? { include_usage: true } : undefined,
     metadata: request.metadata,
+    vl_high_resolution_images: isQwenOAuth ? true : undefined,
   }
 }
 
@@ -287,10 +294,20 @@ function normalizeReasoning(message: OpenAIChatResponseMessage | undefined): str
   return undefined
 }
 
-function toOpenAIChatMessage(message: AgentMessage): OpenAIChatMessage {
+function toOpenAIChatMessage(message: AgentMessage, qwenOAuth = false): OpenAIChatMessage {
+  const plainContent = message.role === 'assistant' && message.toolCalls?.length
+    ? message.content || null
+    : message.content
+  const content = qwenOAuth && typeof plainContent === 'string'
+    ? [{
+        type: 'text' as const,
+        text: plainContent,
+        ...(message.role === 'system' ? { cache_control: { type: 'ephemeral' as const } } : {}),
+      }]
+    : plainContent
   return {
     role: message.role,
-    content: message.role === 'assistant' && message.toolCalls?.length ? message.content || null : message.content,
+    content,
     name: message.name,
     tool_call_id: message.toolCallId,
     tool_calls: message.toolCalls?.map(toOpenAIToolCall),

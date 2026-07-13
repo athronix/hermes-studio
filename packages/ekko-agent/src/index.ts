@@ -13,6 +13,7 @@ export function createEkkoAgentInfo(): EkkoAgentInfo {
 }
 
 export * from './model/errors'
+export * from './model/authorized-providers'
 export * from './model/messages'
 export * from './model/provider-config'
 export * from './model/registry'
@@ -36,6 +37,7 @@ export * from './tools/browser'
 export * from './tools/files'
 export * from './tools/registry'
 export * from './tools/terminal'
+export * from './tools/tool-result-sanitizer'
 export * from './tools/types'
 export {
   AnthropicMessagesModelClient,

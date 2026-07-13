@@ -14,7 +14,7 @@ describe('ChatPanel session clicks', () => {
 
     expect(source).toContain('contextSession.value?.source === "coding_agent"')
     expect(source).toContain('isSessionModelScopedCodingAgent')
-    expect(source).toContain('!isCodingAgentAuthProvider(group.provider)')
+    expect(source).toContain('canScopedCodingAgentUseProvider(sessionModelCodingAgentId.value, group.provider)')
     expect(source).toContain('showSessionModelModeModal')
     expect(source).toContain('pendingSessionModelSwitch')
     expect(source).toContain('chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode)')

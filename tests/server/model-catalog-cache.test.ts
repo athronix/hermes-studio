@@ -71,12 +71,6 @@ vi.mock('../../packages/server/src/shared/providers', () => ({
       models: ['anthropic/claude-opus-4.8'],
     },
     {
-      value: 'google-gemini-cli',
-      label: 'Google Gemini OAuth',
-      base_url: 'cloudcode-pa://google',
-      models: ['gemini-3.1-pro-preview', 'gemini-3-pro-preview'],
-    },
-    {
       value: 'claude-oauth',
       label: 'Claude OAuth',
       base_url: 'https://api.anthropic.com',
@@ -93,7 +87,6 @@ vi.mock('../../packages/server/src/services/config-helpers', () => ({
     'xai-oauth': { api_key_env: '', base_url_env: '' },
     copilot: { api_key_env: 'GITHUB_TOKEN', base_url_env: '' },
     nous: { api_key_env: '', base_url_env: '' },
-    'google-gemini-cli': { api_key_env: '', base_url_env: '' },
     'claude-oauth': { api_key_env: '', base_url_env: '' },
   },
   fetchProviderModels: mockFetchProviderModels,
@@ -313,17 +306,6 @@ describe('model catalog cache', () => {
           }),
         }
       }
-      if (url === 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota') {
-        return {
-          ok: true,
-          json: async () => ({
-            buckets: [
-              { modelId: 'gemini-3.1-pro-preview' },
-              { modelId: 'gemini-3-flash-preview' },
-            ],
-          }),
-        }
-      }
       return { ok: false, status: 404, json: async () => ({}) }
     })
     mockFetchProviderModels.mockImplementation(async (baseUrl: string, apiKey: string) => {
@@ -341,11 +323,6 @@ describe('model catalog cache', () => {
         return JSON.stringify({
           providers: {
             'openai-codex': { tokens: { access_token: 'codex-token' } },
-            'google-gemini-cli': {
-              access_token: 'gemini-access-token',
-              refresh_token: 'gemini-refresh-token',
-              base_url: 'cloudcode-pa://google',
-            },
             'claude-oauth': {
               tokens: {
                 access_token: 'claude-access-token',
@@ -398,12 +375,6 @@ describe('model catalog cache', () => {
     expect(cache.providers[providerModelCatalogKey('nous', 'https://inference-api.nousresearch.com/v1')]).toMatchObject({
       provider: 'nous',
       models: ['nous/live-a', 'nous/live-b'],
-      source: 'live',
-      profiles: ['default'],
-    })
-    expect(cache.providers[providerModelCatalogKey('google-gemini-cli', 'cloudcode-pa://google')]).toMatchObject({
-      provider: 'google-gemini-cli',
-      models: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview'],
       source: 'live',
       profiles: ['default'],
     })

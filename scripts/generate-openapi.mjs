@@ -62,7 +62,6 @@ const tagMappings = {
   'routes/hermes/copilot-auth.ts': { name: 'Copilot Auth', description: 'GitHub Copilot OAuth' },
   'routes/hermes/xai-auth.ts': { name: 'xAI Auth', description: 'xAI OAuth' },
   'routes/hermes/anthropic-auth.ts': { name: 'Anthropic Auth', description: 'Anthropic OAuth' },
-  'routes/hermes/gemini-auth.ts': { name: 'Gemini Auth', description: 'Google Gemini OAuth' },
   'routes/hermes/group-chat.ts': { name: 'Group Chat', description: 'Group chat management' },
   'routes/hermes/chat-run.ts': { name: 'Chat Run', description: 'Chat run HTTP and Socket.IO bridge operations' },
   'routes/hermes/config.ts': { name: 'Config', description: 'Configuration management' },

@@ -28,7 +28,6 @@ import { nousAuthRoutes } from './hermes/nous-auth'
 import { copilotAuthRoutes } from './hermes/copilot-auth'
 import { xaiAuthRoutes } from './hermes/xai-auth'
 import { anthropicAuthRoutes } from './hermes/anthropic-auth'
-import { geminiAuthRoutes } from './hermes/gemini-auth'
 import { weixinRoutes } from './hermes/weixin'
 import { fileRoutes } from './hermes/files'
 import { downloadRoutes } from './hermes/download'
@@ -91,7 +90,6 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(copilotAuthRoutes.routes())
   app.use(xaiAuthRoutes.routes())
   app.use(anthropicAuthRoutes.routes())
-  app.use(geminiAuthRoutes.routes())
   app.use(weixinRoutes.routes())
   app.use(chatRunRoutes.routes())
   app.use(groupChatRoutes.routes())

@@ -45,8 +45,12 @@ export async function providerHttpError(provider: string, response: Response): P
   let message = `Model provider request failed with HTTP ${response.status}.`
   try {
     details = await response.json()
-    if (isPlainRecord(details) && isPlainRecord(details.error) && typeof details.error.message === 'string') {
+    if (isPlainRecord(details) && typeof details.error === 'string') {
+      message = details.error
+    } else if (isPlainRecord(details) && isPlainRecord(details.error) && typeof details.error.message === 'string') {
       message = details.error.message
+    } else if (isPlainRecord(details) && typeof details.detail === 'string') {
+      message = details.detail
     } else if (isPlainRecord(details) && typeof details.message === 'string') {
       message = details.message
     }

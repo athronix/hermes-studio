@@ -15,6 +15,7 @@ import {
 } from '../../../../../ekko-agent/src'
 import { getGlobalEkkoAgent } from '../../ekko-agent/manager'
 import { resolveEkkoMcpServers } from '../../ekko-agent/mcp'
+import { resolveEkkoAuthorizedProviderCredentials } from '../../ekko-agent/auth-providers'
 import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
 import { recordSessionUsage } from '../../usage-recorder'
@@ -486,9 +487,13 @@ export async function handleEkkoAgentRun(
     })
   }
 
-  const baseUrl = data.baseUrl || data.base_url || ''
+  const authorizedCredentials = await resolveEkkoAuthorizedProviderCredentials(
+    profile,
+    modelConfig.provider,
+  )
+  const baseUrl = data.baseUrl || data.base_url || authorizedCredentials.baseUrl || ''
   const apiMode = data.apiMode || data.api_mode
-  const apiKey = data.apiKey || data.api_key || undefined
+  const apiKey = data.apiKey || data.api_key || authorizedCredentials.apiKey
   const { providerConfig, fallbackProviderConfig } = resolveModelProviderConfigs({
     provider: modelConfig.provider,
     baseUrl,

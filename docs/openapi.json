@@ -45,10 +45,6 @@
       "description": "Hermes file browser"
     },
     {
-      "name": "Gemini Auth",
-      "description": "Google Gemini OAuth"
-    },
-    {
       "name": "Group Chat",
       "description": "Group chat management"
     },
@@ -2921,94 +2917,6 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
-          }
-        }
-      }
-    },
-    "/api/hermes/auth/gemini/poll/{sessionId}": {
-      "get": {
-        "tags": [
-          "Gemini Auth"
-        ],
-        "summary": "Get :sessionId",
-        "description": "GET /api/hermes/auth/gemini/poll/:sessionId",
-        "operationId": "poll",
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "description": "Not found"
-          }
-        },
-        "parameters": [
-          {
-            "name": "sessionId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
-      }
-    },
-    "/api/hermes/auth/gemini/start": {
-      "post": {
-        "tags": [
-          "Gemini Auth"
-        ],
-        "summary": "Create start",
-        "description": "POST /api/hermes/auth/gemini/start",
-        "operationId": "start",
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          }
-        }
-      }
-    },
-    "/api/hermes/auth/gemini/status": {
-      "get": {
-        "tags": [
-          "Gemini Auth"
-        ],
-        "summary": "Get status",
-        "description": "GET /api/hermes/auth/gemini/status",
-        "operationId": "status",
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "description": "Not found"
           }
         }
       }
