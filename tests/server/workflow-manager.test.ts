@@ -127,6 +127,45 @@ describe('workflow manager', () => {
     } })).not.toThrow()
   })
 
+  it('strips removed legacy execution-policy fields from embedded edge node copies at every persistence boundary', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflow, getWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const legacyPolicy = { allowedToolsets: [], allowedTools: ['terminal'], skipMemory: true, skipContextFiles: true }
+    const raw = createWorkflow({
+      name: `Legacy embedded policy ${Date.now()}`,
+      profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { agent: 'hermes', executionPolicy: legacyPolicy } },
+        { id: 'target', type: 'agent', data: { agent: 'hermes' } },
+      ],
+      edges: [{
+        id: 'source-target', source: 'source', target: 'target',
+        sourceNode: { id: 'source', type: 'agent', data: { agent: 'hermes', executionPolicy: legacyPolicy } },
+        targetNode: { id: 'target', type: 'agent', data: { agent: 'hermes', executionPolicy: legacyPolicy } },
+      } as any],
+    } as any)
+    try {
+      expect(JSON.stringify(manager.get(raw.id))).not.toContain('executionPolicy')
+      expect(JSON.stringify(manager.list().find(workflow => workflow.id === raw.id))).not.toContain('executionPolicy')
+      expect(JSON.stringify(manager.update(raw.id, { name: `${raw.name} updated` }))).not.toContain('executionPolicy')
+      expect(JSON.stringify(getWorkflow(raw.id))).not.toContain('executionPolicy')
+
+      const created = manager.create({
+        name: `Create embedded policy ${Date.now()}`,
+        profile: 'default',
+        nodes: raw.nodes,
+        edges: raw.edges,
+      })
+      try {
+        expect(JSON.stringify(created)).not.toContain('executionPolicy')
+        expect(JSON.stringify(getWorkflow(created.id))).not.toContain('executionPolicy')
+      } finally { await manager.delete(created.id) }
+    } finally { await manager.delete(raw.id) }
+  })
+
   it('freezes and forwards the exact upstream provider model apiMode and reasoning tuple', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')

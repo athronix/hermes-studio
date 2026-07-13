@@ -860,8 +860,26 @@ function withoutRemovedWorkflowNodePolicy(nodes: unknown[] | undefined): unknown
   })
 }
 
+function withoutRemovedWorkflowEdgeNodePolicy(edges: unknown[] | undefined): unknown[] | undefined {
+  return edges?.map(edge => {
+    if (!edge || typeof edge !== 'object' || Array.isArray(edge)) return edge
+    const record = edge as Record<string, unknown>
+    const sourceNode = withoutRemovedWorkflowNodePolicy([record.sourceNode])?.[0]
+    const targetNode = withoutRemovedWorkflowNodePolicy([record.targetNode])?.[0]
+    return {
+      ...record,
+      ...(record.sourceNode === undefined ? {} : { sourceNode }),
+      ...(record.targetNode === undefined ? {} : { targetNode }),
+    }
+  })
+}
+
 function withoutRemovedWorkflowRecordPolicy(workflow: WorkflowRecord): WorkflowRecord {
-  return { ...workflow, nodes: withoutRemovedWorkflowNodePolicy(workflow.nodes) || [] }
+  return {
+    ...workflow,
+    nodes: withoutRemovedWorkflowNodePolicy(workflow.nodes) || [],
+    edges: withoutRemovedWorkflowEdgeNodePolicy(workflow.edges) || [],
+  }
 }
 
 export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
@@ -879,7 +897,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
   }
 
   create(input: WorkflowCreateInput): WorkflowRecord {
-    return createWorkflow({ ...input, nodes: withoutRemovedWorkflowNodePolicy(input.nodes) })
+    return createWorkflow({
+      ...input,
+      nodes: withoutRemovedWorkflowNodePolicy(input.nodes),
+      edges: withoutRemovedWorkflowEdgeNodePolicy(input.edges),
+    })
   }
 
   update(id: string, input: WorkflowUpdateInput): WorkflowRecord | null {
@@ -888,6 +910,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     return updateWorkflow(id, {
       ...input,
       nodes: withoutRemovedWorkflowNodePolicy(input.nodes ?? existing.nodes),
+      edges: withoutRemovedWorkflowEdgeNodePolicy(input.edges ?? existing.edges),
     })
   }
 
