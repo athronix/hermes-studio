@@ -481,6 +481,38 @@ export default {
     files: '工作区',
   },
 
+  realtimeVoice: {
+    title: '实时语音',
+    mode: '语音模式',
+    open: '进入实时语音',
+    back: '返回对话',
+    connected: '语音链路就绪',
+    turnMode: '实时预览 · 逐轮模式',
+    browserStt: '浏览器',
+    browserTts: '浏览器',
+    untitledSession: '未命名对话',
+    sessionMissing: '当前对话不可用。',
+    liveTranscript: '实时转写',
+    transcriptPlaceholder: '轻触语音核心，然后开始说话',
+    recentTurns: '最近对话',
+    you: '你',
+    mute: '静音输出',
+    unmute: '恢复声音',
+    finishTurn: '结束本轮',
+    speak: '开始说话',
+    end: '结束',
+    status: { idle: '准备就绪', paused: '麦克风已关闭', listening: '正在聆听', processing: '正在转写', thinking: '{agent} 正在思考', speaking: '{agent} 正在回答', error: '语音链路中断' },
+    hint: {
+      idle: '轻触中央区域开始一轮语音',
+      paused: '准备好后重新打开麦克风',
+      listening: '自然停顿后自动发送，也可以轻触结束',
+      processing: '正在将你的语音转换为文字',
+      thinking: '消息已发送到当前对话',
+      speaking: '你可以随时打断回答',
+      error: '轻触中央区域重试',
+    },
+  },
+
   // 对话
   chat: {
     contextRemaining: '剩余',

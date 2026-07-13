@@ -28,6 +28,7 @@ import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
+import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
@@ -50,6 +51,7 @@ const { t } = useI18n();
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);
+const showRealtimeVoice = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & { addFiles?: (files: File[]) => void }) | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
@@ -88,6 +90,15 @@ const isMobile = ref(false);
 const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `${toolPanelWidth.value}px`,
 }));
+
+function openRealtimeVoice() {
+  if (!chatStore.activeSessionId) return;
+  showRealtimeVoice.value = true;
+}
+
+function closeRealtimeVoice() {
+  showRealtimeVoice.value = false;
+}
 
 function sessionHref(sessionId: string) {
   return router.resolve({
@@ -1959,6 +1970,7 @@ async function handleSessionModelCustomSubmit() {
               ref="chatInputRef"
               :model-label="activeSessionModelLabel"
               @model-click="handleHeaderModelClick"
+              @voice-click="openRealtimeVoice"
             />
           </div>
           <OutlinePanel
@@ -2018,6 +2030,12 @@ async function handleSessionModelCustomSubmit() {
         :human-only="sessionBrowserPrefsStore.humanOnly"
       />
     </div>
+    <Teleport to="body">
+      <RealtimeVoiceStage
+        v-if="showRealtimeVoice"
+        @close="closeRealtimeVoice"
+      />
+    </Teleport>
   </div>
 </template>
 

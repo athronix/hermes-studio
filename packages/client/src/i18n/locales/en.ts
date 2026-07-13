@@ -481,6 +481,38 @@ export default {
     files: 'Workspace',
   },
 
+  realtimeVoice: {
+    title: 'Realtime Voice',
+    mode: 'Voice mode',
+    open: 'Open realtime voice',
+    back: 'Back to chat',
+    connected: 'Voice link ready',
+    turnMode: 'Realtime preview · turn mode',
+    browserStt: 'Browser',
+    browserTts: 'Browser',
+    untitledSession: 'Untitled conversation',
+    sessionMissing: 'The conversation is unavailable.',
+    liveTranscript: 'Live transcript',
+    transcriptPlaceholder: 'Tap the voice core and start speaking',
+    recentTurns: 'Recent turns',
+    you: 'You',
+    mute: 'Mute output',
+    unmute: 'Unmute',
+    finishTurn: 'Finish turn',
+    speak: 'Start speaking',
+    end: 'End',
+    status: { idle: 'Ready', paused: 'Microphone off', listening: 'Listening', processing: 'Transcribing', thinking: '{agent} is thinking', speaking: '{agent} is speaking', error: 'Voice link interrupted' },
+    hint: {
+      idle: 'Tap the center to begin a voice turn',
+      paused: 'Turn the microphone back on when you are ready',
+      listening: 'Pause naturally to send, or tap to finish',
+      processing: 'Converting your voice into text',
+      thinking: 'Your message was sent to the current conversation',
+      speaking: 'You can interrupt at any time',
+      error: 'Tap the center to try again',
+    },
+  },
+
   // Chat
   chat: {
     contextRemaining: 'remaining',

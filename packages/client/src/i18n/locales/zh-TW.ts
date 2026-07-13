@@ -481,6 +481,38 @@ export default {
     files: '工作區',
   },
 
+  realtimeVoice: {
+    title: '即時語音',
+    mode: '語音模式',
+    open: '進入即時語音',
+    back: '返回對話',
+    connected: '語音連線就緒',
+    turnMode: '即時預覽 · 逐輪模式',
+    browserStt: '瀏覽器',
+    browserTts: '瀏覽器',
+    untitledSession: '未命名對話',
+    sessionMissing: '目前對話無法使用。',
+    liveTranscript: '即時轉寫',
+    transcriptPlaceholder: '輕觸語音核心，然後開始說話',
+    recentTurns: '最近對話',
+    you: '你',
+    mute: '靜音輸出',
+    unmute: '恢復聲音',
+    finishTurn: '結束本輪',
+    speak: '開始說話',
+    end: '結束',
+    status: { idle: '準備就緒', paused: '麥克風已關閉', listening: '正在聆聽', processing: '正在轉寫', thinking: '{agent} 正在思考', speaking: '{agent} 正在回答', error: '語音連線中斷' },
+    hint: {
+      idle: '輕觸中央區域開始一輪語音',
+      paused: '準備好後重新開啟麥克風',
+      listening: '自然停頓後自動傳送，也可以輕觸結束',
+      processing: '正在將你的語音轉換為文字',
+      thinking: '訊息已傳送到目前對話',
+      speaking: '你可以隨時中斷回答',
+      error: '輕觸中央區域重試',
+    },
+  },
+
   // 對話
   chat: {
     contextRemaining: '剩餘',

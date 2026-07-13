@@ -481,6 +481,15 @@ export default {
     files: 'Espacio de trabajo',
   },
 
+  realtimeVoice: {
+    title: 'Voz en tiempo real', mode: 'Modo de voz', open: 'Abrir voz en tiempo real', back: 'Volver al chat', connected: 'Enlace de voz listo',
+    turnMode: 'Vista previa en tiempo real · por turnos', browserStt: 'Navegador', browserTts: 'Navegador', untitledSession: 'Conversación sin título',
+    sessionMissing: 'La conversación no está disponible.', liveTranscript: 'Transcripción en directo', transcriptPlaceholder: 'Toca el núcleo de voz y empieza a hablar',
+    recentTurns: 'Turnos recientes', you: 'Tú', mute: 'Silenciar salida', unmute: 'Activar sonido', finishTurn: 'Finalizar turno', speak: 'Empezar a hablar', end: 'Finalizar',
+    status: { idle: 'Listo', paused: 'Micrófono apagado', listening: 'Escuchando', processing: 'Transcribiendo', thinking: '{agent} está pensando', speaking: '{agent} está hablando', error: 'Enlace de voz interrumpido' },
+    hint: { idle: 'Toca el centro para iniciar un turno de voz', paused: 'Activa el micrófono cuando estés listo', listening: 'Haz una pausa para enviar o toca para finalizar', processing: 'Convirtiendo tu voz en texto', thinking: 'Tu mensaje se envió a la conversación actual', speaking: 'Puedes interrumpir en cualquier momento', error: 'Toca el centro para intentarlo de nuevo' },
+  },
+
   // Chat
   chat: {
     contextRemaining: 'restante',
