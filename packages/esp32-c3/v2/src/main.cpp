@@ -1483,9 +1483,62 @@ uint16_t sampleMagnitude(int16_t sample) {
   return sample == INT16_MIN ? 32768 : static_cast<uint16_t>(sample < 0 ? -sample : sample);
 }
 
-int16_t voiceInputMonoSample(int16_t left, int16_t right) {
-  (void)left;
-  return shapeVoiceInputSample(right);
+enum class VoiceInputChannel : uint8_t {
+  Undecided,
+  Left,
+  Right,
+  Mixed,
+};
+
+const char *voiceInputChannelName(VoiceInputChannel channel) {
+  switch (channel) {
+    case VoiceInputChannel::Left:
+      return "left";
+    case VoiceInputChannel::Right:
+      return "right";
+    case VoiceInputChannel::Mixed:
+      return "mixed";
+    default:
+      return "undecided";
+  }
+}
+
+void updateVoiceInputChannel(VoiceInputChannel &channel, const int16_t *samples, size_t count) {
+  if (channel != VoiceInputChannel::Undecided || !samples) return;
+
+  uint16_t leftPeak = 0;
+  uint16_t rightPeak = 0;
+  uint64_t leftSquares = 0;
+  uint64_t rightSquares = 0;
+  for (size_t i = 0; i + 1 < count; i += 2) {
+    uint16_t leftMag = sampleMagnitude(samples[i]);
+    uint16_t rightMag = sampleMagnitude(samples[i + 1]);
+    if (leftMag > leftPeak) leftPeak = leftMag;
+    if (rightMag > rightPeak) rightPeak = rightMag;
+    leftSquares += static_cast<uint64_t>(leftMag) * static_cast<uint64_t>(leftMag);
+    rightSquares += static_cast<uint64_t>(rightMag) * static_cast<uint64_t>(rightMag);
+  }
+
+  if (leftPeak < kVoiceVadPeakStart && rightPeak < kVoiceVadPeakStart) return;
+
+  constexpr uint64_t kDominanceRatio = 4;
+  if (leftPeak >= kVoiceVadPeakStart &&
+      (rightPeak < kVoiceVadPeakStart || leftSquares > rightSquares * kDominanceRatio)) {
+    channel = VoiceInputChannel::Left;
+  } else if (rightPeak >= kVoiceVadPeakStart &&
+             (leftPeak < kVoiceVadPeakStart || rightSquares > leftSquares * kDominanceRatio)) {
+    channel = VoiceInputChannel::Right;
+  } else {
+    channel = VoiceInputChannel::Mixed;
+  }
+}
+
+int16_t voiceInputMonoSample(int16_t left, int16_t right, VoiceInputChannel channel) {
+  if (channel == VoiceInputChannel::Left) return shapeVoiceInputSample(left);
+  if (channel == VoiceInputChannel::Right) return shapeVoiceInputSample(right);
+
+  int32_t mixed = (static_cast<int32_t>(left) + static_cast<int32_t>(right)) / 2;
+  return shapeVoiceInputSample(static_cast<int16_t>(mixed));
 }
 
 void shapePcmBuffer(uint8_t *buffer, size_t length) {
@@ -1610,6 +1663,7 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
   uint16_t monoPeak = 0;
   uint64_t monoSquares = 0;
   uint32_t activeSamples = 0;
+  VoiceInputChannel inputChannel = VoiceInputChannel::Undecided;
   const char *stopReason = "max";
   voiceRecordHeardSpeech = false;
   voiceRecordRms = 0;
@@ -1656,6 +1710,7 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
 
     int16_t *samples = reinterpret_cast<int16_t *>(readBuffer);
     size_t count = bytesRead / sizeof(int16_t);
+    updateVoiceInputChannel(inputChannel, samples, count);
     for (size_t i = 0; i + 1 < count && framesDone < maxFrames; i += 2) {
       int16_t left = samples[i];
       int16_t right = samples[i + 1];
@@ -1664,7 +1719,7 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
       if (leftMag > leftPeak) leftPeak = leftMag;
       if (rightMag > rightPeak) rightPeak = rightMag;
 
-      int16_t mono = voiceInputMonoSample(left, right);
+      int16_t mono = voiceInputMonoSample(left, right, inputChannel);
       uint16_t monoMag = sampleMagnitude(mono);
       if (monoMag > monoPeak) monoPeak = monoMag;
       monoSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
@@ -1706,11 +1761,13 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
                     F("/") + String(monoPeak) +
                     F(", rms=") + String(voiceRecordRms) +
                     F(", active=") + String(voiceRecordActiveSamples) +
+                    F(", channel=") + voiceInputChannelName(inputChannel) +
                     F(", vad=") + (voiceRecordHeardSpeech ? F("speech") : F("quiet"));
-  Serial.printf("Voice record frames=%lu bytes=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu vad=%s\n",
+  Serial.printf("Voice record frames=%lu bytes=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu channel=%s vad=%s\n",
                 static_cast<unsigned long>(framesDone), static_cast<unsigned long>(44 + dataBytes),
                 stopReason, leftPeak, rightPeak, monoPeak, static_cast<unsigned long>(voiceRecordRms),
-                static_cast<unsigned long>(voiceRecordActiveSamples), voiceRecordHeardSpeech ? "speech" : "quiet");
+                static_cast<unsigned long>(voiceRecordActiveSamples), voiceInputChannelName(inputChannel),
+                voiceRecordHeardSpeech ? "speech" : "quiet");
   *outWav = wav;
   *outLen = 44 + dataBytes;
   return framesDone > 0;
@@ -4733,6 +4790,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   uint16_t monoPeak = 0;
   uint64_t monoSquares = 0;
   uint32_t activeSamples = 0;
+  VoiceInputChannel inputChannel = VoiceInputChannel::Undecided;
   uint32_t queuedBytes = 0;
   int adpcmIndex = 0;
   auto abortVoiceStream = [&](const String &reason) {
@@ -4818,6 +4876,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
 
     int16_t *samples = reinterpret_cast<int16_t *>(readBuffer);
     size_t count = bytesRead / sizeof(int16_t);
+    updateVoiceInputChannel(inputChannel, samples, count);
     for (size_t i = 0; i + 1 < count && framesDone < maxFrames; i += 2) {
       int16_t left = samples[i];
       int16_t right = samples[i + 1];
@@ -4826,7 +4885,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
       if (leftMag > leftPeak) leftPeak = leftMag;
       if (rightMag > rightPeak) rightPeak = rightMag;
 
-      int16_t mono = voiceInputMonoSample(left, right);
+      int16_t mono = voiceInputMonoSample(left, right, inputChannel);
       uint16_t monoMag = sampleMagnitude(mono);
       if (monoMag > monoPeak) monoPeak = monoMag;
       monoSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
@@ -4881,12 +4940,14 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
                     F(", frames=") + String(framesDone) +
                     F(", rms=") + String(voiceRecordRms) +
                     F(", peak=") + String(voiceRecordPeak) +
-                    F(", active=") + String(voiceRecordActiveSamples);
-  Serial.printf("Voice stream frames=%lu adpcm=%lu pcm=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu vad=%s\n",
+                    F(", active=") + String(voiceRecordActiveSamples) +
+                    F(", channel=") + voiceInputChannelName(inputChannel);
+  Serial.printf("Voice stream frames=%lu adpcm=%lu pcm=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu channel=%s vad=%s\n",
                 static_cast<unsigned long>(framesDone), static_cast<unsigned long>(queuedBytes),
                 static_cast<unsigned long>(framesDone * sizeof(int16_t)), stopReason,
                 leftPeak, rightPeak, monoPeak, static_cast<unsigned long>(voiceRecordRms),
-                static_cast<unsigned long>(voiceRecordActiveSamples), voiceRecordHeardSpeech ? "true" : "false");
+                static_cast<unsigned long>(voiceRecordActiveSamples), voiceInputChannelName(inputChannel),
+                voiceRecordHeardSpeech ? "true" : "false");
   broadcastMcuVoiceStreamEnd(interactionId, queuedBytes);
   return true;
 }
