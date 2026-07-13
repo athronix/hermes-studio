@@ -227,7 +227,7 @@ describe('workflow controller', () => {
 
     await mod.approveNode(c)
 
-    expect(managerMock.approveNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-1', true)
+    expect(managerMock.approveNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-1', true, undefined)
     expect(managerMock.stopRun).not.toHaveBeenCalled()
     expect(c.body).toEqual({ ok: true })
   })
@@ -244,7 +244,7 @@ describe('workflow controller', () => {
 
     await mod.approveNode(c)
 
-    expect(managerMock.approveNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-1', false)
+    expect(managerMock.approveNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-1', false, undefined)
     expect(managerMock.stopRun).not.toHaveBeenCalled()
     expect(c.body).toEqual({ ok: true })
   })

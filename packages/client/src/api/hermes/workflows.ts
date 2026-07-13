@@ -236,12 +236,12 @@ export async function deleteWorkflowRun(id: string, runId: string): Promise<void
   )
 }
 
-export async function approveWorkflowNode(id: string, runId: string, nodeId: string, approved: boolean): Promise<void> {
+export async function approveWorkflowNode(id: string, runId: string, nodeId: string, approved: boolean, executionId?: string): Promise<void> {
   await request<{ ok: true }>(
     `/api/hermes/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/approval`,
     {
       method: 'POST',
-      body: JSON.stringify({ approved }),
+      body: JSON.stringify({ approved, ...(executionId ? { executionId } : {}) }),
     },
   )
 }

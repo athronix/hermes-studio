@@ -283,9 +283,10 @@ export async function approveNode(ctx: Context) {
   const approved = optionalBoolean(body.approved, 'approved')
   if (rejectBadRequest(ctx, approved.error)) return
 
+  const executionId = typeof body.executionId === 'string' && body.executionId.trim() ? body.executionId.trim() : undefined
   const manager = getWorkflowManager()
   const approvedValue = approved.value ?? true
-  const accepted = manager.approveNode(id, runId, nodeId, approvedValue)
+  const accepted = manager.approveNode(id, runId, nodeId, approvedValue, executionId)
   if (!accepted) {
     ctx.status = 409
     ctx.body = { error: 'workflow node approval is not pending' }

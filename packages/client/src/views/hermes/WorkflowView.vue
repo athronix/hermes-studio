@@ -179,6 +179,7 @@ const workflowChatPanelLoading = ref(false)
 const workflowChatPanelTitle = ref('')
 const workflowChatPanelNodeId = ref<string | null>(null)
 const workflowChatPanelSessionId = ref<string | null>(null)
+const workflowChatPanelExecutionId = ref<string | null>(null)
 const workflowApprovalSubmitting = ref(false)
 const workflowChatPanelWidth = ref(loadWorkflowChatPanelWidth())
 const workflowChatResizeStart = ref<{ x: number; width: number } | null>(null)
@@ -541,6 +542,7 @@ function closeWorkflowChatPanel() {
   workflowChatPanelVisible.value = false
   workflowChatPanelNodeId.value = null
   workflowChatPanelSessionId.value = null
+  workflowChatPanelExecutionId.value = null
   workflowChatPanelTitle.value = ''
 }
 
@@ -858,7 +860,9 @@ async function openWorkflowNodeSession(nodeId: string) {
   const run = selectedWorkflowRun.value
   if (!run) return
   const node = nodes.value.find(item => item.id === nodeId)
-  const nodeSession = run.node_sessions?.find(session => session.node_id === nodeId)
+  const nodeSession = [...(run.node_sessions || [])]
+    .filter(session => session.node_id === nodeId)
+    .sort((left, right) => right.sequence - left.sequence)[0]
   if (!nodeSession?.session_id) {
     message.warning(t('workflow.runs.noNodeSession'))
     return
@@ -867,6 +871,7 @@ async function openWorkflowNodeSession(nodeId: string) {
   workflowChatPanelTitle.value = t('workflow.runs.nodeSessionTitle', { node: node?.data.title || nodeId })
   workflowChatPanelNodeId.value = nodeId
   workflowChatPanelSessionId.value = nodeSession.session_id
+  workflowChatPanelExecutionId.value = nodeSession.execution_id || nodeId
   workflowChatPanelVisible.value = true
   workflowChatPanelLoading.value = true
   try {
@@ -892,7 +897,7 @@ async function respondWorkflowNodeApproval(approved: boolean) {
   if (!workflowId || !runId || !nodeId || workflowApprovalSubmitting.value) return
   workflowApprovalSubmitting.value = true
   try {
-    await approveWorkflowNode(workflowId, runId, nodeId, approved)
+    await approveWorkflowNode(workflowId, runId, nodeId, approved, workflowChatPanelExecutionId.value || undefined)
   } catch (err: any) {
     message.error(err?.message || t('workflow.actions.executionFailed'))
   } finally {

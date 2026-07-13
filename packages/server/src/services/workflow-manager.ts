@@ -138,6 +138,7 @@ type PendingNodeApproval = {
   workflowId: string
   runId: string
   nodeId: string
+  executionId: string
   resolve: (approved: boolean) => void
 }
 
@@ -699,12 +700,16 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     return stopped
   }
 
-  approveNode(workflowId: string, runId: string, nodeId: string, approved = true): boolean {
+  approveNode(workflowId: string, runId: string, nodeId: string, approved = true, executionId?: string): boolean {
     const run = getWorkflowRun(runId)
     if (!run || run.workflow_id !== workflowId) return false
-    const pending = this.pendingNodeApprovals.get(this.nodeApprovalKey(runId, nodeId))
-    if (!pending || pending.workflowId !== workflowId || pending.nodeId !== nodeId) return false
-    this.pendingNodeApprovals.delete(this.nodeApprovalKey(runId, nodeId))
+    const matches = [...this.pendingNodeApprovals.entries()].filter(([, pending]) => (
+      pending.workflowId === workflowId && pending.runId === runId && pending.nodeId === nodeId
+      && (!executionId || pending.executionId === executionId)
+    ))
+    if (matches.length !== 1) return false
+    const [key, pending] = matches[0]
+    this.pendingNodeApprovals.delete(key)
     pending.resolve(approved)
     return true
   }
@@ -766,8 +771,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     return () => this.off('status', listener)
   }
 
-  private nodeApprovalKey(runId: string, nodeId: string): string {
-    return `${runId}:${nodeId}`
+  private nodeApprovalKey(runId: string, executionId: string): string {
+    return `${runId}:${executionId}`
   }
 
   private cancelPendingNodeApprovals(runId: string): void {
@@ -785,6 +790,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     nodeStatuses: Record<string, WorkflowRuntimeState>
     timeoutMs?: number
     timeoutError?: string
+    executionId?: string
   }): Promise<boolean> {
     if (!workflowNodeRequiresApproval(args.node)) return true
     if (this.canceledRunIds.has(args.runId) || getWorkflowRun(args.runId)?.status === 'canceled') return false
@@ -800,11 +806,13 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const approval = new Promise<boolean>((resolve) => {
       resolveApproval = resolve
     })
-    const key = this.nodeApprovalKey(args.runId, args.node.id)
+    const executionId = args.executionId || args.node.id
+    const key = this.nodeApprovalKey(args.runId, executionId)
     this.pendingNodeApprovals.set(key, {
       workflowId: args.workflowId,
       runId: args.runId,
       nodeId: args.node.id,
+      executionId,
       resolve: resolveApproval,
     })
 
@@ -996,7 +1004,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
           if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
           const approved = await this.waitForNodeApproval({
-            workflowId: workflow.id, runId: run.id, node, nodeStatuses,
+            workflowId: workflow.id, runId: run.id, node, nodeStatuses, executionId,
             timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
           })
           if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')

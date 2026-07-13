@@ -684,6 +684,32 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('keys simultaneous nested approvals by execution instance', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review' })
+    const workflow = manager.create({
+      name: `Execution approvals ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header', approvalRequired: true } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.header).toBe('pending_approval'))
+      const runId = manager.getRuntimeStatus(workflow.id).runId!
+      expect(manager.approveNode(workflow.id, runId, 'header', true, 'header@loop:retry:0')).toBe(true)
+      await vi.waitFor(() => expect(manager.approveNode(workflow.id, runId, 'header', true, 'header@loop:retry:1')).toBe(true))
+      expect((await runPromise).run.status).toBe('completed')
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('times out and removes a pending loop approval at the run deadline', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(1000)
