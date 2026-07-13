@@ -21,6 +21,7 @@ import {
   deleteWorkflowRunNodeSessions,
   getWorkflowRun,
   listWorkflowRunNodeSessions,
+  listWorkflowRunEdgeEvaluations,
   listWorkflowRunLoopEpochs,
   listActiveWorkflowRuns,
   listAllWorkflowRuns,
@@ -943,6 +944,639 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
   }
 
+  private async executeRecursiveCompiledWorkflowRun(args: {
+    workflowId: string
+    workspace: string | null
+    run: WorkflowRunRecord
+    profile: string
+    nodes: WorkflowNodeSnapshot[]
+    edges: WorkflowEdgeSnapshot[]
+    loops: CompiledWorkflowLoop[]
+    startNodeIds: string[]
+    activeIds: Set<string>
+    input?: string | null
+    user?: AuthenticatedUser
+    runDeadline: number | null
+    runTimeoutMessage: string | null
+    initialNodeStatuses?: Record<string, WorkflowRuntimeState>
+    initialOutputs?: Map<string, string>
+    executionScope?: string
+  }): Promise<WorkflowRunNowResult> {
+    const { workflowId, workspace, run, profile, nodes, edges, loops, startNodeIds, activeIds, runDeadline, runTimeoutMessage } = args
+    const executionScope = args.executionScope?.trim() || ''
+    const chatRun = getChatRunServer()!
+    const nodeById = new Map(nodes.map(node => [node.id, node]))
+    const activeNodes = nodes.filter(node => activeIds.has(node.id))
+    const activeEdges = edges.filter(edge => activeIds.has(edge.source) && activeIds.has(edge.target))
+    const activeIncoming = new Map<string, WorkflowEdgeSnapshot[]>()
+    for (const node of activeNodes) activeIncoming.set(node.id, [])
+    for (const edge of activeEdges) activeIncoming.get(edge.target)!.push(edge)
+    const nodeStatuses: Record<string, WorkflowRuntimeState> = {
+      ...(args.initialNodeStatuses || {}),
+      ...Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const])),
+    }
+    const loopById = new Map(loops.map(loop => [loop.id, loop]))
+    const feedbackIds = new Set(loops.map(loop => loop.feedbackEdgeId))
+    const forwardEdges = activeEdges.filter(edge => !edge.id || !feedbackIds.has(edge.id))
+    const outputs = new Map<string, string>(args.initialOutputs || [])
+    let nodeSequence = listWorkflowRunNodeSessions(run.id).reduce((max, session) => Math.max(max, session.sequence), -1) + 1
+    let evidenceSequence = Math.max(-1, ...listWorkflowRunEdgeEvaluations(run.id).map(item => item.sequence), ...listWorkflowRunLoopEpochs(run.id).map(item => item.sequence)) + 1
+    let executionCount = 0
+    const firstNodeFailure: { value: { node: WorkflowNodeSnapshot; error: string } | null } = { value: null }
+
+    const pathExecutionId = (nodeId: string, path: Array<{ loopId: string; iteration: number }>) => (
+      `${nodeId}${executionScope ? `@${executionScope}` : ''}${path.length === 0 ? '' : `@${path.map(item => `${item.loopId}:${item.iteration}`).join('/')}`}`
+    )
+    const isCanceled = () => this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled'
+    const persistDecision = (
+      edge: WorkflowEdgeSnapshot,
+      sourceOutcome: 'success' | 'failure' | 'skipped',
+      decision: WorkflowEdgeDecision,
+      path: Array<{ loopId: string; iteration: number }>,
+    ) => {
+      createWorkflowRunEdgeEvaluation({
+        run_id: run.id, workflow_id: workflowId, edge_id: edge.id || `${edge.source}->${edge.target}`,
+        source_node_id: edge.source, source_execution_id: pathExecutionId(edge.source, path), iteration_path: path,
+        target_node_id: edge.target, source_outcome: sourceOutcome, status: decision.status,
+        route: edge.orchestration.route, reason: 'reason' in decision ? decision.reason : null,
+        sequence: evidenceSequence++, orchestration: edge.orchestration,
+        condition_evaluation: 'condition' in decision ? decision.condition : null,
+      })
+    }
+    const skipNode = (
+      node: WorkflowNodeSnapshot,
+      path: Array<{ loopId: string; iteration: number }>,
+      decisions: Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>,
+    ) => {
+      nodeStatuses[node.id] = 'skipped'
+      for (const edge of forwardEdges.filter(item => item.source === node.id)) {
+        const decision: WorkflowEdgeDecision = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
+        persistDecision(edge, 'skipped', decision, path)
+        decisions.set(edge, decision)
+      }
+    }
+    const executeNode = async (
+      node: WorkflowNodeSnapshot,
+      path: Array<{ loopId: string; iteration: number }>,
+      decisions: Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>,
+    ) => {
+      if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
+      executionCount += 1
+      if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
+      const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+      if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
+      const sessionId = randomUUID()
+      const executionId = pathExecutionId(node.id, path)
+      const target = resolveWorkflowNodeRunTarget(node.data.agent)
+      const nodeSession = createWorkflowRunNodeSession({
+        run_id: run.id, workflow_id: workflowId, node_id: node.id, execution_id: executionId,
+        iteration_path: path, session_id: sessionId, profile, agent: target.agent,
+        agent_mode: node.data.agent === 'hermes' ? '' : 'scoped', status: 'running',
+        sequence: nodeSequence++, started_at: Date.now(),
+      })
+      nodeStatuses[node.id] = 'running'
+      this.setRuntimeStatus(workflowId, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
+      try {
+        const assembledInput = await this.buildNodeUserMessage({
+          node, incomingEdges: activeIncoming.get(node.id) || [], nodeById, outputs,
+          overrideInput: path.length === 0 && startNodeIds.includes(node.id) ? args.input : undefined, profile,
+        })
+        const runResult = await chatRun.runAndWait({
+          session_id: sessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
+          profile, workspace: workspace, model: node.data.model || undefined,
+          provider: node.data.provider || undefined, mode: node.data.agent === 'hermes' ? undefined : 'scoped',
+          coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
+          one_shot_model: true,
+          ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+          ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
+        }, { profile, user: args.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
+        if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
+        if (!runResult.ok) {
+          const rawError = runResult.error || `node ${node.id} failed`
+          if (runTimeoutMessage && isChatRunWaitTimeout(rawError, remainingTimeoutMs)) {
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: rawError })
+            nodeStatuses[node.id] = 'failed'
+            const timeoutError = new Error(rawError)
+            ;(timeoutError as any).workflowTimeout = true
+            throw timeoutError
+          }
+          updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: rawError })
+          nodeStatuses[node.id] = 'failed'
+          firstNodeFailure.value ||= { node, error: rawError }
+          for (const edge of forwardEdges.filter(item => item.source === node.id)) {
+            const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error: rawError })
+            persistDecision(edge, 'failure', decision, path)
+            decisions.set(edge, decision)
+          }
+          return
+        }
+        const output = lastAssistantOutput(sessionId, runResult.output)
+        const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+        if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
+        const approved = await this.waitForNodeApproval({
+          workflowId: workflowId, runId: run.id, node, nodeStatuses, executionId,
+          timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
+        })
+        if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
+        if (!approved) throw new Error('Workflow node approval rejected')
+        outputs.set(node.id, output)
+        updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
+        nodeStatuses[node.id] = 'completed'
+        for (const edge of forwardEdges.filter(item => item.source === node.id)) {
+          const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output })
+          persistDecision(edge, 'success', decision, path)
+          decisions.set(edge, decision)
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const canceled = isCanceled()
+        const approvalRejected = !canceled && message === 'Workflow node approval rejected'
+        updateWorkflowRunNodeSession(nodeSession.id, {
+          status: canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed',
+          finished_at: Date.now(), error: canceled ? (getWorkflowRun(run.id)?.error || message) : message,
+        })
+        nodeStatuses[node.id] = canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed'
+        throw err
+      }
+    }
+
+    const executeRegion = async (
+      loop: CompiledWorkflowLoop | null,
+      parentPath: Array<{ loopId: string; iteration: number; executionScope?: string }>,
+    ): Promise<Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>> => {
+      const regionIds = new Set(loop ? loop.bodyNodeIds : activeNodes.map(node => node.id))
+      const children = loops.filter(candidate => candidate.parentLoopId === loop?.id || (!loop && candidate.parentLoopId === null))
+      const childSets = new Map(children.map(child => [child.id, new Set(child.bodyNodeIds)]))
+      const unitFor = (nodeId: string) => children.find(child => childSets.get(child.id)!.has(nodeId))?.id || `node:${nodeId}`
+      const directNodes = activeNodes.filter(node => regionIds.has(node.id) && !children.some(child => childSets.get(child.id)!.has(node.id)))
+      const units = [...directNodes.map(node => `node:${node.id}`), ...children.map(child => child.id)]
+      const unitSet = new Set(units)
+      const indegree = new Map(units.map(unit => [unit, 0]))
+      const unitOutgoing = new Map(units.map(unit => [unit, new Set<string>()]))
+      for (const edge of forwardEdges) {
+        if (!regionIds.has(edge.source) || !regionIds.has(edge.target)) continue
+        const sourceUnit = unitFor(edge.source), targetUnit = unitFor(edge.target)
+        if (sourceUnit === targetUnit || !unitSet.has(sourceUnit) || !unitSet.has(targetUnit)) continue
+        if (!unitOutgoing.get(sourceUnit)!.has(targetUnit)) {
+          unitOutgoing.get(sourceUnit)!.add(targetUnit)
+          indegree.set(targetUnit, indegree.get(targetUnit)! + 1)
+        }
+      }
+      const ordered: string[] = []
+      const queue = units.filter(unit => indegree.get(unit) === 0)
+      for (let index = 0; index < queue.length; index += 1) {
+        const unit = queue[index]
+        ordered.push(unit)
+        for (const target of unitOutgoing.get(unit) || []) {
+          indegree.set(target, indegree.get(target)! - 1)
+          if (indegree.get(target) === 0) queue.push(target)
+        }
+      }
+      if (ordered.length !== units.length) throw new Error(`workflow loop region ${loop?.id || 'root'} contains blocked units`)
+
+      const runPass = async (path: Array<{ loopId: string; iteration: number; executionScope?: string }>) => {
+        const decisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
+        for (const unit of ordered) {
+          const child = loopById.get(unit)
+          if (child) {
+            const entering = forwardEdges.filter(edge => regionIds.has(edge.source) && !childSets.get(child.id)!.has(edge.source) && edge.target === child.headerNodeId)
+            const readiness = evaluateWorkflowNodeJoin(nodeById.get(child.headerNodeId)!.data.orchestration.join, entering.map(edge => decisions.get(edge)))
+            if (readiness === 'skipped') {
+              for (const nodeId of child.bodyNodeIds) nodeStatuses[nodeId] = 'skipped'
+              for (const edge of forwardEdges.filter(edge => childSets.get(child.id)!.has(edge.source) && !childSets.get(child.id)!.has(edge.target))) {
+                const decision: WorkflowEdgeDecision = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
+                persistDecision(edge, 'skipped', decision, path)
+                decisions.set(edge, decision)
+              }
+              continue
+            }
+            if (readiness !== 'ready') throw new Error(`workflow loop ${child.id} has unresolved dependencies`)
+            const childDecisions = await executeRegion(child, path)
+            for (const [edge, decision] of childDecisions) decisions.set(edge, decision)
+            continue
+          }
+          const node = nodeById.get(unit.slice(5))!
+          const incoming = forwardEdges.filter(edge => regionIds.has(edge.source) && edge.target === node.id)
+          const readiness = evaluateWorkflowNodeJoin(node.data.orchestration.join, incoming.map(edge => decisions.get(edge)))
+          if (readiness === 'skipped') { skipNode(node, path, decisions); continue }
+          if (readiness !== 'ready') throw new Error(`workflow node ${node.id} has unresolved dependencies`)
+          await executeNode(node, path, decisions)
+        }
+        return decisions
+      }
+
+      if (!loop) return runPass(parentPath)
+      const feedback = activeEdges.find(edge => edge.id === loop.feedbackEdgeId)!
+      let finalDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
+      for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
+        const path = [...parentPath, { loopId: loop.id, iteration, ...(executionScope ? { executionScope } : {}) }]
+        const epochStartedAt = Date.now()
+        const failureBeforeIteration = firstNodeFailure.value
+        try {
+          finalDecisions = await runPass(path)
+          const iterationFailed = firstNodeFailure.value !== failureBeforeIteration
+          const decision: WorkflowEdgeDecision = iterationFailed
+            ? { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
+            : iteration + 1 < loop.maxIterations
+              ? evaluateWorkflowEdgeRoute(feedback.orchestration, 'success', { output: outputs.get(loop.latchNodeId) || '' })
+              : { status: 'not_taken', routeMatched: true, reason: 'iteration_limit_reached' }
+          persistDecision(feedback, iterationFailed ? 'failure' : 'success', decision, path)
+          createWorkflowRunLoopEpoch({
+            run_id: run.id, workflow_id: workflowId, loop_id: loop.id, iteration, iteration_path: path,
+            status: iterationFailed ? 'failed' : 'completed',
+            exit_reason: iterationFailed ? firstNodeFailure.value?.error || 'loop iteration failed' : decision.status === 'taken' ? 'feedback_taken' : decision.reason,
+            sequence: evidenceSequence++, started_at: epochStartedAt, finished_at: Date.now(),
+          })
+          if (iterationFailed || decision.status !== 'taken') break
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const canceled = isCanceled()
+          const timedOut = !canceled && (message === runTimeoutMessage || Boolean((err as any)?.workflowTimeout))
+          const approvalRejected = !canceled && message === 'Workflow node approval rejected'
+          try {
+            createWorkflowRunLoopEpoch({
+              run_id: run.id, workflow_id: workflowId, loop_id: loop.id, iteration, iteration_path: path,
+              status: canceled ? 'canceled' : timedOut ? 'timed_out' : approvalRejected ? 'approval_rejected' : 'failed',
+              exit_reason: canceled ? (getWorkflowRun(run.id)?.error || message) : message,
+              sequence: evidenceSequence++, started_at: epochStartedAt, finished_at: Date.now(),
+            })
+          } catch (evidenceError) {
+            const evidenceMessage = evidenceError instanceof Error ? evidenceError.message : String(evidenceError)
+            this.canceledRunIds.delete(run.id)
+            updateWorkflowRun(run.id, { status: 'failed', finished_at: Date.now(), error: evidenceMessage, allow_terminal_reset: true })
+            ;(evidenceError as any).workflowEvidenceFailure = true
+            throw evidenceError
+          }
+          throw err
+        }
+      }
+      return finalDecisions
+    }
+
+    try {
+      await executeRegion(null, [])
+      const finishedAt = Date.now()
+      if (firstNodeFailure.value) {
+        const message = firstNodeFailure.value.error
+        const failedRun = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || run
+        this.setRuntimeStatus(workflowId, { status: 'failed', runId: run.id, completedAt: finishedAt, error: message, nodeStatuses: { ...nodeStatuses } })
+        return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+      }
+      const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
+      this.setRuntimeStatus(workflowId, { status: 'completed', runId: run.id, completedAt: finishedAt, error: null, nodeStatuses: { ...nodeStatuses } })
+      return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const finishedAt = Date.now()
+      const evidenceFailure = Boolean((err as any)?.workflowEvidenceFailure)
+      const canceled = !evidenceFailure && isCanceled()
+      const persistedRun = getWorkflowRun(run.id)
+      const finalMessage = canceled ? (persistedRun?.error || message) : message
+      const finalRun = canceled
+        ? (persistedRun || run)
+        : (updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: finalMessage }) || run)
+      this.setRuntimeStatus(workflowId, {
+        status: canceled ? 'canceled' : 'failed', runId: run.id, completedAt: finishedAt,
+        error: finalMessage, nodeStatuses: { ...nodeStatuses },
+      })
+      return { run: finalRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+    }
+  }
+
+  private async executeCompletionDrivenDagRun(args: {
+    workflowId: string
+    workspace: string | null
+    run: WorkflowRunRecord
+    profile: string
+    nodes: WorkflowNodeSnapshot[]
+    edges: WorkflowEdgeSnapshot[]
+    startNodeIds: string[]
+    activeIds: Set<string>
+    input?: string | null
+    user?: AuthenticatedUser
+    runDeadline: number | null
+    runTimeoutMessage: string | null
+    initialNodeStatuses?: Record<string, WorkflowRuntimeState>
+    initialOutputs?: Map<string, string>
+    executionScope?: string
+  }): Promise<WorkflowRunNowResult> {
+    const { workflowId, workspace, run, profile, nodes, edges, startNodeIds, activeIds, runDeadline, runTimeoutMessage } = args
+    const chatRun = getChatRunServer()!
+    const nodeById = new Map(nodes.map(node => [node.id, node]))
+    const activeNodes = nodes.filter(node => activeIds.has(node.id))
+    const activeEdges = edges.filter(edge => activeIds.has(edge.source) && activeIds.has(edge.target))
+    const incoming = new Map<string, WorkflowEdgeSnapshot[]>()
+    const outgoing = new Map<string, WorkflowEdgeSnapshot[]>()
+    for (const node of activeNodes) { incoming.set(node.id, []); outgoing.set(node.id, []) }
+    for (const edge of activeEdges) { incoming.get(edge.target)!.push(edge); outgoing.get(edge.source)!.push(edge) }
+    const nodeStatuses: Record<string, WorkflowRuntimeState> = {
+      ...(args.initialNodeStatuses || {}),
+      ...Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const])),
+    }
+    const completed = new Set<string>()
+    const runningOrDone = new Set<string>()
+    const edgeDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
+    const outputs = new Map<string, string>(args.initialOutputs || [])
+    const nodeSessionIds = new Map<string, string>()
+    const nodeSessionRecordIds = new Map<string, string>()
+    let sequence = listWorkflowRunNodeSessions(run.id).reduce((max, session) => Math.max(max, session.sequence), -1) + 1
+    let edgeEvidenceSequence = Math.max(-1, ...listWorkflowRunEdgeEvaluations(run.id).map(item => item.sequence), ...listWorkflowRunLoopEpochs(run.id).map(item => item.sequence)) + 1
+    const recordEdgeDecision = (
+      edge: WorkflowEdgeSnapshot,
+      sourceOutcome: 'success' | 'failure' | 'skipped',
+      decision: WorkflowEdgeDecision,
+    ) => {
+      createWorkflowRunEdgeEvaluation({
+        run_id: run.id,
+        workflow_id: workflowId,
+        edge_id: edge.id || `${edge.source}->${edge.target}`,
+        source_node_id: edge.source,
+        target_node_id: edge.target,
+        source_outcome: sourceOutcome,
+        status: decision.status,
+        route: edge.orchestration.route,
+        reason: 'reason' in decision ? decision.reason : null,
+        sequence: edgeEvidenceSequence++,
+        orchestration: edge.orchestration,
+        condition_evaluation: 'condition' in decision ? decision.condition : null,
+      })
+      edgeDecisions.set(edge, decision)
+    }
+    const inFlight = new Map<string, Promise<any>>()
+    let firstNodeFailure: { node: WorkflowNodeSnapshot; error: string } | null = null
+
+    const failRun = (message: string) => {
+      if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
+        const finishedAt = Date.now()
+        for (const node of activeNodes) {
+          if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
+        }
+        const canceled = updateWorkflowRun(run.id, { status: 'canceled', finished_at: finishedAt, error: message }) || run
+        this.setRuntimeStatus(workflowId, {
+          status: 'canceled',
+          runId: run.id,
+          completedAt: finishedAt,
+          error: message,
+          nodeStatuses: { ...nodeStatuses },
+        })
+        return canceled
+      }
+      const finishedAt = Date.now()
+      const failed = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || run
+      this.setRuntimeStatus(workflowId, {
+        status: 'failed',
+        runId: run.id,
+        completedAt: finishedAt,
+        error: message,
+        nodeStatuses: { ...nodeStatuses },
+      })
+      return failed
+    }
+
+    try {
+      while (completed.size < activeNodes.length) {
+        let propagatedSkip = true
+        while (propagatedSkip) {
+          propagatedSkip = false
+          for (const node of activeNodes) {
+            if (runningOrDone.has(node.id)) continue
+            const dependencies = incoming.get(node.id) || []
+            const joinDecision = evaluateWorkflowNodeJoin(
+              node.data.orchestration.join,
+              dependencies.map(edge => edgeDecisions.get(edge)),
+            )
+            if (joinDecision === 'skipped') {
+              runningOrDone.add(node.id)
+              completed.add(node.id)
+              nodeStatuses[node.id] = 'skipped'
+              for (const edge of outgoing.get(node.id) || []) {
+                recordEdgeDecision(edge, 'skipped', { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' })
+              }
+              propagatedSkip = true
+            }
+          }
+        }
+        const ready = activeNodes.filter(node => {
+          if (runningOrDone.has(node.id)) return false
+          const dependencies = incoming.get(node.id) || []
+          return evaluateWorkflowNodeJoin(
+            node.data.orchestration.join,
+            dependencies.map(edge => edgeDecisions.get(edge)),
+          ) === 'ready'
+        })
+        if (ready.length === 0 && inFlight.size === 0) {
+          throw new Error('workflow graph contains a cycle or blocked dependency')
+        }
+        for (const node of ready) nodeStatuses[node.id] = 'running'
+        this.setRuntimeStatus(workflowId, {
+          status: 'running',
+          runId: run.id,
+          nodeStatuses: { ...nodeStatuses },
+        })
+
+        for (const node of ready) {
+          const execution = (async () => {
+          const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+          if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
+          }
+          const nodeSessionId = randomUUID()
+          nodeSessionIds.set(node.id, nodeSessionId)
+          runningOrDone.add(node.id)
+          const target = resolveWorkflowNodeRunTarget(node.data.agent)
+          const nodeSession = createWorkflowRunNodeSession({
+            run_id: run.id,
+            workflow_id: workflowId,
+            node_id: node.id,
+            execution_id: args.executionScope ? `${node.id}@${args.executionScope}` : node.id,
+            iteration_path: [],
+            session_id: nodeSessionId,
+            profile,
+            agent: target.agent,
+            agent_mode: node.data.agent === 'hermes' ? '' : 'scoped',
+            status: 'running',
+            sequence: sequence++,
+            started_at: Date.now(),
+          })
+          nodeSessionRecordIds.set(node.id, nodeSession.id)
+          const assembledInput = await this.buildNodeUserMessage({
+            node,
+            incomingEdges: incoming.get(node.id) || [],
+            nodeById,
+            outputs,
+            overrideInput: startNodeIds.includes(node.id) ? args.input : undefined,
+            profile,
+          })
+          const runResult = await chatRun.runAndWait({
+            session_id: nodeSessionId,
+            source: 'workflow',
+            session_source: 'workflow',
+            input: assembledInput,
+            profile,
+            workspace: workspace,
+            model: node.data.model || undefined,
+            provider: node.data.provider || undefined,
+            mode: node.data.agent === 'hermes' ? undefined : 'scoped',
+            coding_agent_id: target.codingAgentId,
+            agent_id: target.codingAgentId,
+            apiMode: node.data.apiMode || undefined,
+            one_shot_model: true,
+            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
+          }, {
+            profile,
+            user: args.user,
+            timeoutMs: remainingTimeoutMs,
+            approvalChoice: 'once',
+          })
+          if (!runResult.ok) {
+            const error = runResult.error || `node ${node.id} failed`
+            const deadlineExceeded = runTimeoutMessage !== null && isChatRunWaitTimeout(error, remainingTimeoutMs)
+            if (deadlineExceeded) {
+              updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
+              nodeStatuses[node.id] = 'failed'
+              return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage }
+            }
+            if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
+              updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
+              nodeStatuses[node.id] = 'canceled'
+              this.setRuntimeStatus(workflowId, {
+                status: 'canceled',
+                runId: run.id,
+                error,
+                nodeStatuses: { ...nodeStatuses },
+              })
+              return { node, ok: false, canceled: true, error }
+            }
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
+            nodeStatuses[node.id] = 'failed'
+            completed.add(node.id)
+            if (!firstNodeFailure) firstNodeFailure = { node, error }
+            for (const edge of outgoing.get(node.id) || []) {
+              recordEdgeDecision(edge, 'failure', evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error }))
+            }
+            this.setRuntimeStatus(workflowId, {
+              status: 'running',
+              runId: run.id,
+              nodeStatuses: { ...nodeStatuses },
+            })
+            return { node, ok: false, handledFailure: true, error }
+          }
+          const output = lastAssistantOutput(nodeSessionId, runResult.output)
+          const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
+          if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) {
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
+            nodeStatuses[node.id] = 'failed'
+            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
+          }
+          let approved: boolean
+          try {
+            approved = await this.waitForNodeApproval({
+              workflowId: workflowId, runId: run.id, node, nodeStatuses,
+              executionId: args.executionScope ? `${node.id}@${args.executionScope}` : node.id,
+              timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
+            })
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err)
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
+            nodeStatuses[node.id] = 'failed'
+            return { node, ok: false, deadlineExceeded: error === runTimeoutMessage, error }
+          }
+          if (!approved) {
+            const error = 'Workflow node approval rejected'
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
+            nodeStatuses[node.id] = 'approval_rejected'
+            this.setRuntimeStatus(workflowId, {
+              status: 'running',
+              runId: run.id,
+              error,
+              nodeStatuses: { ...nodeStatuses },
+            })
+            return { node, ok: false, approvalRejected: true, error }
+          }
+          outputs.set(node.id, output)
+          for (const edge of outgoing.get(node.id) || []) {
+            recordEdgeDecision(edge, 'success', evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output }))
+          }
+          completed.add(node.id)
+          nodeStatuses[node.id] = 'completed'
+          this.setRuntimeStatus(workflowId, {
+            status: 'running',
+            runId: run.id,
+            nodeStatuses: { ...nodeStatuses },
+          })
+          updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
+          return { node, ok: true }
+          })()
+          inFlight.set(node.id, execution)
+        }
+        if (inFlight.size === 0) continue
+        const settled = await Promise.race(inFlight.values())
+        inFlight.delete(settled.node.id)
+        const results = [settled]
+
+        const failed = results.find(result => !result.ok && !('handledFailure' in result && result.handledFailure))
+        if (failed) {
+          if ('approvalRejected' in failed && failed.approvalRejected && inFlight.size > 0) {
+            await Promise.allSettled(inFlight.values())
+            inFlight.clear()
+          }
+          for (const node of activeNodes) {
+            if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
+          }
+          if ('canceled' in failed && failed.canceled) {
+            const canceledRun = failRun(failed.error || 'Workflow run canceled')
+            return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
+          if ('deadlineExceeded' in failed && failed.deadlineExceeded) {
+            const failedRun = failRun(failed.error || runTimeoutMessage || 'workflow run timed out')
+            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
+          if ('approvalRejected' in failed && failed.approvalRejected) {
+            const message = `Node ${failed.node.data.title || failed.node.id} approval rejected`
+            const failedRun = failRun(message)
+            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
+          nodeStatuses[failed.node.id] = 'failed'
+          const message = `Node ${failed.node.data.title || failed.node.id} failed: ${failed.error}`
+          const failedRun = failRun(message)
+          return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+        }
+      }
+
+      if (firstNodeFailure) {
+        const failure = firstNodeFailure as { node: WorkflowNodeSnapshot; error: string }
+        const message = `Node ${failure.node.data.title || failure.node.id} failed: ${failure.error}`
+        const failedRun = failRun(message)
+        return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+      }
+      const finishedAt = Date.now()
+      const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
+      this.setRuntimeStatus(workflowId, {
+        status: 'completed',
+        runId: run.id,
+        completedAt: finishedAt,
+        error: null,
+        nodeStatuses: { ...nodeStatuses },
+      })
+      return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const canceled = this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled'
+      for (const [nodeId, recordId] of nodeSessionRecordIds) {
+        if (!completed.has(nodeId)) {
+          nodeStatuses[nodeId] = canceled ? 'canceled' : 'failed'
+          updateWorkflowRunNodeSession(recordId, { status: canceled ? 'canceled' : 'failed', finished_at: Date.now(), error: message })
+        }
+      }
+      for (const node of activeNodes) {
+        if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
+      }
+      const failedRun = failRun(message)
+      return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+    }
+  }
+
   async runNow(workflowId: string, input: WorkflowRunNowInput = {}): Promise<WorkflowRunNowResult> {
     const workflow = this.get(workflowId)
     if (!workflow) {
@@ -1018,573 +1652,17 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const nodeStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(activeNodes.map(node => [node.id, 'queued' as const]))
 
     if (compiledGraph.loops.length > 0) {
-      const loopById = new Map(compiledGraph.loops.map(loop => [loop.id, loop]))
-      const feedbackIds = new Set(compiledGraph.loops.map(loop => loop.feedbackEdgeId))
-      const forwardEdges = activeEdges.filter(edge => !edge.id || !feedbackIds.has(edge.id))
-      const outputs = new Map<string, string>()
-      let nodeSequence = 0
-      let evidenceSequence = 0
-      let executionCount = 0
-      const firstNodeFailure: { value: { node: WorkflowNodeSnapshot; error: string } | null } = { value: null }
-
-      const pathExecutionId = (nodeId: string, path: Array<{ loopId: string; iteration: number }>) => (
-        path.length === 0 ? nodeId : `${nodeId}@${path.map(item => `${item.loopId}:${item.iteration}`).join('/')}`
-      )
-      const isCanceled = () => this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled'
-      const persistDecision = (
-        edge: WorkflowEdgeSnapshot,
-        sourceOutcome: 'success' | 'failure' | 'skipped',
-        decision: WorkflowEdgeDecision,
-        path: Array<{ loopId: string; iteration: number }>,
-      ) => {
-        createWorkflowRunEdgeEvaluation({
-          run_id: run.id, workflow_id: workflow.id, edge_id: edge.id || `${edge.source}->${edge.target}`,
-          source_node_id: edge.source, source_execution_id: pathExecutionId(edge.source, path), iteration_path: path,
-          target_node_id: edge.target, source_outcome: sourceOutcome, status: decision.status,
-          route: edge.orchestration.route, reason: 'reason' in decision ? decision.reason : null,
-          sequence: evidenceSequence++, orchestration: edge.orchestration,
-          condition_evaluation: 'condition' in decision ? decision.condition : null,
-        })
-      }
-      const skipNode = (
-        node: WorkflowNodeSnapshot,
-        path: Array<{ loopId: string; iteration: number }>,
-        decisions: Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>,
-      ) => {
-        nodeStatuses[node.id] = 'skipped'
-        for (const edge of forwardEdges.filter(item => item.source === node.id)) {
-          const decision: WorkflowEdgeDecision = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
-          persistDecision(edge, 'skipped', decision, path)
-          decisions.set(edge, decision)
-        }
-      }
-      const executeNode = async (
-        node: WorkflowNodeSnapshot,
-        path: Array<{ loopId: string; iteration: number }>,
-        decisions: Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>,
-      ) => {
-        if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
-        executionCount += 1
-        if (executionCount > MAX_WORKFLOW_RUN_EXECUTIONS) throw new Error(`workflow run execution budget exceeded: ${MAX_WORKFLOW_RUN_EXECUTIONS}`)
-        const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-        if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
-        const sessionId = randomUUID()
-        const executionId = pathExecutionId(node.id, path)
-        const target = resolveWorkflowNodeRunTarget(node.data.agent)
-        const nodeSession = createWorkflowRunNodeSession({
-          run_id: run.id, workflow_id: workflow.id, node_id: node.id, execution_id: executionId,
-          iteration_path: path, session_id: sessionId, profile, agent: target.agent,
-          agent_mode: node.data.agent === 'hermes' ? '' : 'scoped', status: 'running',
-          sequence: nodeSequence++, started_at: Date.now(),
-        })
-        nodeStatuses[node.id] = 'running'
-        this.setRuntimeStatus(workflow.id, { status: 'running', runId: run.id, nodeStatuses: { ...nodeStatuses } })
-        try {
-          const assembledInput = await this.buildNodeUserMessage({
-            node, incomingEdges: activeIncoming.get(node.id) || [], nodeById, outputs,
-            overrideInput: path.length === 0 && startNodeIds.includes(node.id) ? input.input : undefined, profile,
-          })
-          const runResult = await chatRun.runAndWait({
-            session_id: sessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
-            profile, workspace: workflow.workspace, model: node.data.model || undefined,
-            provider: node.data.provider || undefined, mode: node.data.agent === 'hermes' ? undefined : 'scoped',
-            coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
-            one_shot_model: true,
-            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
-            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
-          }, { profile, user: input.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
-          if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
-          if (!runResult.ok) {
-            const rawError = runResult.error || `node ${node.id} failed`
-            if (runTimeoutMessage && isChatRunWaitTimeout(rawError, remainingTimeoutMs)) {
-              updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: rawError })
-              nodeStatuses[node.id] = 'failed'
-              const timeoutError = new Error(rawError)
-              ;(timeoutError as any).workflowTimeout = true
-              throw timeoutError
-            }
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: rawError })
-            nodeStatuses[node.id] = 'failed'
-            firstNodeFailure.value ||= { node, error: rawError }
-            for (const edge of forwardEdges.filter(item => item.source === node.id)) {
-              const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error: rawError })
-              persistDecision(edge, 'failure', decision, path)
-              decisions.set(edge, decision)
-            }
-            return
-          }
-          const output = lastAssistantOutput(sessionId, runResult.output)
-          const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-          if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) throw new Error(runTimeoutMessage!)
-          const approved = await this.waitForNodeApproval({
-            workflowId: workflow.id, runId: run.id, node, nodeStatuses, executionId,
-            timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
-          })
-          if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
-          if (!approved) throw new Error('Workflow node approval rejected')
-          outputs.set(node.id, output)
-          updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
-          nodeStatuses[node.id] = 'completed'
-          for (const edge of forwardEdges.filter(item => item.source === node.id)) {
-            const decision = evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output })
-            persistDecision(edge, 'success', decision, path)
-            decisions.set(edge, decision)
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          const canceled = isCanceled()
-          const approvalRejected = !canceled && message === 'Workflow node approval rejected'
-          updateWorkflowRunNodeSession(nodeSession.id, {
-            status: canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed',
-            finished_at: Date.now(), error: canceled ? (getWorkflowRun(run.id)?.error || message) : message,
-          })
-          nodeStatuses[node.id] = canceled ? 'canceled' : approvalRejected ? 'approval_rejected' : 'failed'
-          throw err
-        }
-      }
-
-      const executeRegion = async (
-        loop: CompiledWorkflowLoop | null,
-        parentPath: Array<{ loopId: string; iteration: number }>,
-      ): Promise<Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>> => {
-        const regionIds = new Set(loop ? loop.bodyNodeIds : activeNodes.map(node => node.id))
-        const children = compiledGraph.loops.filter(candidate => candidate.parentLoopId === loop?.id || (!loop && candidate.parentLoopId === null))
-        const childSets = new Map(children.map(child => [child.id, new Set(child.bodyNodeIds)]))
-        const unitFor = (nodeId: string) => children.find(child => childSets.get(child.id)!.has(nodeId))?.id || `node:${nodeId}`
-        const directNodes = activeNodes.filter(node => regionIds.has(node.id) && !children.some(child => childSets.get(child.id)!.has(node.id)))
-        const units = [...directNodes.map(node => `node:${node.id}`), ...children.map(child => child.id)]
-        const unitSet = new Set(units)
-        const indegree = new Map(units.map(unit => [unit, 0]))
-        const unitOutgoing = new Map(units.map(unit => [unit, new Set<string>()]))
-        for (const edge of forwardEdges) {
-          if (!regionIds.has(edge.source) || !regionIds.has(edge.target)) continue
-          const sourceUnit = unitFor(edge.source), targetUnit = unitFor(edge.target)
-          if (sourceUnit === targetUnit || !unitSet.has(sourceUnit) || !unitSet.has(targetUnit)) continue
-          if (!unitOutgoing.get(sourceUnit)!.has(targetUnit)) {
-            unitOutgoing.get(sourceUnit)!.add(targetUnit)
-            indegree.set(targetUnit, indegree.get(targetUnit)! + 1)
-          }
-        }
-        const ordered: string[] = []
-        const queue = units.filter(unit => indegree.get(unit) === 0)
-        for (let index = 0; index < queue.length; index += 1) {
-          const unit = queue[index]
-          ordered.push(unit)
-          for (const target of unitOutgoing.get(unit) || []) {
-            indegree.set(target, indegree.get(target)! - 1)
-            if (indegree.get(target) === 0) queue.push(target)
-          }
-        }
-        if (ordered.length !== units.length) throw new Error(`workflow loop region ${loop?.id || 'root'} contains blocked units`)
-
-        const runPass = async (path: Array<{ loopId: string; iteration: number }>) => {
-          const decisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
-          for (const unit of ordered) {
-            const child = loopById.get(unit)
-            if (child) {
-              const entering = forwardEdges.filter(edge => regionIds.has(edge.source) && !childSets.get(child.id)!.has(edge.source) && edge.target === child.headerNodeId)
-              const readiness = evaluateWorkflowNodeJoin(nodeById.get(child.headerNodeId)!.data.orchestration.join, entering.map(edge => decisions.get(edge)))
-              if (readiness === 'skipped') {
-                for (const nodeId of child.bodyNodeIds) nodeStatuses[nodeId] = 'skipped'
-                for (const edge of forwardEdges.filter(edge => childSets.get(child.id)!.has(edge.source) && !childSets.get(child.id)!.has(edge.target))) {
-                  const decision: WorkflowEdgeDecision = { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
-                  persistDecision(edge, 'skipped', decision, path)
-                  decisions.set(edge, decision)
-                }
-                continue
-              }
-              if (readiness !== 'ready') throw new Error(`workflow loop ${child.id} has unresolved dependencies`)
-              const childDecisions = await executeRegion(child, path)
-              for (const [edge, decision] of childDecisions) decisions.set(edge, decision)
-              continue
-            }
-            const node = nodeById.get(unit.slice(5))!
-            const incoming = forwardEdges.filter(edge => regionIds.has(edge.source) && edge.target === node.id)
-            const readiness = evaluateWorkflowNodeJoin(node.data.orchestration.join, incoming.map(edge => decisions.get(edge)))
-            if (readiness === 'skipped') { skipNode(node, path, decisions); continue }
-            if (readiness !== 'ready') throw new Error(`workflow node ${node.id} has unresolved dependencies`)
-            await executeNode(node, path, decisions)
-          }
-          return decisions
-        }
-
-        if (!loop) return runPass(parentPath)
-        const feedback = activeEdges.find(edge => edge.id === loop.feedbackEdgeId)!
-        let finalDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
-        for (let iteration = 0; iteration < loop.maxIterations; iteration += 1) {
-          const path = [...parentPath, { loopId: loop.id, iteration }]
-          const epochStartedAt = Date.now()
-          const failureBeforeIteration = firstNodeFailure.value
-          try {
-            finalDecisions = await runPass(path)
-            const iterationFailed = firstNodeFailure.value !== failureBeforeIteration
-            const decision: WorkflowEdgeDecision = iterationFailed
-              ? { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' }
-              : iteration + 1 < loop.maxIterations
-                ? evaluateWorkflowEdgeRoute(feedback.orchestration, 'success', { output: outputs.get(loop.latchNodeId) || '' })
-                : { status: 'not_taken', routeMatched: true, reason: 'iteration_limit_reached' }
-            persistDecision(feedback, iterationFailed ? 'failure' : 'success', decision, path)
-            createWorkflowRunLoopEpoch({
-              run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration, iteration_path: path,
-              status: iterationFailed ? 'failed' : 'completed',
-              exit_reason: iterationFailed ? firstNodeFailure.value?.error || 'loop iteration failed' : decision.status === 'taken' ? 'feedback_taken' : decision.reason,
-              sequence: evidenceSequence++, started_at: epochStartedAt, finished_at: Date.now(),
-            })
-            if (iterationFailed || decision.status !== 'taken') break
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err)
-            const canceled = isCanceled()
-            const timedOut = !canceled && (message === runTimeoutMessage || Boolean((err as any)?.workflowTimeout))
-            const approvalRejected = !canceled && message === 'Workflow node approval rejected'
-            try {
-              createWorkflowRunLoopEpoch({
-                run_id: run.id, workflow_id: workflow.id, loop_id: loop.id, iteration, iteration_path: path,
-                status: canceled ? 'canceled' : timedOut ? 'timed_out' : approvalRejected ? 'approval_rejected' : 'failed',
-                exit_reason: canceled ? (getWorkflowRun(run.id)?.error || message) : message,
-                sequence: evidenceSequence++, started_at: epochStartedAt, finished_at: Date.now(),
-              })
-            } catch (evidenceError) {
-              const evidenceMessage = evidenceError instanceof Error ? evidenceError.message : String(evidenceError)
-              this.canceledRunIds.delete(run.id)
-              updateWorkflowRun(run.id, { status: 'failed', finished_at: Date.now(), error: evidenceMessage, allow_terminal_reset: true })
-              ;(evidenceError as any).workflowEvidenceFailure = true
-              throw evidenceError
-            }
-            throw err
-          }
-        }
-        return finalDecisions
-      }
-
-      try {
-        await executeRegion(null, [])
-        const finishedAt = Date.now()
-        if (firstNodeFailure.value) {
-          const message = firstNodeFailure.value.error
-          const failedRun = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || run
-          this.setRuntimeStatus(workflow.id, { status: 'failed', runId: run.id, completedAt: finishedAt, error: message, nodeStatuses: { ...nodeStatuses } })
-          return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-        }
-        const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
-        this.setRuntimeStatus(workflow.id, { status: 'completed', runId: run.id, completedAt: finishedAt, error: null, nodeStatuses: { ...nodeStatuses } })
-        return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        const finishedAt = Date.now()
-        const evidenceFailure = Boolean((err as any)?.workflowEvidenceFailure)
-        const canceled = !evidenceFailure && isCanceled()
-        const persistedRun = getWorkflowRun(run.id)
-        const finalMessage = canceled ? (persistedRun?.error || message) : message
-        const finalRun = canceled
-          ? (persistedRun || run)
-          : (updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: finalMessage }) || run)
-        this.setRuntimeStatus(workflow.id, {
-          status: canceled ? 'canceled' : 'failed', runId: run.id, completedAt: finishedAt,
-          error: finalMessage, nodeStatuses: { ...nodeStatuses },
-        })
-        return { run: finalRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-      }
-    }
-
-    const completed = new Set<string>()
-    const runningOrDone = new Set<string>()
-    const edgeDecisions = new Map<WorkflowEdgeSnapshot, WorkflowEdgeDecision>()
-    const outputs = new Map<string, string>()
-    const nodeSessionIds = new Map<string, string>()
-    const nodeSessionRecordIds = new Map<string, string>()
-    let sequence = 0
-    let edgeEvidenceSequence = 0
-    const recordEdgeDecision = (
-      edge: WorkflowEdgeSnapshot,
-      sourceOutcome: 'success' | 'failure' | 'skipped',
-      decision: WorkflowEdgeDecision,
-    ) => {
-      createWorkflowRunEdgeEvaluation({
-        run_id: run.id,
-        workflow_id: workflow.id,
-        edge_id: edge.id || `${edge.source}->${edge.target}`,
-        source_node_id: edge.source,
-        target_node_id: edge.target,
-        source_outcome: sourceOutcome,
-        status: decision.status,
-        route: edge.orchestration.route,
-        reason: 'reason' in decision ? decision.reason : null,
-        sequence: edgeEvidenceSequence++,
-        orchestration: edge.orchestration,
-        condition_evaluation: 'condition' in decision ? decision.condition : null,
+      return this.executeRecursiveCompiledWorkflowRun({
+        workflowId: workflow.id, workspace: workflow.workspace, run, profile, nodes, edges,
+        loops: compiledGraph.loops, startNodeIds, activeIds, input: input.input, user: input.user,
+        runDeadline, runTimeoutMessage,
       })
-      edgeDecisions.set(edge, decision)
-    }
-    const inFlight = new Map<string, Promise<any>>()
-    let firstNodeFailure: { node: WorkflowNodeSnapshot; error: string } | null = null
-
-    const failRun = (message: string) => {
-      if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
-        const finishedAt = Date.now()
-        for (const node of activeNodes) {
-          if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
-        }
-        const canceled = updateWorkflowRun(run.id, { status: 'canceled', finished_at: finishedAt, error: message }) || run
-        this.setRuntimeStatus(workflow.id, {
-          status: 'canceled',
-          runId: run.id,
-          completedAt: finishedAt,
-          error: message,
-          nodeStatuses: { ...nodeStatuses },
-        })
-        return canceled
-      }
-      const finishedAt = Date.now()
-      const failed = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || run
-      this.setRuntimeStatus(workflow.id, {
-        status: 'failed',
-        runId: run.id,
-        completedAt: finishedAt,
-        error: message,
-        nodeStatuses: { ...nodeStatuses },
-      })
-      return failed
     }
 
-    try {
-      while (completed.size < activeNodes.length) {
-        let propagatedSkip = true
-        while (propagatedSkip) {
-          propagatedSkip = false
-          for (const node of activeNodes) {
-            if (runningOrDone.has(node.id)) continue
-            const dependencies = activeIncoming.get(node.id) || []
-            const joinDecision = evaluateWorkflowNodeJoin(
-              node.data.orchestration.join,
-              dependencies.map(edge => edgeDecisions.get(edge)),
-            )
-            if (joinDecision === 'skipped') {
-              runningOrDone.add(node.id)
-              completed.add(node.id)
-              nodeStatuses[node.id] = 'skipped'
-              for (const edge of activeOutgoing.get(node.id) || []) {
-                recordEdgeDecision(edge, 'skipped', { status: 'not_taken', routeMatched: false, reason: 'route_not_matched' })
-              }
-              propagatedSkip = true
-            }
-          }
-        }
-        const ready = activeNodes.filter(node => {
-          if (runningOrDone.has(node.id)) return false
-          const dependencies = activeIncoming.get(node.id) || []
-          return evaluateWorkflowNodeJoin(
-            node.data.orchestration.join,
-            dependencies.map(edge => edgeDecisions.get(edge)),
-          ) === 'ready'
-        })
-        if (ready.length === 0 && inFlight.size === 0) {
-          throw new Error('workflow graph contains a cycle or blocked dependency')
-        }
-        for (const node of ready) nodeStatuses[node.id] = 'running'
-        this.setRuntimeStatus(workflow.id, {
-          status: 'running',
-          runId: run.id,
-          nodeStatuses: { ...nodeStatuses },
-        })
-
-        for (const node of ready) {
-          const execution = (async () => {
-          const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-          if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
-            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
-          }
-          const nodeSessionId = randomUUID()
-          nodeSessionIds.set(node.id, nodeSessionId)
-          runningOrDone.add(node.id)
-          const target = resolveWorkflowNodeRunTarget(node.data.agent)
-          const nodeSession = createWorkflowRunNodeSession({
-            run_id: run.id,
-            workflow_id: workflow.id,
-            node_id: node.id,
-            session_id: nodeSessionId,
-            profile,
-            agent: target.agent,
-            agent_mode: node.data.agent === 'hermes' ? '' : 'scoped',
-            status: 'running',
-            sequence: sequence++,
-            started_at: Date.now(),
-          })
-          nodeSessionRecordIds.set(node.id, nodeSession.id)
-          const assembledInput = await this.buildNodeUserMessage({
-            node,
-            incomingEdges: activeIncoming.get(node.id) || [],
-            nodeById,
-            outputs,
-            overrideInput: startNodeIds.includes(node.id) ? input.input : undefined,
-            profile,
-          })
-          const runResult = await chatRun.runAndWait({
-            session_id: nodeSessionId,
-            source: 'workflow',
-            session_source: 'workflow',
-            input: assembledInput,
-            profile,
-            workspace: workflow.workspace,
-            model: node.data.model || undefined,
-            provider: node.data.provider || undefined,
-            mode: node.data.agent === 'hermes' ? undefined : 'scoped',
-            coding_agent_id: target.codingAgentId,
-            agent_id: target.codingAgentId,
-            apiMode: node.data.apiMode || undefined,
-            one_shot_model: true,
-            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
-            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
-          }, {
-            profile,
-            user: input.user,
-            timeoutMs: remainingTimeoutMs,
-            approvalChoice: 'once',
-          })
-          if (!runResult.ok) {
-            const error = runResult.error || `node ${node.id} failed`
-            const deadlineExceeded = runTimeoutMessage !== null && isChatRunWaitTimeout(error, remainingTimeoutMs)
-            if (deadlineExceeded) {
-              updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
-              nodeStatuses[node.id] = 'failed'
-              return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage }
-            }
-            if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
-              updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
-              nodeStatuses[node.id] = 'canceled'
-              this.setRuntimeStatus(workflow.id, {
-                status: 'canceled',
-                runId: run.id,
-                error,
-                nodeStatuses: { ...nodeStatuses },
-              })
-              return { node, ok: false, canceled: true, error }
-            }
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'failed'
-            completed.add(node.id)
-            if (!firstNodeFailure) firstNodeFailure = { node, error }
-            for (const edge of activeOutgoing.get(node.id) || []) {
-              recordEdgeDecision(edge, 'failure', evaluateWorkflowEdgeRoute(edge.orchestration, 'failure', { error }))
-            }
-            this.setRuntimeStatus(workflow.id, {
-              status: 'running',
-              runId: run.id,
-              nodeStatuses: { ...nodeStatuses },
-            })
-            return { node, ok: false, handledFailure: true, error }
-          }
-          const output = lastAssistantOutput(nodeSessionId, runResult.output)
-          const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-          if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) {
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
-            nodeStatuses[node.id] = 'failed'
-            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
-          }
-          let approved: boolean
-          try {
-            approved = await this.waitForNodeApproval({
-              workflowId: workflow.id, runId: run.id, node, nodeStatuses,
-              timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
-            })
-          } catch (err) {
-            const error = err instanceof Error ? err.message : String(err)
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'failed'
-            return { node, ok: false, deadlineExceeded: error === runTimeoutMessage, error }
-          }
-          if (!approved) {
-            const error = 'Workflow node approval rejected'
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'approval_rejected'
-            this.setRuntimeStatus(workflow.id, {
-              status: 'running',
-              runId: run.id,
-              error,
-              nodeStatuses: { ...nodeStatuses },
-            })
-            return { node, ok: false, approvalRejected: true, error }
-          }
-          outputs.set(node.id, output)
-          for (const edge of activeOutgoing.get(node.id) || []) {
-            recordEdgeDecision(edge, 'success', evaluateWorkflowEdgeRoute(edge.orchestration, 'success', { output }))
-          }
-          completed.add(node.id)
-          nodeStatuses[node.id] = 'completed'
-          this.setRuntimeStatus(workflow.id, {
-            status: 'running',
-            runId: run.id,
-            nodeStatuses: { ...nodeStatuses },
-          })
-          updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
-          return { node, ok: true }
-          })()
-          inFlight.set(node.id, execution)
-        }
-        if (inFlight.size === 0) continue
-        const settled = await Promise.race(inFlight.values())
-        inFlight.delete(settled.node.id)
-        const results = [settled]
-
-        const failed = results.find(result => !result.ok && !('handledFailure' in result && result.handledFailure))
-        if (failed) {
-          if ('approvalRejected' in failed && failed.approvalRejected && inFlight.size > 0) {
-            await Promise.allSettled(inFlight.values())
-            inFlight.clear()
-          }
-          for (const node of activeNodes) {
-            if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
-          }
-          if ('canceled' in failed && failed.canceled) {
-            const canceledRun = failRun(failed.error || 'Workflow run canceled')
-            return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-          }
-          if ('deadlineExceeded' in failed && failed.deadlineExceeded) {
-            const failedRun = failRun(failed.error || runTimeoutMessage || 'workflow run timed out')
-            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-          }
-          if ('approvalRejected' in failed && failed.approvalRejected) {
-            const message = `Node ${failed.node.data.title || failed.node.id} approval rejected`
-            const failedRun = failRun(message)
-            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-          }
-          nodeStatuses[failed.node.id] = 'failed'
-          const message = `Node ${failed.node.data.title || failed.node.id} failed: ${failed.error}`
-          const failedRun = failRun(message)
-          return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-        }
-      }
-
-      if (firstNodeFailure) {
-        const failure = firstNodeFailure as { node: WorkflowNodeSnapshot; error: string }
-        const message = `Node ${failure.node.data.title || failure.node.id} failed: ${failure.error}`
-        const failedRun = failRun(message)
-        return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-      }
-      const finishedAt = Date.now()
-      const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || run
-      this.setRuntimeStatus(workflow.id, {
-        status: 'completed',
-        runId: run.id,
-        completedAt: finishedAt,
-        error: null,
-        nodeStatuses: { ...nodeStatuses },
-      })
-      return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      const canceled = this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled'
-      for (const [nodeId, recordId] of nodeSessionRecordIds) {
-        if (!completed.has(nodeId)) {
-          nodeStatuses[nodeId] = canceled ? 'canceled' : 'failed'
-          updateWorkflowRunNodeSession(recordId, { status: canceled ? 'canceled' : 'failed', finished_at: Date.now(), error: message })
-        }
-      }
-      for (const node of activeNodes) {
-        if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
-      }
-      const failedRun = failRun(message)
-      return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-    }
+    return this.executeCompletionDrivenDagRun({
+      workflowId: workflow.id, workspace: workflow.workspace, run, profile, nodes, edges,
+      startNodeIds, activeIds, input: input.input, user: input.user, runDeadline, runTimeoutMessage,
+    })
   }
 
   async rerunFromNode(
@@ -1727,229 +1805,17 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       nodeStatuses: { ...nodeStatuses },
     })
 
-    const completed = new Set<string>()
-    const runningOrDone = new Set<string>()
-    const nodeSessionRecordIds = new Map<string, string>()
-    let sequence = existingNodeSessions
-      .filter(session => !activeIds.has(session.node_id))
-      .reduce((max, session) => Math.max(max, session.sequence), -1) + 1
-
-    const failRun = (message: string) => {
-      if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
-        const finishedAt = Date.now()
-        for (const node of activeNodes) {
-          if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
-        }
-        const canceled = updateWorkflowRun(run.id, { status: 'canceled', finished_at: finishedAt, error: message }) || updatedRun
-        this.setRuntimeStatus(workflow.id, {
-          status: 'canceled',
-          runId: run.id,
-          completedAt: finishedAt,
-          error: message,
-          nodeStatuses: { ...nodeStatuses },
-        })
-        return canceled
-      }
-      const finishedAt = Date.now()
-      const failed = updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: message }) || updatedRun
-      this.setRuntimeStatus(workflow.id, {
-        status: 'failed',
-        runId: run.id,
-        completedAt: finishedAt,
-        error: message,
-        nodeStatuses: { ...nodeStatuses },
-      })
-      return failed
+    const sharedSchedulerArgs = {
+      workflowId: workflow.id, workspace: run.workspace, run: updatedRun, profile, nodes, edges,
+      startNodeIds: preserveStartNode ? downstreamStartIds : [targetNodeId], activeIds,
+      user: input.user, runDeadline, runTimeoutMessage,
+      initialNodeStatuses: nodeStatuses, initialOutputs: outputs,
+      executionScope: `rerun:${startedAt}`,
     }
-
-    try {
-      while (completed.size < activeNodes.length) {
-        const ready = activeNodes.filter(node => {
-          if (runningOrDone.has(node.id)) return false
-          return (incoming.get(node.id) || []).every(edge => (
-            activeIds.has(edge.source) ? completed.has(edge.source) : outputs.has(edge.source)
-          ))
-        })
-        if (ready.length === 0) {
-          throw new Error('workflow graph contains a cycle or blocked dependency')
-        }
-        for (const node of ready) nodeStatuses[node.id] = 'running'
-        this.setRuntimeStatus(workflow.id, {
-          status: 'running',
-          runId: run.id,
-          nodeStatuses: { ...nodeStatuses },
-        })
-
-        const results = await Promise.all(ready.map(async node => {
-          const remainingTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-          if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
-            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
-          }
-          const nodeSessionId = randomUUID()
-          runningOrDone.add(node.id)
-          const target = resolveWorkflowNodeRunTarget(node.data.agent)
-          const nodeSession = createWorkflowRunNodeSession({
-            run_id: run.id,
-            workflow_id: workflow.id,
-            node_id: node.id,
-            session_id: nodeSessionId,
-            profile,
-            agent: target.agent,
-            agent_mode: node.data.agent === 'hermes' ? '' : 'scoped',
-            status: 'running',
-            sequence: sequence++,
-            started_at: Date.now(),
-          })
-          nodeSessionRecordIds.set(node.id, nodeSession.id)
-          const assembledInput = await this.buildNodeUserMessage({
-            node,
-            incomingEdges: incoming.get(node.id) || [],
-            nodeById,
-            outputs,
-            profile,
-          })
-          const runResult = await chatRun.runAndWait({
-            session_id: nodeSessionId,
-            source: 'workflow',
-            session_source: 'workflow',
-            input: assembledInput,
-            profile,
-            workspace: run.workspace,
-            model: node.data.model || undefined,
-            provider: node.data.provider || undefined,
-            mode: node.data.agent === 'hermes' ? undefined : 'scoped',
-            coding_agent_id: target.codingAgentId,
-            agent_id: target.codingAgentId,
-            apiMode: node.data.apiMode || undefined,
-            one_shot_model: true,
-            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
-            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
-          }, {
-            profile,
-            user: input.user,
-            timeoutMs: remainingTimeoutMs,
-            approvalChoice: 'once',
-          })
-          if (!runResult.ok) {
-            const error = runResult.error || `node ${node.id} failed`
-            if (runTimeoutMessage !== null && isChatRunWaitTimeout(error, remainingTimeoutMs)) {
-              updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
-              nodeStatuses[node.id] = 'failed'
-              return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage }
-            }
-            if (this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled') {
-              updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
-              nodeStatuses[node.id] = 'canceled'
-              this.setRuntimeStatus(workflow.id, {
-                status: 'canceled',
-                runId: run.id,
-                error,
-                nodeStatuses: { ...nodeStatuses },
-              })
-              return { node, ok: false, canceled: true, error }
-            }
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'failed'
-            this.setRuntimeStatus(workflow.id, {
-              status: 'running',
-              runId: run.id,
-              nodeStatuses: { ...nodeStatuses },
-            })
-            return { node, ok: false, error }
-          }
-          const output = lastAssistantOutput(nodeSessionId, runResult.output)
-          const approvalTimeoutMs = runDeadline === null ? undefined : runDeadline - Date.now()
-          if (approvalTimeoutMs !== undefined && approvalTimeoutMs <= 0) {
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error: runTimeoutMessage })
-            nodeStatuses[node.id] = 'failed'
-            return { node, ok: false, deadlineExceeded: true, error: runTimeoutMessage! }
-          }
-          let approved: boolean
-          try {
-            approved = await this.waitForNodeApproval({
-              workflowId: workflow.id, runId: run.id, node, nodeStatuses,
-              timeoutMs: approvalTimeoutMs, timeoutError: runTimeoutMessage || undefined,
-            })
-          } catch (err) {
-            const error = err instanceof Error ? err.message : String(err)
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'failed', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'failed'
-            return { node, ok: false, deadlineExceeded: error === runTimeoutMessage, error }
-          }
-          if (!approved) {
-            const error = 'Workflow node approval rejected'
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'approval_rejected'
-            this.setRuntimeStatus(workflow.id, {
-              status: 'running',
-              runId: run.id,
-              error,
-              nodeStatuses: { ...nodeStatuses },
-            })
-            return { node, ok: false, approvalRejected: true, error }
-          }
-          outputs.set(node.id, output)
-          completed.add(node.id)
-          nodeStatuses[node.id] = 'completed'
-          this.setRuntimeStatus(workflow.id, {
-            status: 'running',
-            runId: run.id,
-            nodeStatuses: { ...nodeStatuses },
-          })
-          updateWorkflowRunNodeSession(nodeSession.id, { status: 'completed', finished_at: Date.now(), error: null })
-          return { node, ok: true }
-        }))
-
-        const failed = results.find(result => !result.ok)
-        if (failed) {
-          for (const node of activeNodes) {
-            if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
-          }
-          if ('canceled' in failed && failed.canceled) {
-            const canceledRun = failRun(failed.error || 'Workflow run canceled')
-            return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-          }
-          if ('deadlineExceeded' in failed && failed.deadlineExceeded) {
-            const failedRun = failRun(failed.error || runTimeoutMessage || 'workflow run timed out')
-            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-          }
-          if ('approvalRejected' in failed && failed.approvalRejected) {
-            const message = `Node ${failed.node.data.title || failed.node.id} approval rejected`
-            const failedRun = failRun(message)
-            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-          }
-          nodeStatuses[failed.node.id] = 'failed'
-          const message = `Node ${failed.node.data.title || failed.node.id} failed: ${failed.error}`
-          const failedRun = failRun(message)
-          return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-        }
-      }
-
-      const finishedAt = Date.now()
-      const completedRun = updateWorkflowRun(run.id, { status: 'completed', finished_at: finishedAt, error: null }) || updatedRun
-      this.setRuntimeStatus(workflow.id, {
-        status: 'completed',
-        runId: run.id,
-        completedAt: finishedAt,
-        error: null,
-        nodeStatuses: { ...nodeStatuses },
-      })
-      return { run: completedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      const canceled = this.canceledRunIds.has(run.id) || getWorkflowRun(run.id)?.status === 'canceled'
-      for (const [rerunNodeId, recordId] of nodeSessionRecordIds) {
-        if (!completed.has(rerunNodeId)) {
-          nodeStatuses[rerunNodeId] = canceled ? 'canceled' : 'failed'
-          updateWorkflowRunNodeSession(recordId, { status: canceled ? 'canceled' : 'failed', finished_at: Date.now(), error: message })
-        }
-      }
-      for (const node of activeNodes) {
-        if (isUnfinishedWorkflowNodeStatus(nodeStatuses[node.id])) nodeStatuses[node.id] = 'canceled'
-      }
-      const failedRun = failRun(message)
-      return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
-    }
+    const activeLoops = compiledGraph.loops.filter(loop => loop.bodyNodeIds.some(activeNodeId => activeIds.has(activeNodeId)))
+    return activeLoops.length > 0
+      ? this.executeRecursiveCompiledWorkflowRun({ ...sharedSchedulerArgs, loops: activeLoops })
+      : this.executeCompletionDrivenDagRun(sharedSchedulerArgs)
   }
 
   private async buildNodeUserMessage(args: {

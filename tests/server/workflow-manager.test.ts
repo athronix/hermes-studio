@@ -2182,6 +2182,213 @@ describe('workflow manager', () => {
     } finally { vi.useRealTimers(); await manager.delete(workflow.id) }
   })
 
+  it('reruns a bounded loop through the same recursive scheduler semantics as a fresh run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations, listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Rerun loop scheduler ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ], edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      expect(fresh.run.status).toBe('completed')
+      chatRunMock.runAndWait.mockClear()
+
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'header')
+
+      expect({ status: rerun.run.status, error: rerun.run.error }).toEqual({ status: 'completed', error: null })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+      const rerunPaths = rerun.nodeSessions.map(session => session.iteration_path as Array<Record<string, unknown>>)
+      const executionScope = rerunPaths[0]?.[0]?.executionScope
+      expect(executionScope).toMatch(/^rerun:\d+$/)
+      expect(rerunPaths.every(path => path.every(item => item.executionScope === executionScope))).toBe(true)
+      expect(rerun.nodeSessions.map(session => [session.node_id, (session.iteration_path as Array<Record<string, unknown>>).map(({ executionScope: _scope, ...item }) => item)])).toEqual([
+        ['header', [{ loopId: 'loop:retry', iteration: 0 }]],
+        ['latch', [{ loopId: 'loop:retry', iteration: 0 }]],
+        ['header', [{ loopId: 'loop:retry', iteration: 1 }]],
+        ['latch', [{ loopId: 'loop:retry', iteration: 1 }]],
+      ])
+      expect(new Set(rerun.nodeSessions.map(session => session.execution_id)).size).toBe(4)
+      expect(rerun.nodeSessions.every(session => session.execution_id.includes(String(executionScope)))).toBe(true)
+      expect(listWorkflowRunEdgeEvaluations(fresh.run.id).map(item => item.sequence)).toEqual([0, 1, 3, 4, 6, 7, 9, 10])
+      expect(listWorkflowRunLoopEpochs(fresh.run.id).map(item => item.sequence)).toEqual([2, 5, 8, 11])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('reruns a strictly nested loop with scoped canonical iteration paths', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const agent = (id: string) => ({ id, type: 'agent', data: { title: id, agent: 'hermes', input: id } })
+    const feedback = (id: string, source: string, target: string) => ({ id, source, target, data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } })
+    const workflow = manager.create({
+      name: `Rerun nested loop ${Date.now()}`, profile: 'default',
+      nodes: ['outer-h', 'inner-h', 'inner-l', 'outer-l'].map(agent), edges: [
+        { id: 'outer-inner', source: 'outer-h', target: 'inner-h' },
+        { id: 'inner-forward', source: 'inner-h', target: 'inner-l' },
+        { id: 'inner-outer', source: 'inner-l', target: 'outer-l' },
+        feedback('inner-retry', 'inner-l', 'inner-h'), feedback('outer-retry', 'outer-l', 'outer-h'),
+      ],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      chatRunMock.runAndWait.mockClear()
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'outer-h')
+      expect(rerun.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(12)
+      const scoped = rerun.nodeSessions.filter(session => session.execution_id.includes('@rerun:'))
+      expect(scoped).toHaveLength(12)
+      const finalInner = scoped.filter(session => session.node_id === 'inner-h').at(-1)!
+      expect(finalInner.iteration_path).toEqual([
+        expect.objectContaining({ loopId: 'loop:outer-retry', iteration: 1, executionScope: expect.stringMatching(/^rerun:/) }),
+        expect.objectContaining({ loopId: 'loop:inner-retry', iteration: 1, executionScope: expect.stringMatching(/^rerun:/) }),
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('reruns only the selected disjoint loop through the shared recursive scheduler', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const agent = (id: string) => ({ id, type: 'agent', data: { title: id, agent: 'hermes', input: id } })
+    const workflow = manager.create({
+      name: `Rerun disjoint loop ${Date.now()}`, profile: 'default',
+      nodes: ['a-h', 'a-l', 'b-h', 'b-l'].map(agent), edges: [
+        { id: 'a-forward', source: 'a-h', target: 'a-l' },
+        { id: 'a-retry', source: 'a-l', target: 'a-h', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+        { id: 'b-forward', source: 'b-h', target: 'b-l' },
+        { id: 'b-retry', source: 'b-l', target: 'b-h', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      expect(fresh.run.status).toBe('completed')
+      chatRunMock.runAndWait.mockClear()
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'a-h')
+      expect({ status: rerun.run.status, error: rerun.run.error }).toEqual({ status: 'completed', error: null })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+      const scoped = rerun.nodeSessions.filter(session => session.execution_id.includes('@rerun:'))
+      expect(scoped.map(session => session.node_id)).toEqual(['a-h', 'a-l', 'a-h', 'a-l'])
+      expect(rerun.nodeSessions.filter(session => session.node_id.startsWith('b-'))).toHaveLength(4)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('reruns conditional routes with the same skipped propagation as a fresh run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      const output = request.input.includes('source') ? 'use-matched' : 'done'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Rerun conditional scheduler ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'matched', type: 'agent', data: { title: 'Matched', agent: 'hermes', input: 'matched' } },
+        { id: 'unmatched', type: 'agent', data: { title: 'Unmatched', agent: 'hermes', input: 'unmatched' } },
+      ], edges: [
+        { id: 'source-matched', source: 'source', target: 'matched', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'use-matched' } } } },
+        { id: 'source-unmatched', source: 'source', target: 'unmatched', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'use-unmatched' } } } },
+      ],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      expect(fresh.nodeSessions.map(session => session.node_id)).toEqual(['source', 'matched'])
+      chatRunMock.runAndWait.mockClear()
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'source')
+      expect(rerun.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+      expect(rerun.nodeSessions.map(session => session.node_id)).toEqual(['source', 'matched'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.unmatched).toBe('skipped')
+      expect(listWorkflowRunEdgeEvaluations(fresh.run.id).slice(-2).map(item => [item.edge_id, item.status])).toEqual([
+        ['source-matched', 'taken'], ['source-unmatched', 'not_taken'],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('does not let late rerun completion override cancellation or dispatch downstream', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'fresh' })
+    chatRunMock.abortSession.mockReset().mockResolvedValue(undefined)
+    const workflow = manager.create({
+      name: `Late rerun cancel ${Date.now()}`, profile: 'default',
+      nodes: [{ id: 'a', type: 'agent', data: { title: 'A', agent: 'hermes', input: 'a' } }, { id: 'b', type: 'agent', data: { title: 'B', agent: 'hermes', input: 'b' } }],
+      edges: [{ id: 'a-b', source: 'a', target: 'b' }],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      const freshEvidenceCount = listWorkflowRunEdgeEvaluations(fresh.run.id).length
+      let release!: (value: any) => void
+      chatRunMock.runAndWait.mockReset().mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+      const rerunPromise = manager.rerunFromNode(workflow.id, fresh.run.id, 'a')
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).status).toBe('running'))
+      await manager.stopRun(workflow.id, fresh.run.id, 'operator canceled rerun')
+      release({ ok: true, output: 'late success' })
+      const rerun = await rerunPromise
+      expect(rerun.run.status).toBe('canceled')
+      expect(listWorkflowRunNodeSessions(fresh.run.id).map(item => item.node_id)).toEqual(['a'])
+      expect(listWorkflowRunNodeSessions(fresh.run.id)[0].status).toBe('canceled')
+      expect(listWorkflowRunEdgeEvaluations(fresh.run.id)).toHaveLength(freshEvidenceCount)
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('reruns failure and always routes through the shared scheduler', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let failSource = false
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { input: string }) => (
+      failSource && request.input.includes('source') ? { ok: false, error: 'source failed' } : { ok: true, output: 'done' }
+    ))
+    const workflow = manager.create({
+      name: `Rerun failure routes ${Date.now()}`, profile: 'default',
+      nodes: ['source', 'success', 'failure', 'always'].map(id => ({ id, type: 'agent', data: { title: id, agent: 'hermes', input: id } })),
+      edges: [
+        { id: 'success-edge', source: 'source', target: 'success' },
+        { id: 'failure-edge', source: 'source', target: 'failure', data: { orchestration: { route: 'failure' } } },
+        { id: 'always-edge', source: 'source', target: 'always', data: { orchestration: { route: 'always' } } },
+      ],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      failSource = true
+      chatRunMock.runAndWait.mockClear()
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'source')
+      expect(rerun.run.status).toBe('failed')
+      expect(rerun.nodeSessions.map(session => session.node_id).sort()).toEqual(['always', 'failure', 'source'])
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.success).toBe('skipped')
+      expect(listWorkflowRunEdgeEvaluations(fresh.run.id).slice(-3).map(item => [item.edge_id, item.status])).toEqual([
+        ['success-edge', 'not_taken'], ['failure-edge', 'taken'], ['always-edge', 'taken'],
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('reruns incomplete external upstream dependencies for downstream joins', async () => {
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     const {
