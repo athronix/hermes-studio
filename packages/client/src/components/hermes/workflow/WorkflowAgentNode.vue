@@ -204,6 +204,7 @@ async function uploadImages(files: File[]) {
           @update:value="value => updateField('orchestration', { join: value as 'all' | 'any' })"
         />
       </label>
+      <small class="node-field-help" data-testid="workflow-node-join-help">{{ data.orchestration?.join === 'any' ? t('workflow.node.joinAnyHelp') : t('workflow.node.joinAllHelp') }}</small>
       <label class="node-toggle-row">
         <span>{{ t('workflow.node.approvalRequired') }}</span>
         <NSwitch
@@ -462,6 +463,21 @@ async function uploadImages(files: File[]) {
   padding: 12px;
   flex: 1;
   min-height: 0;
+}
+
+.node-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.node-field-help {
+  margin-top: -5px;
+  color: $text-muted;
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .node-toggle-row {
