@@ -25,6 +25,14 @@
 - 数据库使用通用名称 `ekko.db`，不命名为 `memory.db`，便于后续容纳 Ekko Agent 的其他持久化组件。
 - `src/database.ts` 专门管理目录创建、连接、事务和按组件版本迁移；记忆模块通过 `SqliteMemoryStore` 使用数据库。
 - 数据库初始化失败时，记忆能力降级关闭，但不能阻断 Agent 正常回复。
+- 正常对话完成后始终保存原始消息，但不每轮调用模型；默认累计 8 条新的用户消息后，复用当前会话所选模型运行一次独立的记忆整理。手动整理可绕过阈值，供后续会话结束或空闲触发使用。
+- 记忆整理调用只注册四个记忆工具，不注入文件、终端、浏览器、MCP、skills 或主 Agent 系统提示词。
+- 记忆整理模型只读取上一份滚动摘要和上次整理后的新增消息；上一份摘要最多 4,000 字符，新增消息最多 12,000 字符，优先保留最新内容。
+- 原始工具结果不进入记忆整理模型的 transcript；天气、新闻、榜单和网页抓取等一次性结果在请求完成后不保留到滚动摘要。
+- 模型通过记忆工具写入结构化长期记忆，并输出 JSON 格式的滚动会话摘要。模型调用失败或输出不合法时回退到规则提取器，不能影响主 Agent 已完成的回复。
+- 每次周期性摘要模型响应以 `purpose = ekko-memory-summary` 单独写入会话 usage 表，计入实际模型调用和 token 开销，但不与主回答的 `model.usage` 重复记录。
+- 模型摘要直接返回并持久化 `constraints`、`preferences`、`decisions`、`completedWork`、`pendingWork` 和 `knownIssues`；正则分类只用于模型提取失败时的降级路径。
+- 无服务端 ID 的消息按 `session + role + content + metadata + 同内容出现序号` 生成稳定 ID，历史中插入其他消息不会导致整段对话被重复采集。
 
 ## 记忆分层
 
@@ -187,10 +195,12 @@ memory_embeddings
 ```txt
 读取上一条 MemorySummary
 读取本轮新增 MemoryMessage
-调用 memory extractor
-得到 MemoryExtraction
-按 operation 写入 MemoryNode
-必要时 append MemorySummary
+调用独立的 model memory extractor
+  -> 仅提供 memory_search / memory_get / memory_propose_update / memory_forget
+  -> 模型按需写入 MemoryNode
+  -> 模型返回滚动 summary JSON
+每个成功 turn append MemorySummary
+失败时回退到 rule-based extractor
 ```
 
 写入规则：

@@ -6,10 +6,13 @@ import {
   AgentRuntime,
   EkkoDatabaseManager,
   MemoryService,
+  ModelMemoryExtractor,
   SqliteMemoryStore,
+  createMemoryTools,
   normalizeMemoryKey,
   resolveMemoryQuery,
   type MemoryNode,
+  type MemoryMessage,
   type MemoryStore,
   type ModelClient,
   type ModelRequest,
@@ -22,7 +25,7 @@ let service: MemoryService
 beforeEach(async () => {
   webUiHome = await mkdtemp(join(tmpdir(), 'ekko-memory-service-'))
   store = new SqliteMemoryStore(new EkkoDatabaseManager({ webUiHome }))
-  service = new MemoryService({ store, summaryEveryMessages: 2 })
+  service = new MemoryService({ store, reviewEveryUserMessages: 1 })
 })
 
 afterEach(async () => {
@@ -121,6 +124,66 @@ describe('MemoryService', () => {
     })
   })
 
+  it('stores every turn but waits for the user-message review threshold before calling the extractor', async () => {
+    const extract = vi.fn().mockResolvedValue({
+      summaryPatch: 'Two user turns were reviewed together.',
+      nodes: [],
+    })
+    const gated = new MemoryService({
+      store,
+      reviewEveryUserMessages: 2,
+      extractor: { extract },
+    })
+    const identity = { sessionId: 'threshold-session', userId: 'u1' }
+
+    gated.scheduleRunCompletion(identity, [
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first answer' },
+    ])
+    await gated.drain()
+
+    expect(extract).not.toHaveBeenCalled()
+    await expect(store.listMessagesAfter({ sessionId: identity.sessionId, limit: 10 }))
+      .resolves.toHaveLength(2)
+    await expect(store.getLatestSummary({ sessionId: identity.sessionId })).resolves.toBeUndefined()
+
+    gated.scheduleRunCompletion(identity, [
+      { role: 'user', content: 'second question' },
+      { role: 'assistant', content: 'second answer' },
+    ])
+    await gated.drain()
+
+    expect(extract).toHaveBeenCalledTimes(1)
+    expect(extract.mock.calls[0][0].messages.map((message: MemoryMessage) => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'second question',
+      'second answer',
+    ])
+    await expect(store.getLatestSummary({ sessionId: identity.sessionId })).resolves.toMatchObject({
+      summary: 'Two user turns were reviewed together.',
+    })
+  })
+
+  it('allows a manual review to bypass the user-message threshold', async () => {
+    const extract = vi.fn().mockResolvedValue({ summaryPatch: 'Manual review.', nodes: [] })
+    const gated = new MemoryService({
+      store,
+      reviewEveryUserMessages: 8,
+      extractor: { extract },
+    })
+    const identity = { sessionId: 'manual-review-session', userId: 'u1' }
+    await gated.captureMessages(identity, [{ role: 'user', content: 'one message' }])
+
+    gated.scheduleExtraction(identity)
+    await gated.drain()
+
+    expect(extract).toHaveBeenCalledTimes(1)
+    await expect(store.getLatestSummary({ sessionId: identity.sessionId })).resolves.toMatchObject({
+      summary: 'Manual review.',
+    })
+  })
+
   it('injects retrieved memory and memory tools into runtime requests', async () => {
     await service.proposeUpdate({
       operation: 'create',
@@ -144,6 +207,218 @@ describe('MemoryService', () => {
       'memory_search', 'memory_get', 'memory_propose_update', 'memory_forget',
     ]))
     expect(result.memoryContext?.usedMemoryIds).toHaveLength(1)
+  })
+
+  it('uses a dedicated model pass with only memory tools to summarize and persist memory', async () => {
+    const create = vi.fn()
+      .mockResolvedValueOnce({ content: 'Main answer' })
+      .mockResolvedValueOnce({
+        content: '',
+        toolCalls: [{
+          id: 'memory-call-1',
+          name: 'memory_propose_update',
+          arguments: {
+            operation: 'create',
+            reason: 'The user explicitly requested a durable preference.',
+            explicitUserIntent: true,
+            node: {
+              scope: 'user',
+              domain: 'general',
+              categoryPath: ['general'],
+              type: 'preference',
+              key: 'language_preference',
+              valueJson: 'TypeScript',
+              title: 'Preferred programming language',
+              content: 'Prefer TypeScript for code examples.',
+              confidence: 0.98,
+              importance: 0.9,
+            },
+          },
+        }],
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          summary: 'The user asked Ekko to remember a preference for TypeScript examples.',
+          currentGoal: 'Remember the TypeScript preference',
+          constraints: ['Do not use JavaScript examples'],
+          preferences: ['Prefer TypeScript examples'],
+          decisions: ['Use TypeScript by default'],
+          completedWork: [],
+          pendingWork: ['Apply the preference to future examples'],
+          knownIssues: [],
+        }),
+      })
+    const client: ModelClient = {
+      provider: 'test',
+      requestStyle: 'custom-runtime',
+      capabilities: { streaming: false, tools: true, vision: false, jsonMode: false, systemPrompt: true },
+      create,
+      stream: vi.fn(),
+    }
+    const runtime = new AgentRuntime({ modelClient: client, memory: service })
+
+    await runtime.run({
+      messages: ['请记住以后代码示例优先使用 TypeScript'],
+      contextKey: 's1',
+      toolContext: { sessionId: 's1', workspaceId: '/repo', userId: 'u1' },
+    })
+    await service.drain()
+
+    const summaryRequest = create.mock.calls[1][0] as ModelRequest
+    expect(summaryRequest.metadata).toEqual({ purpose: 'ekko-memory-summary' })
+    expect(summaryRequest.tools?.map(tool => tool.name)).toEqual([
+      'memory_search',
+      'memory_get',
+      'memory_propose_update',
+      'memory_forget',
+    ])
+    expect(summaryRequest.messages[0].content).toContain('dedicated memory curator')
+    expect(summaryRequest.messages[1].content).toContain('请记住以后代码示例优先使用 TypeScript')
+    await expect(store.getLatestSummary({ sessionId: 's1' })).resolves.toMatchObject({
+      summary: 'The user asked Ekko to remember a preference for TypeScript examples.',
+      currentGoal: 'Remember the TypeScript preference',
+      constraints: ['Do not use JavaScript examples'],
+      preferences: ['Prefer TypeScript examples'],
+      decisions: ['Use TypeScript by default'],
+      pendingWork: ['Apply the preference to future examples'],
+    })
+    const memories = await service.search(
+      { sessionId: 's1', workspaceId: '/repo', userId: 'u1' },
+      { domain: 'general', key: 'language_preference' },
+    )
+    expect([...memories.exact, ...memories.relevant]).toMatchObject([{
+      scope: 'user',
+      userId: 'u1',
+      valueJson: 'TypeScript',
+    }])
+  })
+
+  it('deduplicates recaptured messages when unrelated messages shift their positions', async () => {
+    const identity = { sessionId: 's1', workspaceId: '/repo', userId: 'u1' }
+    await service.captureMessages(identity, [
+      { role: 'user', content: 'same question' },
+      { role: 'assistant', content: 'same answer' },
+    ])
+    await service.captureMessages(identity, [
+      { role: 'assistant', content: 'an earlier inserted message' },
+      { role: 'user', content: 'same question' },
+      { role: 'assistant', content: 'same answer' },
+    ])
+
+    await expect(store.listMessagesAfter({ sessionId: 's1', limit: 20 })).resolves.toHaveLength(3)
+  })
+
+  it('excludes tool payloads from the bounded model summary transcript', async () => {
+    const client = modelClient()
+    const onUsage = vi.fn()
+    vi.mocked(client.create).mockResolvedValueOnce({
+      content: JSON.stringify({
+        summary: 'The user requested a weather lookup, which is now complete.',
+        currentGoal: '',
+        constraints: [],
+        preferences: [],
+        decisions: [],
+        completedWork: [],
+        pendingWork: [],
+        knownIssues: [],
+      }),
+      model: 'summary-model',
+      usage: { inputTokens: 42, outputTokens: 8, totalTokens: 50 },
+    })
+    const extractor = new ModelMemoryExtractor({ modelClient: client, memory: service, onUsage })
+
+    await extractor.extract({
+      sessionId: 's1',
+      messages: [
+        memoryMessage('user', '查一下天气', 'm1'),
+        memoryMessage('tool', 'secret-tool-payload-with-a-long-weather-table', 'm2'),
+        memoryMessage('assistant', '天气已经查好。', 'm3'),
+      ],
+    })
+
+    const request = vi.mocked(client.create).mock.calls[0][0] as ModelRequest
+    expect(request.messages[1].content).toContain('查一下天气')
+    expect(request.messages[1].content).toContain('天气已经查好。')
+    expect(request.messages[1].content).not.toContain('secret-tool-payload')
+    expect(onUsage).toHaveBeenCalledWith({
+      purpose: 'ekko-memory-summary',
+      usage: { inputTokens: 42, outputTokens: 8, totalTokens: 50 },
+      model: 'summary-model',
+      callIndex: 1,
+    })
+  })
+
+  it('normalizes common model aliases in memory update tool arguments', async () => {
+    const tool = createMemoryTools(service).find(item => item.definition.name === 'memory_propose_update')!
+    const result = await tool.execute({
+      operation: 'create',
+      node: {
+        type: 'user_preference',
+        key: 'user_location',
+        value: '厦门市',
+        summary: '用户是厦门人，常住厦门，查询天气默认以厦门为准。',
+      },
+      reason: '用户表明自己是厦门人。',
+    }, {
+      sessionId: 's1',
+      workspaceId: '/repo',
+      userId: 'u1',
+    })
+
+    expect(result.ok).toBe(true)
+    const memories = await service.search(
+      { sessionId: 's1', workspaceId: '/repo', userId: 'u1' },
+      { key: 'user_location', valueJson: '厦门市' },
+    )
+    expect(memories.exact).toMatchObject([{
+      scope: 'workspace',
+      type: 'preference',
+      valueJson: '厦门市',
+      title: 'user location: 厦门市',
+      content: '用户是厦门人，常住厦门，查询天气默认以厦门为准。',
+    }])
+  })
+
+  it('treats a targeted user correction as explicit intent when superseding memory', async () => {
+    const identity = { sessionId: 's1', workspaceId: '/repo', userId: 'u1' }
+    const original = await service.proposeUpdate({
+      operation: 'create',
+      explicitUserIntent: true,
+      reason: 'The user explicitly asked to remember their location.',
+      identity,
+      node: {
+        scope: 'user',
+        type: 'fact',
+        key: 'user_location',
+        valueJson: '厦门市',
+        title: '用户所在地',
+        content: '用户常住厦门。',
+      },
+    })
+    const tool = createMemoryTools(service).find(item => item.definition.name === 'memory_propose_update')!
+
+    const result = await tool.execute({
+      operation: 'supersede',
+      targetId: original.nodeId,
+      node: {
+        type: 'correction',
+        title: '用户所在地更正：广西南宁',
+        content: '用户是广西南宁人，常住南宁。',
+        scope: 'user',
+        key: 'user-location',
+        importance: 0.9,
+      },
+      reason: '用户主动更正所在地为广西南宁。',
+    }, identity)
+
+    expect(result.ok).toBe(true)
+    await expect(store.getNode(original.nodeId!)).resolves.toMatchObject({ status: 'superseded' })
+    await expect(store.getNode((result.data as { nodeId: string }).nodeId)).resolves.toMatchObject({
+      scope: 'user',
+      type: 'correction',
+      key: 'user_location',
+      status: 'active',
+    })
   })
 
   it('requires confirmation for broad or hard deletion', async () => {
@@ -210,6 +485,16 @@ function modelClient(): ModelClient {
     capabilities: { streaming: false, tools: true, vision: false, jsonMode: false, systemPrompt: true },
     create: vi.fn(async () => ({ content: 'ok' })),
     stream: vi.fn(),
+  }
+}
+
+function memoryMessage(role: MemoryMessage['role'], content: string, id: string): MemoryMessage {
+  return {
+    id,
+    sessionId: 's1',
+    role,
+    content,
+    createdAt: '2026-01-01T00:00:00.000Z',
   }
 }
 

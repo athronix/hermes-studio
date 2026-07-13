@@ -18,6 +18,7 @@ import { buildSystemPrompt } from './system-prompt'
 import type { AgentRuntimeContextEstimate, AgentRuntimeOptions, AgentRuntimeRunInput, AgentRuntimeRunResult, AgentRuntimeStep } from './types'
 import type { MemoryContext, MemoryRuntimeIdentity } from '../memory/types'
 import type { MemoryCaptureMessage } from '../memory/service'
+import { ModelMemoryExtractor } from '../memory/extraction'
 import { createMemoryTools } from '../memory/tools'
 
 export const DEFAULT_AGENT_MAX_STEPS = 90
@@ -151,7 +152,7 @@ export class AgentRuntime {
         if (toolCalls.length === 0) {
           const context = contextKey ? this.modelContexts.get(contextKey) : assistantMessage.context
           emit({ type: 'run.completed', runId, output, steps: step, context, contextEstimate })
-          this.completeMemory(memoryIdentity, messages)
+          this.completeMemory(memoryIdentity, messages, input)
           return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
         }
 
@@ -178,7 +179,7 @@ export class AgentRuntime {
             }
             const context = contextKey ? this.modelContexts.get(contextKey) : undefined
             emit({ type: 'run.completed', runId, output, steps: step, context, contextEstimate })
-            this.completeMemory(memoryIdentity, messages)
+            this.completeMemory(memoryIdentity, messages, input)
             return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
           }
           await delay(toolDelayMs, input.signal)
@@ -193,7 +194,7 @@ export class AgentRuntime {
       }
       const context = contextKey ? this.modelContexts.get(contextKey) : undefined
       emit({ type: 'run.completed', runId, output, steps: maxSteps, context, contextEstimate })
-      this.completeMemory(memoryIdentity, messages)
+      this.completeMemory(memoryIdentity, messages, input)
       return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -324,11 +325,23 @@ export class AgentRuntime {
     return this.memory.retrieve(identity, queryText)
   }
 
-  private completeMemory(identity: MemoryRuntimeIdentity | undefined, messages: AgentMessage[]): void {
+  private completeMemory(
+    identity: MemoryRuntimeIdentity | undefined,
+    messages: AgentMessage[],
+    input: AgentRuntimeRunInput,
+  ): void {
     if (!this.memory || !identity) return
+    const modelClient = this.modelClientFor(input)
     this.memory.scheduleRunCompletion(
       identity,
       messages.filter(message => message.role !== 'system').map(toMemoryCaptureMessage),
+      new ModelMemoryExtractor({
+        modelClient,
+        memory: this.memory,
+        model: input.model ?? input.modelDefaults?.model ?? this.modelDefaults?.model,
+        signal: input.signal,
+        onUsage: input.onMemoryUsage,
+      }),
     )
   }
 

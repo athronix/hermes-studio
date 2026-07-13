@@ -16,6 +16,7 @@ export const USAGE_SCHEMA: Record<string, string> = {
   source: "TEXT NOT NULL DEFAULT ''",
   agent: "TEXT NOT NULL DEFAULT ''",
   usage_scope: "TEXT NOT NULL DEFAULT 'run'",
+  purpose: "TEXT NOT NULL DEFAULT ''",
   api_calls: 'INTEGER NOT NULL DEFAULT 0',
   input_tokens: 'INTEGER NOT NULL DEFAULT 0',
   output_tokens: 'INTEGER NOT NULL DEFAULT 0',

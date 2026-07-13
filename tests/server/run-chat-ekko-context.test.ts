@@ -205,6 +205,27 @@ describe('ekko-agent context usage events', () => {
       provider: 'test-provider',
       isEstimated: false,
     })
+    const runInput = agentRunMock.mock.calls[0][0]
+    runInput.onMemoryUsage({
+      purpose: 'ekko-memory-summary',
+      usage: { inputTokens: 21, outputTokens: 4, cacheReadTokens: 7 },
+      model: 'ekko-summary-model',
+      callIndex: 1,
+    })
+    expect(recordSessionUsageMock).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      runId: expect.stringMatching(/^memory-summary:.+:call:1$/),
+      source: 'ekko_agent',
+      agent: 'ekko_agent',
+      usageScope: 'model_call',
+      purpose: 'ekko-memory-summary',
+      apiCalls: 1,
+      usage: { inputTokens: 21, outputTokens: 4, cacheReadTokens: 7 },
+      profile: 'default',
+      model: 'ekko-summary-model',
+      provider: 'test-provider',
+      isEstimated: false,
+    })
     expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
       ended_at: null,
       end_reason: null,

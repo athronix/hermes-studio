@@ -18,6 +18,7 @@ export interface RecordSessionUsageInput {
   model?: string | null
   provider?: string | null
   usageScope?: 'model_call' | 'run'
+  purpose?: string
   apiCalls?: number
   usage?: unknown
   fallbackUsage?: Partial<NormalizedTokenUsage>
@@ -114,6 +115,7 @@ export function recordSessionUsage(input: RecordSessionUsageInput): NormalizedTo
       source: input.source,
       agent: input.agent,
       usageScope: input.usageScope,
+      purpose: input.purpose,
       apiCalls: input.apiCalls,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

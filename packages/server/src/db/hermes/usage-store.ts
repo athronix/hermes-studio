@@ -30,6 +30,7 @@ export function updateUsage(
     source?: string
     agent?: string
     usageScope?: 'model_call' | 'run'
+    purpose?: string
     apiCalls?: number
     inputTokens: number
     outputTokens: number
@@ -57,6 +58,7 @@ export function updateUsage(
       'source',
       'agent',
       'usage_scope',
+      'purpose',
       'api_calls',
       'input_tokens',
       'output_tokens',
@@ -76,6 +78,7 @@ export function updateUsage(
       data.source || '',
       data.agent || '',
       data.usageScope || 'run',
+      data.purpose || '',
       data.apiCalls ?? 0,
       data.inputTokens,
       data.outputTokens,
@@ -102,6 +105,7 @@ export function updateUsage(
       source: data.source || '',
       agent: data.agent || '',
       usage_scope: data.usageScope || 'run',
+      purpose: data.purpose || '',
       api_calls: data.apiCalls ?? 0,
       input_tokens: data.inputTokens,
       output_tokens: data.outputTokens,

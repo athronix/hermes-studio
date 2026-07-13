@@ -109,6 +109,7 @@ describe('usage recorder', () => {
       source: 'coding_agent',
       agent: 'codex',
       usageScope: undefined,
+      purpose: undefined,
       apiCalls: undefined,
       inputTokens: 10,
       outputTokens: 4,

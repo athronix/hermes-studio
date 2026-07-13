@@ -7,6 +7,7 @@ import { stableJson } from './store'
 import type {
   MemoryAuditEvent,
   MemoryContext,
+  MemoryExtraction,
   MemoryExtractor,
   MemoryForgetInput,
   MemoryForgetResult,
@@ -29,6 +30,8 @@ export interface MemoryServiceOptions {
   warning?: string
   recentMessageLimit?: number
   nodeLimit?: number
+  reviewEveryUserMessages?: number
+  /** @deprecated Use reviewEveryUserMessages. */
   summaryEveryMessages?: number
 }
 
@@ -46,7 +49,7 @@ export class MemoryService {
   private readonly enabled: boolean
   private readonly recentMessageLimit: number
   private readonly nodeLimit: number
-  private readonly summaryEveryMessages: number
+  private readonly reviewEveryUserMessages: number
   private readonly warnings = new Set<string>()
   private extractionQueue: Promise<void> = Promise.resolve()
 
@@ -56,7 +59,10 @@ export class MemoryService {
     this.enabled = options.enabled ?? Boolean(options.store)
     this.recentMessageLimit = options.recentMessageLimit ?? 6
     this.nodeLimit = options.nodeLimit ?? 12
-    this.summaryEveryMessages = options.summaryEveryMessages ?? 8
+    this.reviewEveryUserMessages = Math.max(
+      1,
+      Math.floor(options.reviewEveryUserMessages ?? options.summaryEveryMessages ?? 8),
+    )
     if (options.warning) this.warnings.add(options.warning)
   }
 
@@ -69,9 +75,13 @@ export class MemoryService {
     const ids: string[] = []
     try {
       let parentId: string | undefined
+      const occurrences = new Map<string, number>()
       for (let index = 0; index < messages.length; index += 1) {
         const message = messages[index]
-        const id = message.id || deterministicMessageId(identity.sessionId, index, message)
+        const signature = messageSignature(message)
+        const occurrence = occurrences.get(signature) || 0
+        occurrences.set(signature, occurrence + 1)
+        const id = message.id || deterministicMessageId(identity.sessionId, occurrence, message)
         await this.store.appendMessage({
           id,
           sessionId: identity.sessionId,
@@ -279,16 +289,20 @@ export class MemoryService {
   scheduleExtraction(identity: MemoryRuntimeIdentity): void {
     if (!this.isEnabled || !this.store) return
     this.extractionQueue = this.extractionQueue
-      .then(() => this.extractAndPersist(identity))
+      .then(() => this.extractAndPersist(identity, this.extractor, true))
       .catch(error => this.recordWarning(error))
   }
 
-  scheduleRunCompletion(identity: MemoryRuntimeIdentity, messages: MemoryCaptureMessage[]): void {
+  scheduleRunCompletion(
+    identity: MemoryRuntimeIdentity,
+    messages: MemoryCaptureMessage[],
+    extractor: MemoryExtractor = this.extractor,
+  ): void {
     if (!this.isEnabled || !this.store) return
     this.extractionQueue = this.extractionQueue
       .then(async () => {
         await this.captureMessages(identity, messages)
-        await this.extractAndPersist(identity)
+        await this.extractAndPersist(identity, extractor)
       })
       .catch(error => this.recordWarning(error))
   }
@@ -305,7 +319,11 @@ export class MemoryService {
     return buildMemoryContextPrompt(context)
   }
 
-  private async extractAndPersist(identity: MemoryRuntimeIdentity): Promise<void> {
+  private async extractAndPersist(
+    identity: MemoryRuntimeIdentity,
+    extractor: MemoryExtractor = this.extractor,
+    forceReview = false,
+  ): Promise<void> {
     if (!this.store) return
     const state = await this.store.getSessionState(identity.sessionId)
     const messages = await this.store.listMessagesAfter({
@@ -314,8 +332,11 @@ export class MemoryService {
       limit: 100,
     })
     if (!messages.length) return
+    const newUserMessageCount = messages.filter(message => message.role === 'user').length
+    if (!forceReview && newUserMessageCount < this.reviewEveryUserMessages) return
+
     const previousSummary = await this.store.getLatestSummary({ sessionId: identity.sessionId })
-    const extraction = await this.extractor.extract({ ...identity, previousSummary, messages })
+    const extraction = await extractor.extract({ ...identity, previousSummary, messages })
     for (const operation of extraction.nodes) {
       if (operation.operation === 'ignore') continue
       await this.proposeUpdate({
@@ -340,8 +361,8 @@ export class MemoryService {
       limit: 500,
     })
     let lastSummaryMessageId = state?.lastSummaryMessageId
-    if (sinceSummary.length >= this.summaryEveryMessages && extraction.summaryPatch) {
-      const summary = buildSummary(identity.sessionId, previousSummary, sinceSummary, extraction.summaryPatch, extraction.currentGoal)
+    if (extraction.summaryPatch) {
+      const summary = buildSummary(identity.sessionId, previousSummary, sinceSummary, extraction)
       await this.store.appendSummary(summary)
       await this.store.appendAuditEvent({
         id: randomUUID(),
@@ -418,12 +439,22 @@ function scopedQuery(identity: Partial<MemoryRuntimeIdentity> | undefined, overr
   }
 }
 
-function deterministicMessageId(sessionId: string, index: number, message: MemoryCaptureMessage): string {
+function deterministicMessageId(sessionId: string, occurrence: number, message: MemoryCaptureMessage): string {
   return createHash('sha256')
     .update(sessionId)
     .update('\0')
-    .update(String(index))
+    .update(String(occurrence))
     .update('\0')
+    .update(message.role)
+    .update('\0')
+    .update(message.content)
+    .update('\0')
+    .update(stableJson(message.metadata || {}))
+    .digest('hex')
+}
+
+function messageSignature(message: MemoryCaptureMessage): string {
+  return createHash('sha256')
     .update(message.role)
     .update('\0')
     .update(message.content)
@@ -436,8 +467,7 @@ function buildSummary(
   sessionId: string,
   previous: MemorySummary | undefined,
   messages: MemoryMessage[],
-  summaryPatch: string,
-  currentGoal?: string,
+  extraction: MemoryExtraction,
 ): MemorySummary {
   const userText = messages.filter(message => message.role === 'user').map(message => message.content)
   const assistantText = messages.filter(message => message.role === 'assistant').map(message => message.content)
@@ -448,14 +478,14 @@ function buildSummary(
     parentSummaryId: previous?.id,
     fromMessageId: messages[0].id,
     toMessageId: messages.at(-1)!.id,
-    summary: summaryPatch,
-    currentGoal,
-    constraints: collectMatches(userText, /(?:必须|不要|不能|constraint)[:：]?\s*([^。\n]+)/gi),
-    preferences: collectMatches(userText, /(?:喜欢|偏好|prefer)[:：]?\s*([^。\n]+)/gi),
-    decisions: collectMatches(userText, /(?:决定|采用|decision)[:：]?\s*([^。\n]+)/gi),
-    completedWork: collectMatches(assistantText, /(?:已完成|完成了|completed)[:：]?\s*([^。\n]+)/gi),
-    pendingWork: collectMatches([...userText, ...assistantText], /(?:待办|下一步|pending)[:：]?\s*([^。\n]+)/gi),
-    knownIssues: collectMatches([...userText, ...assistantText], /(?:问题|错误|issue)[:：]?\s*([^。\n]+)/gi),
+    summary: extraction.summaryPatch!,
+    currentGoal: extraction.currentGoal,
+    constraints: extraction.constraints ?? collectMatches(userText, /(?:必须|不要|不能|constraint)[:：]?\s*([^。\n]+)/gi),
+    preferences: extraction.preferences ?? collectMatches(userText, /(?:喜欢|偏好|prefer)[:：]?\s*([^。\n]+)/gi),
+    decisions: extraction.decisions ?? collectMatches(userText, /(?:决定|采用|decision)[:：]?\s*([^。\n]+)/gi),
+    completedWork: extraction.completedWork ?? collectMatches(assistantText, /(?:已完成|完成了|completed)[:：]?\s*([^。\n]+)/gi),
+    pendingWork: extraction.pendingWork ?? collectMatches([...userText, ...assistantText], /(?:待办|下一步|pending)[:：]?\s*([^。\n]+)/gi),
+    knownIssues: extraction.knownIssues ?? collectMatches([...userText, ...assistantText], /(?:问题|错误|issue)[:：]?\s*([^。\n]+)/gi),
     createdAt: now,
   }
 }

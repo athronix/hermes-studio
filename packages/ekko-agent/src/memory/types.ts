@@ -153,7 +153,14 @@ export interface MemoryExtractionOperation {
 export interface MemoryExtraction {
   summaryPatch?: string
   currentGoal?: string
+  constraints?: string[]
+  preferences?: string[]
+  decisions?: string[]
+  completedWork?: string[]
+  pendingWork?: string[]
+  knownIssues?: string[]
   nodes: MemoryExtractionOperation[]
+  forceSummary?: boolean
 }
 
 export interface MemoryExtractor {

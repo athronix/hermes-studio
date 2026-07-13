@@ -1,4 +1,4 @@
-import type { AgentMessage, ModelClient, ModelRequest } from '../model/types'
+import type { AgentMessage, ModelClient, ModelRequest, ModelUsage } from '../model/types'
 import type { AgentMessageInput, AgentOutputMessage } from '../model/messages'
 import type { AgentSkill } from '../skills/types'
 import type { AgentToolRegistry } from '../tools/registry'
@@ -53,6 +53,12 @@ export interface AgentRuntimeRunInput {
   contextKey?: string
   context?: unknown
   memoryEnabled?: boolean
+  onMemoryUsage?: (input: {
+    purpose: 'ekko-memory-summary'
+    usage: ModelUsage
+    model?: string
+    callIndex: number
+  }) => void
   onEvent?: (event: AgentRuntimeEvent) => void
 }
 

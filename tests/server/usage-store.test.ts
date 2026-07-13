@@ -168,6 +168,7 @@ describe('Usage Store (SQLite path)', () => {
       '', // source
       '', // agent
       'run', // usageScope
+      '', // purpose
       0, // apiCalls
       500,
       200,
@@ -197,6 +198,7 @@ describe('Usage Store (SQLite path)', () => {
       '', // source
       '', // agent
       'run', // usageScope
+      '', // purpose
       0, // apiCalls
       500,
       200,

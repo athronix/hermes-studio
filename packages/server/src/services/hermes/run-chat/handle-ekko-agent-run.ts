@@ -1,5 +1,5 @@
 import type { Server, Socket } from 'socket.io'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { inspect } from 'util'
 import {
   createModelClient,
@@ -514,6 +514,7 @@ export async function handleEkkoAgentRun(
       : undefined,
   })
   const agent = getGlobalEkkoAgent()
+  const memoryUsageBatchId = randomUUID()
 
   let assistantText = ''
   let assistantReasoning = ''
@@ -633,6 +634,22 @@ export async function handleEkkoAgentRun(
       messages: toAgentMessages(state.messages),
       signal: abortController.signal,
       onEvent: handleRuntimeEvent,
+      onMemoryUsage: event => {
+        recordSessionUsage({
+          sessionId,
+          runId: `memory-summary:${memoryUsageBatchId}:call:${event.callIndex}`,
+          source: 'ekko_agent',
+          agent: 'ekko_agent',
+          usageScope: 'model_call',
+          purpose: event.purpose,
+          apiCalls: 1,
+          usage: event.usage,
+          profile,
+          model: event.model || modelConfig.model,
+          provider: modelConfig.provider,
+          isEstimated: false,
+        })
+      },
       toolContext: {
         cwd: workspace,
         workspaceRoot: workspace,
