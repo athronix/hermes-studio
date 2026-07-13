@@ -23,8 +23,12 @@ test('workflow canvas exposes orchestration editing and portability controls', a
   await expect(page.locator('.header-workflow-title')).toHaveText('Loop workflow')
   const importButton = page.getByRole('button', { name: 'Import Workflow' })
   await expect(importButton).toBeVisible()
+  await expect(importButton).toHaveText('')
+  await expect(importButton.locator('svg')).toBeVisible()
   const exportButton = page.getByRole('button', { name: 'Export Workflow' })
   await expect(exportButton).toBeVisible()
+  await expect(exportButton).toHaveText('')
+  await expect(exportButton.locator('svg')).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await exportButton.click()
   const download = await downloadPromise

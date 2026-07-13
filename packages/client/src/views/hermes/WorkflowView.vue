@@ -2157,8 +2157,34 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             {{ showWorkflowRunsPanel ? t('workflow.runs.hide') : t('workflow.runs.show') }}
           </NTooltip>
           <input ref="workflowImportInputRef" class="workflow-import-input" type="file" accept="application/json,.json" @change="handleWorkflowImport" />
-          <NButton v-if="!selectedWorkflowRunId" quaternary size="small" @click="openWorkflowImport">{{ t('workflow.actions.importWorkflow') }}</NButton>
-          <NButton v-if="!selectedWorkflowRunId" quaternary size="small" :disabled="!activeWorkflowId" @click="exportActiveWorkflow">{{ t('workflow.actions.exportWorkflow') }}</NButton>
+          <NTooltip v-if="!selectedWorkflowRunId" trigger="hover">
+            <template #trigger>
+              <NButton quaternary size="small" circle :aria-label="t('workflow.actions.importWorkflow')" @click="openWorkflowImport">
+                <template #icon>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3v11" />
+                    <path d="m8 10 4 4 4-4" />
+                    <path d="M5 15v4h14v-4" />
+                  </svg>
+                </template>
+              </NButton>
+            </template>
+            {{ t('workflow.actions.importWorkflow') }}
+          </NTooltip>
+          <NTooltip v-if="!selectedWorkflowRunId" trigger="hover">
+            <template #trigger>
+              <NButton quaternary size="small" circle :disabled="!activeWorkflowId" :aria-label="t('workflow.actions.exportWorkflow')" @click="exportActiveWorkflow">
+                <template #icon>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 16V5" />
+                    <path d="m8 9 4-4 4 4" />
+                    <path d="M5 15v4h14v-4" />
+                  </svg>
+                </template>
+              </NButton>
+            </template>
+            {{ t('workflow.actions.exportWorkflow') }}
+          </NTooltip>
           <NButton v-if="!selectedWorkflowRunId" quaternary size="small" :disabled="!lastCanvasTransaction" @click="undoLastCanvasTransaction">{{ t('workflow.actions.undo') }}</NButton>
           <NTooltip v-if="!selectedWorkflowRunId" trigger="hover">
             <template #trigger>
