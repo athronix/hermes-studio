@@ -107,7 +107,7 @@ export class MemoryService {
   ): Promise<MemoryContext> {
     if (!this.isEnabled || !this.store) return this.disabledContext()
     try {
-      const baseQuery = scopedQuery(identity, overrides)
+      const baseQuery = { ...overrides }
       const [latestSummary, recentMessages, relevantCandidates] = await Promise.all([
         this.store.getLatestSummary({ sessionId: identity.sessionId }),
         this.store.listRecentMessages({ sessionId: identity.sessionId, limit: this.recentMessageLimit }),
@@ -126,10 +126,7 @@ export class MemoryService {
       return {
         latestSummary,
         recentMessages,
-        activeTasks: nodes.filter(node => node.type === 'task'),
         relevantNodes: nodes,
-        constraints: nodes.filter(node => node.type === 'constraint' || node.type === 'correction'),
-        preferences: nodes.filter(node => node.type === 'preference'),
         usedMemoryIds: nodes.map(node => node.id),
         diagnostics: {
           enabled: true,
@@ -147,16 +144,16 @@ export class MemoryService {
 
   async search(identity: MemoryRuntimeIdentity, query: MemoryQuery): Promise<MemoryQueryResult> {
     if (!this.isEnabled || !this.store) return { exact: [], relevant: [], omitted: [] }
-    const scoped = scopedQuery(identity, query)
-    const candidates = await this.store.queryNodes({ ...scoped, queryText: undefined, limit: 150 })
+    void identity
+    const candidates = await this.store.queryNodes({ ...query, queryText: undefined, limit: 150 })
     const exactCandidates = query.key || query.valueJson !== undefined ? candidates : []
     return resolveMemoryQuery(exactCandidates, candidates, query.queryText, query.limit ?? this.nodeLimit)
   }
 
   async get(id: string, identity?: Partial<MemoryRuntimeIdentity>): Promise<MemoryNode | undefined> {
     if (!this.isEnabled || !this.store) return undefined
-    const node = await this.store.getNode(id)
-    return node && isNodeAccessible(node, identity) ? node : undefined
+    void identity
+    return this.store.getNode(id)
   }
 
   async proposeUpdate(input: MemoryProposeUpdateInput): Promise<MemoryProposeUpdateResult> {
@@ -181,8 +178,6 @@ export class MemoryService {
     }
     const normalized = normalizeMemoryNode({
       draft: input.node,
-      identity: input.identity,
-      explicitUserIntent: input.explicitUserIntent,
     })
     if (!normalized.accepted) return normalized
     const now = new Date().toISOString()
@@ -190,12 +185,8 @@ export class MemoryService {
 
     const candidates = node.key
       ? await this.store.queryNodes({
-          ...scopedQuery(input.identity as MemoryRuntimeIdentity, {
-            scopes: [node.scope],
-            domain: node.domain,
-            key: node.key,
-            includeExpired: false,
-          }),
+          key: node.key,
+          includeExpired: false,
           limit: 20,
         })
       : []
@@ -214,10 +205,7 @@ export class MemoryService {
       targetId = conflictingCandidates[0].id
     }
     if (!targetId && input.operation === 'create' && conflictingCandidates.length) {
-      if (!input.explicitUserIntent || conflictingCandidates.length !== 1) {
-        return { accepted: false, reason: 'Conflicting active memory requires explicit supersede.' }
-      }
-      targetId = conflictingCandidates[0].id
+      return { accepted: false, reason: 'Conflicting long-term memory requires an explicit supersede operation.' }
     }
 
     if (targetId) {
@@ -234,12 +222,12 @@ export class MemoryService {
 
     await this.store.upsertNode(node, {
       eventType: 'create',
-      sessionId: node.sessionId,
-      workspaceId: node.workspaceId,
-      userId: node.userId,
+      sessionId: input.identity?.sessionId,
+      workspaceId: input.identity?.workspaceId,
+      userId: input.identity?.userId,
       actor,
       reason: input.reason,
-      payload: { scope: node.scope, type: node.type, key: node.key },
+      payload: { key: node.key },
     })
     return { accepted: true, nodeId: node.id }
   }
@@ -249,21 +237,17 @@ export class MemoryService {
     if (!this.isEnabled || !this.store) {
       return { deletedIds: [], mode, reason: 'Memory store is disabled.' }
     }
-    if (!input.id && !input.scope && !input.domain && !input.type && !input.key && input.valueJson === undefined) {
+    if (!input.id && !input.key && input.valueJson === undefined) {
       return { deletedIds: [], mode, reason: 'A memory selector is required.' }
     }
     const candidates = input.id
       ? [await this.get(input.id, input.identity)].filter((node): node is MemoryNode => Boolean(node))
-      : await this.store.queryNodes(scopedQuery(input.identity as MemoryRuntimeIdentity, {
-          scopes: input.scope ? [input.scope] : undefined,
-          domain: input.domain,
-          categoryPathPrefix: input.categoryPathPrefix,
-          types: input.type ? [input.type] : undefined,
+      : await this.store.queryNodes({
           key: input.key,
           valueJson: input.valueJson,
           includeExpired: true,
           limit: 100,
-        }))
+        })
     if (!candidates.length) return { deletedIds: [], mode, reason: 'No matching memory was found.' }
     if ((!input.confirmed && candidates.length > 1) || (mode === 'hard' && !input.confirmed)) {
       return {
@@ -350,7 +334,6 @@ export class MemoryService {
         },
         reason: operation.reason,
         actor: 'memory-extractor',
-        explicitUserIntent: operation.explicitUserIntent,
         identity,
       })
     }
@@ -435,22 +418,6 @@ export class MemoryService {
   }
 }
 
-function scopedQuery(identity: Partial<MemoryRuntimeIdentity> | undefined, overrides: Partial<MemoryQuery>): MemoryQuery {
-  const scopes = overrides.scopes || [
-    ...(identity?.sessionId ? ['session' as const] : []),
-    ...(identity?.workspaceId ? ['workspace' as const] : []),
-    ...(identity?.userId ? ['user' as const] : []),
-    'global' as const,
-  ]
-  return {
-    ...overrides,
-    sessionId: identity?.sessionId,
-    workspaceId: identity?.workspaceId,
-    userId: identity?.userId,
-    scopes,
-  }
-}
-
 function deterministicMessageId(sessionId: string, occurrence: number, message: MemoryCaptureMessage): string {
   return createHash('sha256')
     .update(sessionId)
@@ -481,8 +448,6 @@ function buildSummary(
   messages: MemoryMessage[],
   extraction: MemoryExtraction,
 ): MemorySummary {
-  const userText = messages.filter(message => message.role === 'user').map(message => message.content)
-  const assistantText = messages.filter(message => message.role === 'assistant').map(message => message.content)
   const now = new Date().toISOString()
   return {
     id: randomUUID(),
@@ -491,43 +456,15 @@ function buildSummary(
     fromMessageId: messages[0].id,
     toMessageId: messages.at(-1)!.id,
     summary: extraction.summaryPatch!,
-    currentGoal: extraction.currentGoal,
-    constraints: extraction.constraints ?? collectMatches(userText, /(?:必须|不要|不能|constraint)[:：]?\s*([^。\n]+)/gi),
-    preferences: extraction.preferences ?? collectMatches(userText, /(?:喜欢|偏好|prefer)[:：]?\s*([^。\n]+)/gi),
-    decisions: extraction.decisions ?? collectMatches(userText, /(?:决定|采用|decision)[:：]?\s*([^。\n]+)/gi),
-    completedWork: extraction.completedWork ?? collectMatches(assistantText, /(?:已完成|完成了|completed)[:：]?\s*([^。\n]+)/gi),
-    pendingWork: extraction.pendingWork ?? collectMatches([...userText, ...assistantText], /(?:待办|下一步|pending)[:：]?\s*([^。\n]+)/gi),
-    knownIssues: extraction.knownIssues ?? collectMatches([...userText, ...assistantText], /(?:问题|错误|issue)[:：]?\s*([^。\n]+)/gi),
     createdAt: now,
   }
-}
-
-function collectMatches(values: string[], pattern: RegExp): string[] {
-  const output = new Set<string>()
-  for (const value of values) {
-    pattern.lastIndex = 0
-    for (const match of value.matchAll(pattern)) {
-      if (match[1]?.trim()) output.add(match[1].trim())
-    }
-  }
-  return [...output].slice(0, 10)
 }
 
 function emptyContext(diagnostics: MemoryContext['diagnostics']): MemoryContext {
   return {
     recentMessages: [],
-    activeTasks: [],
     relevantNodes: [],
-    constraints: [],
-    preferences: [],
     usedMemoryIds: [],
     diagnostics,
   }
-}
-
-function isNodeAccessible(node: MemoryNode, identity: Partial<MemoryRuntimeIdentity> | undefined): boolean {
-  if (node.scope === 'global') return true
-  if (node.scope === 'session') return Boolean(identity?.sessionId && identity.sessionId === node.sessionId)
-  if (node.scope === 'workspace') return Boolean(identity?.workspaceId && identity.workspaceId === node.workspaceId)
-  return Boolean(identity?.userId && identity.userId === node.userId)
 }

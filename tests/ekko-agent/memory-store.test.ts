@@ -31,12 +31,6 @@ describe('SqliteMemoryStore', () => {
       fromMessageId: 'm1',
       toMessageId: 'm2',
       summary: 'first chain',
-      constraints: [],
-      preferences: [],
-      decisions: [],
-      completedWork: [],
-      pendingWork: [],
-      knownIssues: [],
       createdAt: '2026-01-01T00:00:02.000Z',
     })
 
@@ -47,20 +41,16 @@ describe('SqliteMemoryStore', () => {
     await expect(store.getLatestSummary({ sessionId: 's1' })).resolves.toMatchObject({ id: 'summary-1' })
   })
 
-  it('isolates scopes and excludes expired nodes by default', async () => {
-    await store.upsertNode(memoryNode('workspace-a', { scope: 'workspace', workspaceId: '/a' }))
-    await store.upsertNode(memoryNode('workspace-b', { scope: 'workspace', workspaceId: '/b' }))
+  it('uses one flat long-term pool and excludes expired nodes by default', async () => {
+    await store.upsertNode(memoryNode('memory-a'))
+    await store.upsertNode(memoryNode('memory-b'))
     await store.upsertNode(memoryNode('expired', {
-      scope: 'workspace',
-      workspaceId: '/a',
       expiresAt: '2020-01-01T00:00:00.000Z',
     }))
 
-    await expect(store.queryNodes({ scopes: ['workspace'], workspaceId: '/a' })).resolves.toMatchObject([
-      { id: 'workspace-a' },
-    ])
-    expect((await store.queryNodes({ scopes: ['workspace'], workspaceId: '/a', includeExpired: true })).map(node => node.id).sort())
-      .toEqual(['expired', 'workspace-a'])
+    expect((await store.queryNodes({})).map(node => node.id).sort()).toEqual(['memory-a', 'memory-b'])
+    expect((await store.queryNodes({ includeExpired: true })).map(node => node.id).sort())
+      .toEqual(['expired', 'memory-a', 'memory-b'])
   })
 
   it('atomically supersedes nodes and supports soft and hard deletion', async () => {
@@ -97,11 +87,6 @@ describe('SqliteMemoryStore', () => {
 function memoryNode(id: string, overrides: Partial<MemoryNode> = {}): MemoryNode {
   return {
     id,
-    sessionId: 's1',
-    scope: 'session',
-    domain: 'general',
-    categoryPath: ['general'],
-    type: 'preference',
     key: 'style',
     valueJson: id,
     title: id,
@@ -109,8 +94,6 @@ function memoryNode(id: string, overrides: Partial<MemoryNode> = {}): MemoryNode
     status: 'active',
     confidence: 0.9,
     importance: 0.8,
-    tags: [],
-    entities: [],
     sourceMessageIds: [],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',

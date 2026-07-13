@@ -1,18 +1,5 @@
-export const MEMORY_SCOPES = ['session', 'workspace', 'user', 'global'] as const
-export const MEMORY_NODE_TYPES = [
-  'preference',
-  'fact',
-  'decision',
-  'task',
-  'recipe',
-  'skill',
-  'constraint',
-  'correction',
-] as const
 export const MEMORY_NODE_STATUSES = ['active', 'superseded', 'expired', 'deleted'] as const
 
-export type MemoryScope = typeof MEMORY_SCOPES[number]
-export type MemoryNodeType = typeof MEMORY_NODE_TYPES[number]
 export type MemoryNodeStatus = typeof MEMORY_NODE_STATUSES[number]
 export type MemoryMessageRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -33,13 +20,6 @@ export interface MemorySummary {
   fromMessageId: string
   toMessageId: string
   summary: string
-  currentGoal?: string
-  constraints: string[]
-  preferences: string[]
-  decisions: string[]
-  completedWork: string[]
-  pendingWork: string[]
-  knownIssues: string[]
   createdAt: string
 }
 
@@ -47,13 +27,6 @@ export interface MemoryNode {
   id: string
   parentId?: string
   supersedesId?: string
-  sessionId?: string
-  workspaceId?: string
-  userId?: string
-  scope: MemoryScope
-  domain: string
-  categoryPath: string[]
-  type: MemoryNodeType
   key?: string
   valueJson?: unknown
   title: string
@@ -61,8 +34,6 @@ export interface MemoryNode {
   status: MemoryNodeStatus
   confidence: number
   importance: number
-  tags: string[]
-  entities: string[]
   sourceMessageIds: string[]
   createdAt: string
   updatedAt: string
@@ -83,17 +54,8 @@ export interface MemoryAuditEvent {
 }
 
 export interface MemoryQuery {
-  userId?: string
-  workspaceId?: string
-  sessionId?: string
-  scopes?: MemoryScope[]
-  domain?: string
-  categoryPathPrefix?: string[]
-  types?: MemoryNodeType[]
   key?: string
   valueJson?: unknown
-  tags?: string[]
-  entities?: string[]
   queryText?: string
   includeExpired?: boolean
   limit?: number
@@ -123,10 +85,7 @@ export interface MemoryContextDiagnostics {
 export interface MemoryContext {
   latestSummary?: MemorySummary
   recentMessages: MemoryMessage[]
-  activeTasks: MemoryNode[]
   relevantNodes: MemoryNode[]
-  constraints: MemoryNode[]
-  preferences: MemoryNode[]
   usedMemoryIds: string[]
   diagnostics: MemoryContextDiagnostics
 }
@@ -147,18 +106,10 @@ export interface MemoryExtractionOperation {
   targetId?: string
   node: Partial<MemoryNode>
   reason: string
-  explicitUserIntent?: boolean
 }
 
 export interface MemoryExtraction {
   summaryPatch?: string
-  currentGoal?: string
-  constraints?: string[]
-  preferences?: string[]
-  decisions?: string[]
-  completedWork?: string[]
-  pendingWork?: string[]
-  knownIssues?: string[]
   nodes: MemoryExtractionOperation[]
   forceSummary?: boolean
   fallbackReason?: string
@@ -174,7 +125,6 @@ export interface MemoryProposeUpdateInput {
   node: Partial<MemoryNode>
   reason: string
   actor?: string
-  explicitUserIntent?: boolean
   identity?: Partial<MemoryRuntimeIdentity>
 }
 
@@ -186,10 +136,6 @@ export interface MemoryProposeUpdateResult {
 
 export interface MemoryForgetInput {
   id?: string
-  scope?: MemoryScope
-  domain?: string
-  categoryPathPrefix?: string[]
-  type?: MemoryNodeType
   key?: string
   valueJson?: unknown
   mode?: 'soft' | 'hard'

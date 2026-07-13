@@ -34,13 +34,6 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
         from_message_id TEXT NOT NULL,
         to_message_id TEXT NOT NULL,
         summary TEXT NOT NULL,
-        current_goal TEXT,
-        constraints_json TEXT NOT NULL DEFAULT '[]',
-        preferences_json TEXT NOT NULL DEFAULT '[]',
-        decisions_json TEXT NOT NULL DEFAULT '[]',
-        completed_work_json TEXT NOT NULL DEFAULT '[]',
-        pending_work_json TEXT NOT NULL DEFAULT '[]',
-        known_issues_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS memory_nodes (
@@ -48,14 +41,6 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
         id TEXT NOT NULL UNIQUE,
         parent_id TEXT,
         supersedes_id TEXT,
-        session_id TEXT,
-        workspace_id TEXT,
-        user_id TEXT,
-        scope TEXT NOT NULL,
-        domain TEXT NOT NULL,
-        category_path_json TEXT NOT NULL,
-        category_path_text TEXT NOT NULL,
-        type TEXT NOT NULL,
         key TEXT,
         value_json TEXT,
         title TEXT NOT NULL,
@@ -63,8 +48,6 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
         status TEXT NOT NULL,
         confidence REAL NOT NULL,
         importance REAL NOT NULL,
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        entities_json TEXT NOT NULL DEFAULT '[]',
         source_message_ids_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -100,17 +83,9 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
       CREATE INDEX IF NOT EXISTS idx_memory_summaries_session_created
         ON memory_summaries (session_id, row_id);
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_lookup
-        ON memory_nodes (scope, status, domain, type, importance, updated_at);
+        ON memory_nodes (status, importance, updated_at);
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_key
-        ON memory_nodes (scope, status, domain, type, key, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_memory_nodes_category
-        ON memory_nodes (category_path_text);
-      CREATE INDEX IF NOT EXISTS idx_memory_nodes_session
-        ON memory_nodes (session_id, status, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_memory_nodes_workspace
-        ON memory_nodes (workspace_id, status, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_memory_nodes_user
-        ON memory_nodes (user_id, status, updated_at);
+        ON memory_nodes (status, key, updated_at);
       CREATE INDEX IF NOT EXISTS idx_memory_audit_events_node
         ON memory_audit_events (node_id, row_id);
     `)
@@ -174,10 +149,8 @@ export class SqliteMemoryStore implements MemoryStore {
   async appendSummary(summary: MemorySummary): Promise<void> {
     this.db.prepare(`
       INSERT INTO memory_summaries (
-        id, session_id, parent_summary_id, from_message_id, to_message_id, summary,
-        current_goal, constraints_json, preferences_json, decisions_json,
-        completed_work_json, pending_work_json, known_issues_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, session_id, parent_summary_id, from_message_id, to_message_id, summary, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       summary.id,
       summary.sessionId,
@@ -185,13 +158,6 @@ export class SqliteMemoryStore implements MemoryStore {
       summary.fromMessageId,
       summary.toMessageId,
       summary.summary,
-      summary.currentGoal ?? null,
-      JSON.stringify(summary.constraints),
-      JSON.stringify(summary.preferences),
-      JSON.stringify(summary.decisions),
-      JSON.stringify(summary.completedWork),
-      JSON.stringify(summary.pendingWork),
-      JSON.stringify(summary.knownIssues),
       summary.createdAt,
     )
   }
@@ -276,12 +242,6 @@ export class SqliteMemoryStore implements MemoryStore {
       clauses.push("status = 'active' AND (expires_at IS NULL OR expires_at > ?)")
       params.push(new Date().toISOString())
     }
-    if (query.scopes?.length) addScopeClause(clauses, params, query)
-    if (query.domain) {
-      clauses.push('domain = ?')
-      params.push(query.domain)
-    }
-    if (query.types?.length) addInClause(clauses, params, 'type', query.types)
     if (query.key) {
       clauses.push('key = ?')
       params.push(query.key)
@@ -290,15 +250,10 @@ export class SqliteMemoryStore implements MemoryStore {
       clauses.push('value_json = ?')
       params.push(stableJson(query.valueJson))
     }
-    if (query.categoryPathPrefix?.length) {
-      const path = categoryPathText(query.categoryPathPrefix)
-      clauses.push('(category_path_text = ? OR category_path_text LIKE ?)')
-      params.push(path, `${escapeLike(path)}/%`)
-    }
     if (query.queryText?.trim()) {
       const pattern = `%${escapeLike(query.queryText.trim())}%`
-      clauses.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags_json LIKE ? ESCAPE '\\' OR entities_json LIKE ? ESCAPE '\\')")
-      params.push(pattern, pattern, pattern, pattern)
+      clauses.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')")
+      params.push(pattern, pattern)
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
     const rows = this.db.prepare(`
@@ -306,10 +261,7 @@ export class SqliteMemoryStore implements MemoryStore {
       ORDER BY importance DESC, confidence DESC, updated_at DESC
       LIMIT ?
     `).all(...params, boundedLimit(query.limit ?? 50, 200)) as Row[]
-    let nodes = rows.map(nodeFromRow)
-    if (query.tags?.length) nodes = nodes.filter(node => query.tags!.every(tag => node.tags.includes(tag)))
-    if (query.entities?.length) nodes = nodes.filter(node => query.entities!.every(entity => node.entities.includes(entity)))
-    return nodes
+    return rows.map(nodeFromRow)
   }
 
   async appendAuditEvent(event: MemoryAuditEvent): Promise<void> {
@@ -358,9 +310,7 @@ export class SqliteMemoryStore implements MemoryStore {
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_nodes_fts USING fts5(
           node_id UNINDEXED,
           title,
-          content,
-          tags,
-          entities
+          content
         )
       `)
       this.ftsEnabled = true
@@ -372,22 +322,13 @@ export class SqliteMemoryStore implements MemoryStore {
   private writeNode(node: MemoryNode): void {
     this.db.prepare(`
       INSERT INTO memory_nodes (
-        id, parent_id, supersedes_id, session_id, workspace_id, user_id, scope,
-        domain, category_path_json, category_path_text, type, key, value_json,
-        title, content, status, confidence, importance, tags_json, entities_json,
+        id, parent_id, supersedes_id, key, value_json,
+        title, content, status, confidence, importance,
         source_message_ids_json, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         parent_id = excluded.parent_id,
         supersedes_id = excluded.supersedes_id,
-        session_id = excluded.session_id,
-        workspace_id = excluded.workspace_id,
-        user_id = excluded.user_id,
-        scope = excluded.scope,
-        domain = excluded.domain,
-        category_path_json = excluded.category_path_json,
-        category_path_text = excluded.category_path_text,
-        type = excluded.type,
         key = excluded.key,
         value_json = excluded.value_json,
         title = excluded.title,
@@ -395,8 +336,6 @@ export class SqliteMemoryStore implements MemoryStore {
         status = excluded.status,
         confidence = excluded.confidence,
         importance = excluded.importance,
-        tags_json = excluded.tags_json,
-        entities_json = excluded.entities_json,
         source_message_ids_json = excluded.source_message_ids_json,
         updated_at = excluded.updated_at,
         expires_at = excluded.expires_at
@@ -409,8 +348,8 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.prepare('DELETE FROM memory_nodes_fts WHERE node_id = ?').run(node.id)
     if (node.status !== 'active') return
     this.db.prepare(
-      'INSERT INTO memory_nodes_fts (node_id, title, content, tags, entities) VALUES (?, ?, ?, ?, ?)',
-    ).run(node.id, node.title, node.content, node.tags.join(' '), node.entities.join(' '))
+      'INSERT INTO memory_nodes_fts (node_id, title, content) VALUES (?, ?, ?)',
+    ).run(node.id, node.title, node.content)
   }
 
   private writeAudit(event: MemoryAuditEvent): void {
@@ -438,14 +377,6 @@ function nodeValues(node: MemoryNode): SQLInputValue[] {
     node.id,
     node.parentId ?? null,
     node.supersedesId ?? null,
-    node.sessionId ?? null,
-    node.workspaceId ?? null,
-    node.userId ?? null,
-    node.scope,
-    node.domain,
-    JSON.stringify(node.categoryPath),
-    categoryPathText(node.categoryPath),
-    node.type,
     node.key ?? null,
     node.valueJson === undefined ? null : stableJson(node.valueJson),
     node.title,
@@ -453,8 +384,6 @@ function nodeValues(node: MemoryNode): SQLInputValue[] {
     node.status,
     node.confidence,
     node.importance,
-    JSON.stringify(node.tags),
-    JSON.stringify(node.entities),
     JSON.stringify(node.sourceMessageIds),
     node.createdAt,
     node.updatedAt,
@@ -482,13 +411,6 @@ function summaryFromRow(row: Row): MemorySummary {
     fromMessageId: String(row.from_message_id),
     toMessageId: String(row.to_message_id),
     summary: String(row.summary),
-    currentGoal: optionalString(row.current_goal),
-    constraints: parseStringArray(row.constraints_json),
-    preferences: parseStringArray(row.preferences_json),
-    decisions: parseStringArray(row.decisions_json),
-    completedWork: parseStringArray(row.completed_work_json),
-    pendingWork: parseStringArray(row.pending_work_json),
-    knownIssues: parseStringArray(row.known_issues_json),
     createdAt: String(row.created_at),
   }
 }
@@ -498,13 +420,6 @@ function nodeFromRow(row: Row): MemoryNode {
     id: String(row.id),
     parentId: optionalString(row.parent_id),
     supersedesId: optionalString(row.supersedes_id),
-    sessionId: optionalString(row.session_id),
-    workspaceId: optionalString(row.workspace_id),
-    userId: optionalString(row.user_id),
-    scope: String(row.scope) as MemoryNode['scope'],
-    domain: String(row.domain),
-    categoryPath: parseStringArray(row.category_path_json),
-    type: String(row.type) as MemoryNode['type'],
     key: optionalString(row.key),
     valueJson: parseJsonValue(row.value_json),
     title: String(row.title),
@@ -512,8 +427,6 @@ function nodeFromRow(row: Row): MemoryNode {
     status: String(row.status) as MemoryNode['status'],
     confidence: Number(row.confidence),
     importance: Number(row.importance),
-    tags: parseStringArray(row.tags_json),
-    entities: parseStringArray(row.entities_json),
     sourceMessageIds: parseStringArray(row.source_message_ids_json),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -532,9 +445,6 @@ function auditForNode(
     id: randomUUID(),
     eventType,
     nodeId: node.id,
-    sessionId: node.sessionId,
-    workspaceId: node.workspaceId,
-    userId: node.userId,
     actor,
     reason,
     payload,
@@ -542,37 +452,9 @@ function auditForNode(
   }
 }
 
-function categoryPathText(path: string[]): string {
-  return path.map(part => part.trim()).filter(Boolean).join('/')
-}
-
 function boundedLimit(value: number, maximum: number): number {
   if (!Number.isFinite(value)) return Math.min(20, maximum)
   return Math.max(1, Math.min(Math.floor(value), maximum))
-}
-
-function addInClause(clauses: string[], params: SQLInputValue[], column: string, values: readonly string[]): void {
-  clauses.push(`${column} IN (${values.map(() => '?').join(', ')})`)
-  params.push(...values)
-}
-
-function addScopeClause(clauses: string[], params: SQLInputValue[], query: MemoryQuery): void {
-  const options: string[] = []
-  for (const scope of query.scopes || []) {
-    if (scope === 'session' && query.sessionId) {
-      options.push("(scope = 'session' AND session_id = ?)")
-      params.push(query.sessionId)
-    } else if (scope === 'workspace' && query.workspaceId) {
-      options.push("(scope = 'workspace' AND workspace_id = ?)")
-      params.push(query.workspaceId)
-    } else if (scope === 'user' && query.userId) {
-      options.push("(scope = 'user' AND user_id = ?)")
-      params.push(query.userId)
-    } else if (scope === 'global') {
-      options.push("scope = 'global'")
-    }
-  }
-  clauses.push(options.length ? `(${options.join(' OR ')})` : '0 = 1')
 }
 
 function stableJson(value: unknown): string {

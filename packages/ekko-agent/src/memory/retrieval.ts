@@ -1,12 +1,5 @@
-import type { MemoryNode, MemoryOmissionReason, MemoryQueryResult, MemoryScope } from './types'
+import type { MemoryNode, MemoryOmissionReason, MemoryQueryResult } from './types'
 import { memoryConflictKey } from './schema'
-
-const SCOPE_PRIORITY: Record<MemoryScope, number> = {
-  session: 4,
-  workspace: 3,
-  user: 2,
-  global: 1,
-}
 
 export function resolveMemoryQuery(
   exactCandidates: MemoryNode[],
@@ -39,10 +32,6 @@ export function resolveMemoryQuery(
 }
 
 export function compareMemoryNodes(left: MemoryNode, right: MemoryNode): number {
-  if (left.type === 'correction' && right.type !== 'correction') return -1
-  if (right.type === 'correction' && left.type !== 'correction') return 1
-  const scopeDifference = SCOPE_PRIORITY[right.scope] - SCOPE_PRIORITY[left.scope]
-  if (scopeDifference) return scopeDifference
   const updatedDifference = Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
   if (updatedDifference) return updatedDifference
   const confidenceDifference = right.confidence - left.confidence
@@ -55,15 +44,9 @@ export function relevanceScore(node: MemoryNode, queryText: string): number {
   if (!tokens.length) return node.importance * 2 + node.confidence
   const title = node.title.toLowerCase()
   const content = node.content.toLowerCase()
-  const tags = node.tags.join(' ').toLowerCase()
-  const entities = node.entities.join(' ').toLowerCase()
-  const category = node.categoryPath.join('/').toLowerCase()
   let score = 0
   for (const token of tokens) {
     if (title.includes(token)) score += 5
-    if (entities.includes(token)) score += 4
-    if (tags.includes(token)) score += 3
-    if (category.includes(token)) score += 2
     if (content.includes(token)) score += 2
   }
   return score + node.importance * 2 + node.confidence
