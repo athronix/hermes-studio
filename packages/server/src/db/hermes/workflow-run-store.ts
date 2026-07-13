@@ -32,6 +32,12 @@ export interface WorkflowRunLoopEpochRecord {
   status: 'completed' | 'failed' | 'canceled' | 'timed_out' | 'approval_rejected'; exit_reason: string | null; sequence: number; started_at: number; finished_at: number
 }
 
+export interface WorkflowRunWithEvidenceRecord extends WorkflowRunRecord {
+  node_sessions: WorkflowRunNodeSessionRecord[]
+  edge_evaluations: WorkflowRunEdgeEvaluationRecord[]
+  loop_epochs: WorkflowRunLoopEpochRecord[]
+}
+
 export interface WorkflowRunNodeSessionRecord {
   id: string
   run_id: string
@@ -39,6 +45,7 @@ export interface WorkflowRunNodeSessionRecord {
   node_id: string
   execution_id: string
   iteration_path: unknown[]
+  consumed_edge_evaluation_ids: string[]
   session_id: string
   profile: string
   agent: string
@@ -93,6 +100,7 @@ function rowToNodeSessionRecord(row: Record<string, any>): WorkflowRunNodeSessio
     node_id: String(row.node_id || ''),
     execution_id: String(row.execution_id || row.node_id || ''),
     iteration_path: parseArrayJson(row.iteration_path_json ?? row.iteration_path),
+    consumed_edge_evaluation_ids: parseArrayJson(row.consumed_edge_evaluation_ids_json ?? row.consumed_edge_evaluation_ids).map(String),
     session_id: String(row.session_id || ''),
     profile: profileName(row.profile),
     agent: String(row.agent || ''),
@@ -124,7 +132,8 @@ function rowToEdgeEvaluationRecord(row: Record<string, any>): WorkflowRunEdgeEva
 
 export function createWorkflowRunEdgeEvaluation(input: Omit<WorkflowRunEdgeEvaluationRecord, 'id' | 'evaluated_at' | 'source_execution_id' | 'iteration_path'> & { id?: string; evaluated_at?: number; source_execution_id?: string; iteration_path?: unknown[] }): WorkflowRunEdgeEvaluationRecord {
   const run = getWorkflowRun(input.run_id)
-  if (run && run.status !== 'queued' && run.status !== 'running') throw new Error(`cannot append edge evidence to terminal workflow run ${input.run_id}`)
+  if (!run) throw new Error(`cannot append edge evidence to missing workflow run ${input.run_id}`)
+  if (run.status !== 'queued' && run.status !== 'running') throw new Error(`cannot append edge evidence to terminal workflow run ${input.run_id}`)
   const record = { ...input, id: input.id?.trim() || randomUUID(), source_execution_id: input.source_execution_id?.trim() || input.source_node_id, iteration_path: input.iteration_path || [], reason: input.reason ?? null, evaluated_at: input.evaluated_at ?? Date.now() } as WorkflowRunEdgeEvaluationRecord
   const row = { ...record, iteration_path_json: JSON.stringify(record.iteration_path), orchestration_json: JSON.stringify(record.orchestration), condition_evaluation_json: record.condition_evaluation == null ? null : JSON.stringify(record.condition_evaluation) }
   const db = getDb()
@@ -159,12 +168,14 @@ function insertWorkflowRunLoopEpoch(input: WorkflowRunLoopEpochInput): WorkflowR
 
 export function createWorkflowRunLoopEpoch(input: WorkflowRunLoopEpochInput): WorkflowRunLoopEpochRecord {
   const run = getWorkflowRun(input.run_id)
-  const isCanceledTerminalEvidence = run?.status === 'canceled' && input.status === 'canceled'
-  if (run && run.status !== 'queued' && run.status !== 'running' && !isCanceledTerminalEvidence) throw new Error(`cannot append loop evidence to terminal workflow run ${input.run_id}`)
+  if (!run) throw new Error(`cannot append loop evidence to missing workflow run ${input.run_id}`)
+  const isCanceledTerminalEvidence = run.status === 'canceled' && input.status === 'canceled'
+  if (run.status !== 'queued' && run.status !== 'running' && !isCanceledTerminalEvidence) throw new Error(`cannot append loop evidence to terminal workflow run ${input.run_id}`)
   return insertWorkflowRunLoopEpoch(input)
 }
 
 export function createWorkflowRunRecoveryLoopEpoch(input: WorkflowRunLoopEpochInput): WorkflowRunLoopEpochRecord {
+  if (!getWorkflowRun(input.run_id)) throw new Error(`cannot append recovery loop evidence to missing workflow run ${input.run_id}`)
   return insertWorkflowRunLoopEpoch(input)
 }
 
@@ -293,6 +304,26 @@ export function getWorkflowRun(id: string): WorkflowRunRecord | null {
   return row ? rowToRunRecord(row) : null
 }
 
+/** Load the complete append-only execution evidence contract or fail the read. */
+export function getWorkflowRunWithEvidence(id: string): WorkflowRunWithEvidenceRecord | null {
+  const run = getWorkflowRun(id)
+  if (!run) return null
+  return {
+    ...run,
+    node_sessions: listWorkflowRunNodeSessions(id),
+    edge_evaluations: listWorkflowRunEdgeEvaluations(id),
+    loop_epochs: listWorkflowRunLoopEpochs(id),
+  }
+}
+
+export function listWorkflowRunsWithEvidence(workflowId?: string | null, limit = 100): WorkflowRunWithEvidenceRecord[] {
+  return listWorkflowRuns(workflowId, limit).map(run => {
+    const hydrated = getWorkflowRunWithEvidence(run.id)
+    if (!hydrated) throw new Error(`workflow run ${run.id} disappeared while loading evidence`)
+    return hydrated
+  })
+}
+
 export function deleteWorkflowRun(id: string): boolean {
   const existing = getWorkflowRun(id)
   if (!existing) return false
@@ -381,6 +412,7 @@ export function createWorkflowRunNodeSession(input: {
   node_id: string
   execution_id?: string
   iteration_path?: unknown[]
+  consumed_edge_evaluation_ids?: string[]
   session_id: string
   profile?: string | null
   agent?: string | null
@@ -391,6 +423,11 @@ export function createWorkflowRunNodeSession(input: {
   finished_at?: number | null
   error?: string | null
 }): WorkflowRunNodeSessionRecord {
+  const run = getWorkflowRun(input.run_id)
+  if (!run) throw new Error(`cannot create node execution for missing workflow run ${input.run_id}`)
+  if (run.status !== 'queued' && run.status !== 'running') {
+    throw new Error(`cannot create node execution for terminal workflow run ${input.run_id}`)
+  }
   const now = Date.now()
   const record: WorkflowRunNodeSessionRecord = {
     id: input.id?.trim() || randomUUID(),
@@ -399,6 +436,7 @@ export function createWorkflowRunNodeSession(input: {
     node_id: input.node_id,
     execution_id: input.execution_id?.trim() || input.node_id,
     iteration_path: input.iteration_path || [],
+    consumed_edge_evaluation_ids: input.consumed_edge_evaluation_ids || [],
     session_id: input.session_id,
     profile: profileName(input.profile),
     agent: input.agent?.trim() || '',
@@ -418,9 +456,9 @@ export function createWorkflowRunNodeSession(input: {
   }
   db.prepare(`
     INSERT INTO ${WORKFLOW_RUN_NODE_SESSIONS_TABLE} (
-      id, run_id, workflow_id, node_id, execution_id, iteration_path_json, session_id, profile, agent, agent_mode,
+      id, run_id, workflow_id, node_id, execution_id, iteration_path_json, consumed_edge_evaluation_ids_json, session_id, profile, agent, agent_mode,
       status, sequence, started_at, finished_at, created_at, updated_at, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id,
     record.run_id,
@@ -428,6 +466,7 @@ export function createWorkflowRunNodeSession(input: {
     record.node_id,
     record.execution_id,
     JSON.stringify(record.iteration_path),
+    JSON.stringify(record.consumed_edge_evaluation_ids),
     record.session_id,
     record.profile,
     record.agent,

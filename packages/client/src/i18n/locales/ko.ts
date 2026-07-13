@@ -2036,6 +2036,10 @@ export default {
   },
 
   workflow: {
+    actions: { importWorkflow: 'Workflow 가져오기', exportWorkflow: 'Workflow 내보내기', imported: 'Workflow를 가져왔습니다', exported: 'Workflow를 내보냈습니다', importFailed: 'Workflow 가져오기에 실패했습니다', exportFailed: 'Workflow 내보내기에 실패했습니다' },
+    stats: { nodes: '노드', edges: '연결' },
+    evidence: { title: '실행 증거', empty: '기록된 실행 증거가 없습니다', loadFailed: '저장된 실행 증거를 불러오지 못했습니다', node: '노드', edge: '연결', loop: '루프' },
+    edgeEditor: { title: '연결 편집', route: '경로', conditionPath: '조건 경로', operator: '연산자', value: '값', feedback: '피드백 루프', maxIterations: '최대 반복 횟수', invalidIterations: '최대 반복 횟수는 1~100 사이의 정수여야 합니다', loopId: '루프 ID(선택)', loopIdPlaceholder: '안정된 식별자(예: review-loop)', invalidLoopId: '루프 ID 형식이 올바르지 않습니다', invalidConditionValue: '조건 값은 유효한 JSON이어야 합니다', conditionValuePlaceholder: 'JSON: "텍스트", 42, true, ["a"]' },
     node: {
       allowedToolsets: 'Allowed toolsets (empty = none)',
       allowedTools: 'Allowed tools (empty = none)',

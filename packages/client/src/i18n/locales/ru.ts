@@ -647,8 +647,8 @@ export default {
       importFailed: 'Ошибка импорта Workflow',
       exportFailed: 'Ошибка экспорта Workflow',
     },
-    evidence: { title: 'Доказательства выполнения', empty: 'Нет записей', node: 'Узел', edge: 'Ребро', loop: 'Цикл' },
-    edgeEditor: { title: 'Изменить соединение', route: 'Маршрут', conditionPath: 'Путь условия', operator: 'Оператор', value: 'Значение', feedback: 'Цикл обратной связи', maxIterations: 'Максимум итераций', invalidIterations: 'Число итераций должно быть целым от 1 до 100' },
+    evidence: { title: 'Доказательства выполнения', empty: 'Нет записей', loadFailed: 'Не удалось загрузить сохранённые доказательства выполнения', node: 'Узел', edge: 'Ребро', loop: 'Цикл' },
+    edgeEditor: { title: 'Изменить соединение', route: 'Маршрут', conditionPath: 'Путь условия', operator: 'Оператор', value: 'Значение', feedback: 'Цикл обратной связи', maxIterations: 'Максимум итераций', invalidIterations: 'Число итераций должно быть целым от 1 до 100', loopId: 'ID цикла (необязательно)', loopIdPlaceholder: 'Стабильный ID, например review-loop', invalidLoopId: 'Недопустимый ID цикла', invalidConditionValue: 'Значение условия должно быть корректным JSON', conditionValuePlaceholder: 'JSON: "текст", 42, true, ["a"]' },
     batch: {
       toggle: 'Массовый выбор',
       selectAll: 'Выбрать все',
@@ -694,6 +694,7 @@ export default {
       running: 'Выполняется',
       pending_approval: 'Ожидает одобрения',
       completed: 'Завершено',
+      skipped: 'Пропущено',
       failed: 'Ошибка',
       approval_rejected: 'Одобрение отклонено',
       canceled: 'Отменено',

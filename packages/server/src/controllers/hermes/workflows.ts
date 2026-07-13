@@ -1,10 +1,13 @@
 import type { Context } from 'koa'
-import { getWorkflowManager, type WorkflowRerunFromNodeInput, type WorkflowRunNowInput, type WorkflowUpdateInput } from '../../services/workflow-manager'
+import { assertWorkflowNodeSkillDependencies, getWorkflowManager, preflightWorkflowExecutionDefinition, preflightWorkflowRerunDefinition, type WorkflowRerunFromNodeInput, type WorkflowRunNowInput, type WorkflowUpdateInput } from '../../services/workflow-manager'
 import { listUserProfiles } from '../../db/hermes/users-store'
-import { listWorkflowRunEdgeEvaluations, listWorkflowRunLoopEpochs, listWorkflowRunNodeSessions, listWorkflowRuns } from '../../db/hermes/workflow-run-store'
+import { getWorkflowRunWithEvidence, listWorkflowRunsWithEvidence } from '../../db/hermes/workflow-run-store'
 import { logger } from '../../services/logger'
 import { compileWorkflowGraphPreflight } from '../../services/workflow-manager'
-import { confirmWorkflowImport, exportWorkflowDefinition, previewWorkflowImport } from '../../services/workflow-portability'
+import { cancelWorkflowImport, consumeWorkflowImportPreview, exportWorkflowDefinition, finalizeConsumedWorkflowImport, inspectWorkflowImportDocument, previewWorkflowImport } from '../../services/workflow-portability'
+import { assertWorkflowImportCapabilities, assertWorkflowImportToolCapabilities, workflowImportEnvironmentRevision, workflowImportRequestedToolsetGroups } from '../../services/workflow-import-capabilities'
+import { getAvailableModelGroupsForProfile } from './models'
+import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
 
 const MAX_BATCH_DELETE = 200
 
@@ -122,6 +125,38 @@ function importOwnerId(ctx: Context): string {
   return String(ctx.state?.user?.id || 'anonymous')
 }
 
+async function workflowImportCapabilityContext(profile: string, nodes: unknown[]) {
+  const capabilityGroups = await getAvailableModelGroupsForProfile(profile)
+  const requestedToolsets = workflowImportRequestedToolsetGroups(nodes)
+  let toolGroups: Array<{ toolsets: string[] | null; tool_names: string[] }> = []
+  if (requestedToolsets.length > 0) {
+    try {
+      toolGroups = (await new AgentBridgeClient().workflowCapabilities(profile, requestedToolsets)).groups
+    } catch (err: any) {
+      throw Object.assign(new Error(`workflow execution-policy capabilities are unavailable for profile: ${err?.message || 'Agent Bridge unavailable'}`), { status: 409 })
+    }
+  }
+  return {
+    capabilityGroups,
+    toolGroups,
+    revision: workflowImportEnvironmentRevision(capabilityGroups, toolGroups),
+  }
+}
+
+async function assertWorkflowExecutionCapabilities(profile: string, nodes: unknown[]): Promise<void> {
+  const capabilities = await workflowImportCapabilityContext(profile, nodes)
+  assertWorkflowImportCapabilities(nodes, capabilities.capabilityGroups)
+  assertWorkflowImportToolCapabilities(nodes, capabilities.toolGroups)
+}
+
+function validateWorkflowDefinitionMutation(nodes: unknown[], edges: unknown[]): void {
+  if (nodes.length === 0) {
+    if (edges.length > 0) throw new Error('workflow edges require Agent nodes')
+    return
+  }
+  compileWorkflowGraphPreflight(nodes, edges)
+}
+
 export async function exportDefinition(ctx: Context) {
   const id = requiredId(ctx)
   if (!id) return
@@ -137,9 +172,31 @@ export async function previewImport(ctx: Context) {
   if (denyProfileAccess(ctx, profile)) return
   if (typeof body.document !== 'string') { ctx.status = 400; ctx.body = { error: 'document must be a JSON string' }; return }
   try {
-    const preview = previewWorkflowImport(body.document, { ownerId: importOwnerId(ctx), profile, validateGraph: compileWorkflowGraphPreflight })
+    const inspectGraph = (nodes: unknown[], edges: unknown[], starts?: string[]) => compileWorkflowGraphPreflight(nodes, edges, starts)
+    const inspected = inspectWorkflowImportDocument(body.document, inspectGraph)
+    const capabilities = await workflowImportCapabilityContext(profile, inspected.nodes)
+    const validateGraph = (nodes: unknown[], edges: unknown[], starts?: string[]) => {
+      const compiled = compileWorkflowGraphPreflight(nodes, edges, starts)
+      assertWorkflowImportCapabilities(compiled.nodes, capabilities.capabilityGroups)
+      assertWorkflowImportToolCapabilities(compiled.nodes, capabilities.toolGroups)
+      return compiled
+    }
+    validateGraph(inspected.nodes, inspected.edges)
+    await assertWorkflowNodeSkillDependencies(inspected.nodes as any, profile)
+    const preview = previewWorkflowImport(body.document, {
+      ownerId: importOwnerId(ctx), profile, environmentRevision: capabilities.revision, validateGraph,
+    })
     ctx.body = { ok: true, preview }
-  } catch (err: any) { ctx.status = 400; ctx.body = { error: err?.message || 'invalid workflow import' } }
+  } catch (err: any) { ctx.status = err?.status === 409 ? 409 : 400; ctx.body = { error: err?.message || 'invalid workflow import' } }
+}
+
+export async function cancelImport(ctx: Context) {
+  const body = bodyRecord(ctx)
+  const profile = requestedProfile(ctx, body) || 'default'
+  if (denyProfileAccess(ctx, profile)) return
+  if (typeof body.token !== 'string' || !body.token.trim()) { ctx.status = 400; ctx.body = { error: 'token is required' }; return }
+  cancelWorkflowImport(body.token.trim(), importOwnerId(ctx), profile)
+  ctx.body = { ok: true }
 }
 
 export async function confirmImport(ctx: Context) {
@@ -148,7 +205,18 @@ export async function confirmImport(ctx: Context) {
   if (denyProfileAccess(ctx, profile)) return
   if (typeof body.token !== 'string' || !body.token.trim()) { ctx.status = 400; ctx.body = { error: 'token is required' }; return }
   try {
-    const input = confirmWorkflowImport(body.token.trim(), { ownerId: importOwnerId(ctx), profile, validateGraph: compileWorkflowGraphPreflight })
+    const consumed = consumeWorkflowImportPreview(body.token.trim(), importOwnerId(ctx), profile)
+    const capabilities = await workflowImportCapabilityContext(profile, consumed.definition.nodes)
+    const validateGraph = (nodes: unknown[], edges: unknown[], starts?: string[]) => {
+      const compiled = compileWorkflowGraphPreflight(nodes, edges, starts)
+      assertWorkflowImportCapabilities(compiled.nodes, capabilities.capabilityGroups)
+      assertWorkflowImportToolCapabilities(compiled.nodes, capabilities.toolGroups)
+      return compiled
+    }
+    const input = finalizeConsumedWorkflowImport(consumed, {
+      ownerId: importOwnerId(ctx), profile, environmentRevision: capabilities.revision, validateGraph,
+    })
+    await assertWorkflowNodeSkillDependencies(input.nodes as any, profile)
     const workflow = getWorkflowManager().create(input)
     ctx.status = 201
     ctx.body = { ok: true, workflow }
@@ -190,15 +258,21 @@ export async function listRuns(ctx: Context) {
 
   const limitValue = firstQueryValue(ctx.query.limit as string | string[] | undefined)
   const limit = limitValue ? Number(limitValue) : 100
-  const runs = listWorkflowRuns(id, Number.isFinite(limit) ? limit : 100)
-  ctx.body = {
-    runs: runs.map(run => ({
-      ...run,
-      node_sessions: listWorkflowRunNodeSessions(run.id),
-      edge_evaluations: listWorkflowRunEdgeEvaluations(run.id),
-      loop_epochs: listWorkflowRunLoopEpochs(run.id),
-    })),
-  }
+  const runs = listWorkflowRunsWithEvidence(id, Number.isFinite(limit) ? limit : 100)
+  ctx.body = { runs }
+}
+
+export async function getRun(ctx: Context) {
+  const id = requiredId(ctx)
+  if (!id) return
+  const runId = typeof ctx.params?.runId === 'string' ? ctx.params.runId.trim() : ''
+  if (!runId) { ctx.status = 400; ctx.body = { error: 'runId is required' }; return }
+  const workflow = getWorkflowManager().get(id)
+  if (!workflow) { ctx.status = 404; ctx.body = { error: 'workflow not found' }; return }
+  if (denyProfileAccess(ctx, workflow.profile)) return
+  const run = getWorkflowRunWithEvidence(runId)
+  if (!run || run.workflow_id !== id) { ctx.status = 404; ctx.body = { error: 'workflow run not found' }; return }
+  ctx.body = { run }
 }
 
 export async function stopRun(ctx: Context) {
@@ -332,18 +406,45 @@ export async function rerunFromNode(ctx: Context) {
   if (timeoutMs.value !== undefined) runInput.timeoutMs = timeoutMs.value
 
   const manager = getWorkflowManager()
-  void manager.rerunFromNode(id, runId, nodeId, runInput).catch((err: any) => {
-    const message = err?.message || 'failed to rerun workflow'
-    logger.error(err, '[workflow] async rerun failed for workflow %s run %s node %s', id, runId, nodeId)
-    const currentStatus = manager.getRuntimeStatus(id)
-    manager.setRuntimeStatus(id, {
-      status: 'failed',
-      runId,
-      completedAt: Date.now(),
-      error: message,
-      nodeStatuses: { ...currentStatus.nodeStatuses },
+  try {
+    const frozenRun = getWorkflowRunWithEvidence(runId)
+    if (!frozenRun || frozenRun.workflow_id !== id) {
+      ctx.status = 404
+      ctx.body = { error: 'workflow run not found' }
+      return
+    }
+    if (frozenRun.status === 'queued' || frozenRun.status === 'running') {
+      ctx.status = 409
+      ctx.body = { error: 'workflow run is still active' }
+      return
+    }
+    const preflight = await preflightWorkflowRerunDefinition({
+      run: frozenRun,
+      nodeId,
+      profile: frozenRun.profile,
+      preserveStartNode: runInput.preserveStartNode,
     })
-  })
+    await assertWorkflowExecutionCapabilities(frozenRun.profile, preflight.activeNodes)
+    let accept!: (run: unknown) => void
+    const accepted = new Promise(resolve => { accept = resolve })
+    const execution = manager.rerunFromNode(id, runId, nodeId, {
+      ...runInput, onAccepted: accept,
+    })
+    await Promise.race([accepted, execution.then(result => result.run)])
+    void execution.catch((err: any) => {
+      const message = err?.message || 'failed to rerun workflow'
+      logger.error(err, '[workflow] async rerun failed for workflow %s run %s node %s', id, runId, nodeId)
+      const currentStatus = manager.getRuntimeStatus(id)
+      manager.setRuntimeStatus(id, {
+        status: 'failed', runId, completedAt: Date.now(), error: message,
+        nodeStatuses: { ...currentStatus.nodeStatuses },
+      })
+    })
+  } catch (err: any) {
+    ctx.status = err?.status === 409 ? 409 : 400
+    ctx.body = { error: err?.message || 'workflow rerun preflight failed' }
+    return
+  }
 
   ctx.status = 202
   ctx.body = { ok: true, status: 'accepted' }
@@ -368,6 +469,7 @@ export async function create(ctx: Context) {
   if (rejectBadRequest(ctx, workspace.error || nodes.error || edges.error || viewport.error)) return
 
   try {
+    validateWorkflowDefinitionMutation(nodes.value || [], edges.value || [])
     const workflow = getWorkflowManager().create({
       name,
       profile,
@@ -379,7 +481,7 @@ export async function create(ctx: Context) {
     ctx.status = 201
     ctx.body = { workflow }
   } catch (err: any) {
-    ctx.status = 500
+    ctx.status = err?.status === 409 ? 409 : 400
     ctx.body = { error: err?.message || 'failed to create workflow' }
   }
 }
@@ -416,6 +518,16 @@ export async function update(ctx: Context) {
   if (edges.value !== undefined) patch.edges = edges.value
   if (viewport.value !== undefined) patch.viewport = viewport.value
 
+  try {
+    validateWorkflowDefinitionMutation(
+      (patch.nodes ?? existing.nodes) as unknown[],
+      (patch.edges ?? existing.edges) as unknown[],
+    )
+  } catch (err: any) {
+    ctx.status = 400
+    ctx.body = { error: err?.message || 'invalid workflow definition' }
+    return
+  }
   const workflow = getWorkflowManager().update(id, patch)
   ctx.body = { workflow }
 }
@@ -503,15 +615,23 @@ export async function runNow(ctx: Context) {
   if (timeoutMs.value !== undefined) runInput.timeoutMs = timeoutMs.value
 
   const manager = getWorkflowManager()
-  void manager.runNow(id, runInput).catch((err: any) => {
-    const message = err?.message || 'failed to run workflow'
-    logger.error(err, '[workflow] async run failed for workflow %s', id)
-    manager.setRuntimeStatus(id, {
-      status: 'failed',
-      completedAt: Date.now(),
-      error: message,
+  try {
+    const preflight = await preflightWorkflowExecutionDefinition(workflow.nodes, workflow.edges, workflow.profile, runInput.startNodeIds || [])
+    await assertWorkflowExecutionCapabilities(workflow.profile, preflight.activeNodes)
+    let accept!: (run: unknown) => void
+    const accepted = new Promise(resolve => { accept = resolve })
+    const execution = manager.runNow(id, { ...runInput, onAccepted: accept })
+    await Promise.race([accepted, execution.then(result => result.run)])
+    void execution.catch((err: any) => {
+      const message = err?.message || 'failed to run workflow'
+      logger.error(err, '[workflow] async run failed for workflow %s', id)
+      manager.setRuntimeStatus(id, { status: 'failed', completedAt: Date.now(), error: message })
     })
-  })
+  } catch (err: any) {
+    ctx.status = err?.status === 409 ? 409 : 400
+    ctx.body = { error: err?.message || 'workflow preflight failed' }
+    return
+  }
 
   ctx.status = 202
   ctx.body = { ok: true, status: 'accepted' }

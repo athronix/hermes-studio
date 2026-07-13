@@ -82,11 +82,8 @@ describe('workflow manager', () => {
       agent: 'codex',
       codingAgentId: 'codex',
     })
-    expect(resolveWorkflowNodeRunTarget('unknown')).toEqual({
-      type: 'workflow',
-      source: 'workflow',
-      agent: 'hermes',
-    })
+    expect(() => resolveWorkflowNodeRunTarget('unknown')).toThrow('unsupported workflow Agent runtime: unknown')
+    expect(() => resolveWorkflowNodeRunTarget()).toThrow('unsupported workflow Agent runtime')
   })
 
   it('requires workflow node approval only when explicitly enabled', async () => {
@@ -95,6 +92,15 @@ describe('workflow manager', () => {
     expect(workflowNodeRequiresApproval({ data: { approvalRequired: true } })).toBe(true)
     expect(workflowNodeRequiresApproval({ data: { approvalRequired: false } })).toBe(false)
     expect(workflowNodeRequiresApproval({ data: {} })).toBe(false)
+  })
+
+  it('rejects unsupported node types and agent runtimes instead of silently falling back to Hermes', async () => {
+    const { normalizeWorkflowNode } = await import('../../packages/server/src/services/workflow-manager')
+    expect(() => normalizeWorkflowNode({ id: 'shell', type: 'shell', data: { agent: 'hermes' } })).toThrow('workflow node shell must be an Agent node')
+    expect(() => normalizeWorkflowNode({ id: 'unknown', type: 'agent', data: { agent: 'python' } })).toThrow('workflow node unknown has unsupported agent runtime')
+    expect(normalizeWorkflowNode({ id: 'hermes', type: 'agent', data: { agent: 'hermes' } })?.data.agent).toBe('hermes')
+    expect(normalizeWorkflowNode({ id: 'claude', type: 'agent', data: { agent: 'claude-code' } })?.data.agent).toBe('claude-code')
+    expect(normalizeWorkflowNode({ id: 'codex', type: 'agent', data: { agent: 'codex' } })?.data.agent).toBe('codex')
   })
 
   it('normalizes workflow node join mode and rejects malformed explicit values', async () => {
@@ -231,6 +237,8 @@ describe('workflow manager', () => {
     const { normalizeWorkflowEdge } = await import('../../packages/server/src/services/workflow-manager')
     expect(() => normalizeWorkflowEdge({ id: 'invalid-route', source: 'first', target: 'second', data: { orchestration: { route: 'sometimes' } } })).toThrow('workflow edge invalid-route has invalid orchestration route')
     expect(() => normalizeWorkflowEdge({ id: 'missing-value', source: 'first', target: 'second', data: { orchestration: { route: 'success', condition: { path: 'output.status', operator: 'equals' } } } })).toThrow('workflow edge missing-value condition operator equals requires value')
+    expect(() => normalizeWorkflowEdge({ id: 'dangerous-path', source: 'first', target: 'second', data: { orchestration: { route: 'success', condition: { path: 'output.__proto__.polluted', operator: 'exists' } } } })).toThrow('invalid condition path')
+    expect(() => normalizeWorkflowEdge({ id: 'empty-segment', source: 'first', target: 'second', data: { orchestration: { route: 'success', condition: { path: 'output..status', operator: 'exists' } } } })).toThrow('invalid condition path')
   })
 
   it('compiles a bounded single-entry natural loop from an explicit feedback edge', async () => {
@@ -587,14 +595,15 @@ describe('workflow manager', () => {
       const result = await manager.runNow(workflow.id)
       expect(result.run.status).toBe('completed')
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(8)
-      expect(result.nodeSessions.map(session => [session.node_id, session.iteration_path])).toEqual([
+      expect(result.nodeSessions.map(session => [session.node_id, session.iteration_path])
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))).toEqual([
         ['a-header', [{ loopId: 'loop:a-retry', iteration: 0 }]],
-        ['a-latch', [{ loopId: 'loop:a-retry', iteration: 0 }]],
         ['a-header', [{ loopId: 'loop:a-retry', iteration: 1 }]],
+        ['a-latch', [{ loopId: 'loop:a-retry', iteration: 0 }]],
         ['a-latch', [{ loopId: 'loop:a-retry', iteration: 1 }]],
         ['b-header', [{ loopId: 'loop:b-retry', iteration: 0 }]],
-        ['b-latch', [{ loopId: 'loop:b-retry', iteration: 0 }]],
         ['b-header', [{ loopId: 'loop:b-retry', iteration: 1 }]],
+        ['b-latch', [{ loopId: 'loop:b-retry', iteration: 0 }]],
         ['b-latch', [{ loopId: 'loop:b-retry', iteration: 1 }]],
       ])
     } finally { await manager.delete(workflow.id) }
@@ -1240,6 +1249,67 @@ describe('workflow manager', () => {
       db.exec('DROP TRIGGER IF EXISTS fail_loop_limit_evidence')
       await manager.delete(workflow.id)
     }
+  })
+
+  it('executes an id-less feedback edge with the same canonical identity used by compilation', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'continue' })
+    const workflow = manager.create({
+      name: `Id-less feedback ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'latch->header').map(item => item.status)).toEqual(['taken', 'not_taken'])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('applies the run input override only to the first loop iteration and then consumes feedback output', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const inputs: string[] = []
+    let call = 0
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      inputs.push(request.input)
+      call += 1
+      const output = call === 2 ? 'feedback-output' : `output-${call}`
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `One-shot loop override ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'definition-input' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { input: 'run-override' })
+      expect(result.run.status).toBe('completed')
+      expect(inputs[0]).toContain('run-override')
+      expect(inputs[2]).toContain('feedback-output')
+      expect(inputs[2]).toContain('definition-input')
+      expect(inputs[2]).not.toContain('run-override')
+    } finally { await manager.delete(workflow.id) }
   })
 
   it('exits a top-level loop when its feedback condition is not taken and records each decision', async () => {
@@ -2076,14 +2146,15 @@ describe('workflow manager', () => {
   it('rejects an invalid rerun snapshot before deleting sessions or mutating the run', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
-    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions, updateWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     initAllStores()
     const manager = new WorkflowManager()
     chatRunMock.runAndWait.mockReset()
     const nodes = [{ id: 'a', type: 'agent', data: { title: 'A', agent: 'hermes', input: 'a' } }]
     const workflow = manager.create({ name: `Invalid rerun ${Date.now()}`, profile: 'default', nodes, edges: [] })
-    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'canceled', snapshot_nodes: nodes, snapshot_edges: [{ id: 'bad', source: 'a', target: 'missing' }] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running', snapshot_nodes: nodes, snapshot_edges: [{ id: 'bad', source: 'a', target: 'missing' }] })
     createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'a', session_id: 'existing-a', status: 'canceled' })
+    updateWorkflowRun(run.id, { status: 'canceled', finished_at: 1100 })
     try {
       await expect(manager.rerunFromNode(workflow.id, run.id, 'a')).rejects.toThrow('workflow edge bad references missing node')
       expect(getWorkflowRun(run.id)?.status).toBe('canceled')
@@ -2094,7 +2165,7 @@ describe('workflow manager', () => {
 
   it('rejects an over-budget rerun before deleting sessions or mutating the run', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
-    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions, updateWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     initAllStores()
     const manager = new WorkflowManager()
@@ -2106,10 +2177,11 @@ describe('workflow manager', () => {
     edges.push({ id: 'retry', source: 'n10', target: 'n0', data: { orchestration: { route: 'success', feedback: { maxIterations: 100 } } } })
     const workflow = manager.create({ name: `Over-budget rerun ${Date.now()}`, profile: 'default', nodes, edges })
     const run = createWorkflowRun({
-      workflow_id: workflow.id, status: 'canceled', snapshot_nodes: nodes, snapshot_edges: edges,
+      workflow_id: workflow.id, status: 'running', snapshot_nodes: nodes, snapshot_edges: edges,
       start_node_ids: ['n0'], started_at: 1000, finished_at: 1100,
     })
     createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'n0', session_id: 'existing-n0', status: 'canceled' })
+    updateWorkflowRun(run.id, { status: 'canceled', finished_at: 1100 })
     const beforeRun = getWorkflowRun(run.id)
     try {
       await expect(manager.rerunFromNode(workflow.id, run.id, 'n0')).rejects.toThrow('workflow static execution bound 1100 exceeds run budget 1000')
@@ -2121,7 +2193,7 @@ describe('workflow manager', () => {
 
   it('enforces a fresh absolute deadline across sequential rerun executions', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
-    const { createWorkflowRun, createWorkflowRunNodeSession } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { createWorkflowRun, createWorkflowRunNodeSession, updateWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     initAllStores()
     const manager = new WorkflowManager()
@@ -2140,12 +2212,13 @@ describe('workflow manager', () => {
     const edges = [{ id: 'next', source: 'first', target: 'second' }]
     const workflow = manager.create({ name: `Rerun deadline ${now}`, profile: 'default', nodes, edges })
     const run = createWorkflowRun({
-      workflow_id: workflow.id, profile: 'default', status: 'canceled', snapshot_nodes: nodes, snapshot_edges: edges,
+      workflow_id: workflow.id, profile: 'default', status: 'running', snapshot_nodes: nodes, snapshot_edges: edges,
       started_at: 1000, finished_at: 1100,
     })
     for (const [sequence, nodeId] of ['first', 'second'].entries()) createWorkflowRunNodeSession({
       run_id: run.id, workflow_id: workflow.id, node_id: nodeId, session_id: `old-${nodeId}`, status: 'canceled', sequence,
     })
+    updateWorkflowRun(run.id, { status: 'canceled', finished_at: 1100 })
     try {
       const result = await manager.rerunFromNode(workflow.id, run.id, 'first', { timeoutMs: 100 })
       expect(receivedTimeouts).toEqual([100, 30])
@@ -2159,15 +2232,16 @@ describe('workflow manager', () => {
     vi.useFakeTimers()
     vi.setSystemTime(12000)
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
-    const { createWorkflowRun, createWorkflowRunNodeSession } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { createWorkflowRun, createWorkflowRunNodeSession, updateWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     initAllStores()
     const manager = new WorkflowManager()
     chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'review' })
     const nodes = [{ id: 'review', type: 'agent', data: { title: 'Review', agent: 'hermes', input: 'review', approvalRequired: true } }]
     const workflow = manager.create({ name: 'Rerun approval deadline', profile: 'default', nodes, edges: [] })
-    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'canceled', snapshot_nodes: nodes, snapshot_edges: [], started_at: 1000 })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running', snapshot_nodes: nodes, snapshot_edges: [], started_at: 1000 })
     createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'review', session_id: 'old-review', status: 'canceled' })
+    updateWorkflowRun(run.id, { status: 'canceled', finished_at: 1100 })
     try {
       const rerunPromise = manager.rerunFromNode(workflow.id, run.id, 'review', { timeoutMs: 100 })
       await vi.advanceTimersByTimeAsync(0)
@@ -2177,9 +2251,197 @@ describe('workflow manager', () => {
       expect({ status: result.run.status, error: result.run.error, startedAt: result.run.started_at }).toEqual({
         status: 'failed', error: 'workflow run timed out after 100ms', startedAt: 12000,
       })
-      expect(result.nodeSessions.map(session => [session.status, session.error])).toEqual([['failed', 'workflow run timed out after 100ms']])
+      expect(result.nodeSessions.map(session => [session.status, session.error])).toEqual([
+        ['canceled', null], ['failed', 'workflow run timed out after 100ms'],
+      ])
       expect(manager.approveNode(workflow.id, run.id, 'review', true)).toBe(false)
     } finally { vi.useRealTimers(); await manager.delete(workflow.id) }
+  })
+
+  it('runs a fresh partial start without requiring historical evidence from inactive upstream nodes', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'done' })
+    const workflow = manager.create({
+      name: `Fresh partial start ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'upstream', type: 'agent', data: { title: 'Upstream', agent: 'hermes', input: 'upstream' } },
+        { id: 'selected', type: 'agent', data: { title: 'Selected', agent: 'hermes', input: 'selected' } },
+        { id: 'downstream', type: 'agent', data: { title: 'Downstream', agent: 'hermes', input: 'downstream' } },
+      ],
+      edges: [
+        { id: 'upstream-selected', source: 'upstream', target: 'selected' },
+        { id: 'selected-downstream', source: 'selected', target: 'downstream' },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id, { startNodeIds: ['selected'] })
+      expect(result.run.status).toBe('completed')
+      expect(result.run.start_node_ids).toEqual(['selected'])
+      expect(result.nodeSessions.map(item => item.node_id)).toEqual(['selected', 'downstream'])
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('non-preserve rerun clears the selected node and ignores its historical incoming decisions', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let sourceOutput = 'stop'
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      const output = request.input.includes('source') ? sourceOutput : 'target-ran'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Forced rerun start ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'target', type: 'agent', data: { title: 'Target', agent: 'hermes', input: 'target' } },
+      ],
+      edges: [{ id: 'conditional', source: 'source', target: 'target', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'go' } } } }],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      expect(fresh.nodeSessions.map(item => item.node_id)).toEqual(['source'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.target).toBe('skipped')
+      chatRunMock.runAndWait.mockClear()
+      sourceOutput = 'still-stop'
+
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'target')
+
+      expect(rerun.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(rerun.nodeSessions.filter(item => item.execution_id.includes('@rerun:')).map(item => item.node_id)).toEqual(['target'])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('preserve rerun follows only taken routes and skips an all-join blocked by persisted not-taken evidence', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      const output = request.input.includes('blocked-source') ? 'no' : 'go'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Preserved not taken join ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'preserved', type: 'agent', data: { title: 'Preserved', agent: 'hermes', input: 'preserved' } },
+        { id: 'blocked-source', type: 'agent', data: { title: 'Blocked source', agent: 'hermes', input: 'blocked-source' } },
+        { id: 'join', type: 'agent', data: { title: 'Join', agent: 'hermes', input: 'join', orchestration: { join: 'all' } } },
+      ],
+      edges: [
+        { id: 'preserved-join', source: 'preserved', target: 'join' },
+        { id: 'blocked-join', source: 'blocked-source', target: 'join', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'go' } } } },
+      ],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      expect(fresh.nodeSessions.map(item => item.node_id)).toEqual(['preserved', 'blocked-source'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.join).toBe('skipped')
+      chatRunMock.runAndWait.mockClear()
+
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'preserved', { preserveStartNode: true })
+
+      expect(rerun.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
+      expect(listWorkflowRunNodeSessions(fresh.run.id).filter(item => item.node_id === 'join')).toEqual([])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.join).toBe('skipped')
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('rejects preserve rerun when the latest source execution has no taken downstream route', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string }) => {
+      chatRunMock.sessionOutputs.set(request.session_id, 'stop')
+      return { ok: true, output: 'stop' }
+    })
+    const workflow = manager.create({
+      name: `No taken preserve route ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'target', type: 'agent', data: { title: 'Target', agent: 'hermes', input: 'target' } },
+      ],
+      edges: [{ id: 'conditional', source: 'source', target: 'target', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'go' } } } }],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      await expect(manager.rerunFromNode(workflow.id, fresh.run.id, 'source', { preserveStartNode: true }))
+        .rejects.toThrow('no taken downstream route')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('rerun consumes only the latest preserved upstream taken-edge evidence', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const requests: Array<{ input: string }> = []
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      requests.push({ input: request.input })
+      const output = request.input.includes('source') ? 'authoritative-source-output' : 'downstream-output'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Rerun preserved provenance ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'source', type: 'agent', data: { title: 'Source', agent: 'hermes', input: 'source' } },
+        { id: 'downstream', type: 'agent', data: { title: 'Downstream', agent: 'hermes', input: 'downstream' } },
+      ],
+      edges: [{ id: 'source-downstream', source: 'source', target: 'downstream' }],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      const taken = listWorkflowRunEdgeEvaluations(fresh.run.id).find(item => item.edge_id === 'source-downstream')!
+      chatRunMock.runAndWait.mockClear()
+      requests.length = 0
+
+      const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'source', { preserveStartNode: true })
+
+      expect(rerun.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(requests[0].input).toContain('authoritative-source-output')
+      const latestDownstream = listWorkflowRunNodeSessions(fresh.run.id).filter(item => item.node_id === 'downstream').at(-1)!
+      expect(latestDownstream.execution_id).toContain('@rerun:')
+      expect(latestDownstream.consumed_edge_evaluation_ids).toEqual([taken.id])
+      expect(taken.sequence).toBeLessThan(latestDownstream.sequence)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('accepts only one concurrent rerun lifecycle for the same terminal Run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockResolvedValue({ ok: true, output: 'done' })
+    let release: (() => void) | undefined
+    const workflow = manager.create({
+      name: `Concurrent rerun acceptance ${Date.now()}`, profile: 'default',
+      nodes: [{ id: 'node', type: 'agent', data: { title: 'Node', agent: 'hermes', input: 'node' } }], edges: [],
+    })
+    try {
+      const fresh = await manager.runNow(workflow.id)
+      const held = new Promise<{ ok: true; output: string }>(resolve => { release = () => resolve({ ok: true, output: 'rerun' }) })
+      chatRunMock.runAndWait.mockReset().mockImplementation(() => held)
+      const first = manager.rerunFromNode(workflow.id, fresh.run.id, 'node')
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).status).toBe('running'))
+      await expect(manager.rerunFromNode(workflow.id, fresh.run.id, 'node')).rejects.toThrow('still active')
+      release!()
+      await expect(first).resolves.toMatchObject({ run: { status: 'completed' } })
+    } finally { release?.(); await manager.delete(workflow.id) }
   })
 
   it('reruns a bounded loop through the same recursive scheduler semantics as a fresh run', async () => {
@@ -2208,20 +2470,30 @@ describe('workflow manager', () => {
 
       expect({ status: rerun.run.status, error: rerun.run.error }).toEqual({ status: 'completed', error: null })
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(4)
-      const rerunPaths = rerun.nodeSessions.map(session => session.iteration_path as Array<Record<string, unknown>>)
+      const scoped = rerun.nodeSessions.filter(session => session.execution_id.includes('@rerun:'))
+      const rerunPaths = scoped.map(session => session.iteration_path as Array<Record<string, unknown>>)
       const executionScope = rerunPaths[0]?.[0]?.executionScope
       expect(executionScope).toMatch(/^rerun:\d+$/)
       expect(rerunPaths.every(path => path.every(item => item.executionScope === executionScope))).toBe(true)
-      expect(rerun.nodeSessions.map(session => [session.node_id, (session.iteration_path as Array<Record<string, unknown>>).map(({ executionScope: _scope, ...item }) => item)])).toEqual([
+      expect(scoped.map(session => [session.node_id, (session.iteration_path as Array<Record<string, unknown>>).map(({ executionScope: _scope, ...item }) => item)])).toEqual([
         ['header', [{ loopId: 'loop:retry', iteration: 0 }]],
         ['latch', [{ loopId: 'loop:retry', iteration: 0 }]],
         ['header', [{ loopId: 'loop:retry', iteration: 1 }]],
         ['latch', [{ loopId: 'loop:retry', iteration: 1 }]],
       ])
-      expect(new Set(rerun.nodeSessions.map(session => session.execution_id)).size).toBe(4)
-      expect(rerun.nodeSessions.every(session => session.execution_id.includes(String(executionScope)))).toBe(true)
-      expect(listWorkflowRunEdgeEvaluations(fresh.run.id).map(item => item.sequence)).toEqual([0, 1, 3, 4, 6, 7, 9, 10])
-      expect(listWorkflowRunLoopEpochs(fresh.run.id).map(item => item.sequence)).toEqual([2, 5, 8, 11])
+      expect(new Set(scoped.map(session => session.execution_id)).size).toBe(4)
+      expect(scoped.every(session => session.execution_id.includes(String(executionScope)))).toBe(true)
+      expect(rerun.nodeSessions).toHaveLength(8)
+      const nodeEvidence = rerun.nodeSessions.map(item => ({ kind: 'node', sequence: item.sequence }))
+      const edgeEvidence = listWorkflowRunEdgeEvaluations(fresh.run.id).map(item => ({ kind: 'edge', sequence: item.sequence }))
+      const loopEvidence = listWorkflowRunLoopEpochs(fresh.run.id).map(item => ({ kind: 'loop', sequence: item.sequence }))
+      const timeline = [...nodeEvidence, ...edgeEvidence, ...loopEvidence].sort((a, b) => a.sequence - b.sequence)
+      expect(timeline.map(item => item.sequence)).toEqual(Array.from({ length: timeline.length }, (_, index) => index))
+      expect(new Set(timeline.map(item => item.sequence)).size).toBe(timeline.length)
+      expect(timeline.slice(-10).map(item => item.kind)).toEqual([
+        'node', 'edge', 'node', 'edge', 'loop',
+        'node', 'edge', 'node', 'edge', 'loop',
+      ])
     } finally { await manager.delete(workflow.id) }
   })
 
@@ -2254,6 +2526,38 @@ describe('workflow manager', () => {
       expect(finalInner.iteration_path).toEqual([
         expect.objectContaining({ loopId: 'loop:outer-retry', iteration: 1, executionScope: expect.stringMatching(/^rerun:/) }),
         expect.objectContaining({ loopId: 'loop:inner-retry', iteration: 1, executionScope: expect.stringMatching(/^rerun:/) }),
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('attributes failures to the correct disjoint loop epoch without leaking another loop error', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { input: string }) => {
+      if (request.input.includes('a-h')) return { ok: false, error: 'loop-a-failed' }
+      if (request.input.includes('b-h')) return { ok: false, error: 'loop-b-failed' }
+      return { ok: true, output: 'done' }
+    })
+    const agent = (id: string) => ({ id, type: 'agent', data: { title: id, agent: 'hermes', input: id } })
+    const workflow = manager.create({
+      name: `Disjoint failure attribution ${Date.now()}`, profile: 'default',
+      nodes: ['a-h', 'a-l', 'b-h', 'b-l'].map(agent),
+      edges: [
+        { id: 'a-forward', source: 'a-h', target: 'a-l' },
+        { id: 'a-retry', source: 'a-l', target: 'a-h', data: { orchestration: { route: 'success', feedback: { maxIterations: 2, loopId: 'loop-a' } } } },
+        { id: 'b-forward', source: 'b-h', target: 'b-l' },
+        { id: 'b-retry', source: 'b-l', target: 'b-h', data: { orchestration: { route: 'success', feedback: { maxIterations: 2, loopId: 'loop-b' } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('failed')
+      expect(listWorkflowRunLoopEpochs(result.run.id).map(epoch => [epoch.loop_id, epoch.status, epoch.exit_reason]).sort()).toEqual([
+        ['loop-a', 'failed', 'loop-a-failed'],
+        ['loop-b', 'failed', 'loop-b-failed'],
       ])
     } finally { await manager.delete(workflow.id) }
   })
@@ -2316,7 +2620,8 @@ describe('workflow manager', () => {
       const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'source')
       expect(rerun.run.status).toBe('completed')
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(2)
-      expect(rerun.nodeSessions.map(session => session.node_id)).toEqual(['source', 'matched'])
+      expect(rerun.nodeSessions.map(session => session.node_id)).toEqual(['source', 'matched', 'source', 'matched'])
+      expect(rerun.nodeSessions.filter(session => session.execution_id.includes('@rerun:')).map(session => session.node_id)).toEqual(['source', 'matched'])
       expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.unmatched).toBe('skipped')
       expect(listWorkflowRunEdgeEvaluations(fresh.run.id).slice(-2).map(item => [item.edge_id, item.status])).toEqual([
         ['source-matched', 'taken'], ['source-unmatched', 'not_taken'],
@@ -2348,8 +2653,11 @@ describe('workflow manager', () => {
       release({ ok: true, output: 'late success' })
       const rerun = await rerunPromise
       expect(rerun.run.status).toBe('canceled')
-      expect(listWorkflowRunNodeSessions(fresh.run.id).map(item => item.node_id)).toEqual(['a'])
-      expect(listWorkflowRunNodeSessions(fresh.run.id)[0].status).toBe('canceled')
+      const history = listWorkflowRunNodeSessions(fresh.run.id)
+      expect(history.map(item => item.node_id)).toEqual(['a', 'b', 'a'])
+      expect(history.slice(0, 2).map(item => item.status)).toEqual(['completed', 'completed'])
+      expect(history[2]).toMatchObject({ node_id: 'a', status: 'canceled' })
+      expect(history[2].execution_id).toContain('@rerun:')
       expect(listWorkflowRunEdgeEvaluations(fresh.run.id)).toHaveLength(freshEvidenceCount)
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
     } finally { await manager.delete(workflow.id) }
@@ -2380,7 +2688,7 @@ describe('workflow manager', () => {
       chatRunMock.runAndWait.mockClear()
       const rerun = await manager.rerunFromNode(workflow.id, fresh.run.id, 'source')
       expect(rerun.run.status).toBe('failed')
-      expect(rerun.nodeSessions.map(session => session.node_id).sort()).toEqual(['always', 'failure', 'source'])
+      expect(rerun.nodeSessions.filter(session => session.execution_id.includes('@rerun:')).map(session => session.node_id).sort()).toEqual(['always', 'failure', 'source'])
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
       expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.success).toBe('skipped')
       expect(listWorkflowRunEdgeEvaluations(fresh.run.id).slice(-3).map(item => [item.edge_id, item.status])).toEqual([
@@ -2395,6 +2703,7 @@ describe('workflow manager', () => {
       createWorkflowRun,
       createWorkflowRunNodeSession,
       listWorkflowRunNodeSessions,
+      updateWorkflowRun,
     } = await import('../../packages/server/src/db/hermes/workflow-run-store')
     const manager = new WorkflowManager()
     chatRunMock.runAndWait.mockReset()
@@ -2419,7 +2728,7 @@ describe('workflow manager', () => {
     const run = createWorkflowRun({
       workflow_id: workflow.id,
       profile: 'default',
-      status: 'canceled',
+      status: 'running',
       snapshot_nodes: snapshotNodes,
       snapshot_edges: snapshotEdges,
       started_at: Date.now(),
@@ -2438,6 +2747,7 @@ describe('workflow manager', () => {
         finished_at: Date.now(),
       })
     }
+    updateWorkflowRun(run.id, { status: 'canceled', finished_at: Date.now() })
 
     try {
       await expect(manager.rerunFromNode(workflow.id, run.id, 'entry-a')).resolves.toMatchObject({
@@ -2445,9 +2755,8 @@ describe('workflow manager', () => {
       })
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(3)
       expect(listWorkflowRunNodeSessions(run.id).map(session => [session.node_id, session.status])).toEqual([
-        ['entry-a', 'completed'],
-        ['entry-b', 'completed'],
-        ['join', 'completed'],
+        ['entry-a', 'canceled'], ['entry-b', 'canceled'], ['join', 'canceled'],
+        ['entry-a', 'completed'], ['entry-b', 'completed'], ['join', 'completed'],
       ])
     } finally {
       await manager.delete(workflow.id)
@@ -2537,6 +2846,30 @@ describe('workflow manager', () => {
     } finally { await manager.delete(workflow.id) }
   })
 
+  it('stopRun preserves terminal node evidence and cancels only active executions', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const workflow = manager.create({ name: `Stop terminal authority ${Date.now()}`, profile: 'default', nodes: [], edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running', snapshot_nodes: [], snapshot_edges: [] })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'done', session_id: 'done-session', status: 'completed', sequence: 0 })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'rejected', session_id: 'rejected-session', status: 'approval_rejected', sequence: 1, error: 'rejected' })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'active', session_id: 'active-session', status: 'running', sequence: 2 })
+    chatRunMock.abortSession.mockReset().mockResolvedValue(undefined)
+    try {
+      await manager.stopRun(workflow.id, run.id, 'operator stopped')
+      expect(listWorkflowRunNodeSessions(run.id).map(item => [item.node_id, item.status, item.error])).toEqual([
+        ['done', 'completed', null],
+        ['rejected', 'approval_rejected', 'rejected'],
+        ['active', 'canceled', 'operator stopped'],
+      ])
+      expect(chatRunMock.abortSession).toHaveBeenCalledTimes(1)
+      expect(chatRunMock.abortSession).toHaveBeenCalledWith('active-session', 'operator stopped')
+    } finally { await manager.delete(workflow.id) }
+  })
+
   it('persists canceled run and sessions before awaiting runner abort', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
@@ -2567,6 +2900,34 @@ describe('workflow manager', () => {
     expect(listAllWorkflowRuns(workflow.id)).toHaveLength(501)
     await expect(manager.delete(workflow.id)).resolves.toBe(true)
     expect(runs.every(run => getWorkflowRun(run.id) === null)).toBe(true)
+  })
+
+  it('rejects orphan Node, Edge, and Loop evidence for a missing Run', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRunEdgeEvaluation, createWorkflowRunLoopEpoch, createWorkflowRunNodeSession } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const missing = `missing-${Date.now()}`
+    expect(() => createWorkflowRunNodeSession({ run_id: missing, workflow_id: 'wf', node_id: 'n', session_id: 's' })).toThrow('missing workflow run')
+    expect(() => createWorkflowRunEdgeEvaluation({
+      run_id: missing, workflow_id: 'wf', edge_id: 'e', source_node_id: 'a', target_node_id: 'b',
+      source_outcome: 'success', status: 'taken', route: 'success', reason: null, sequence: 0,
+      orchestration: { route: 'success' }, condition_evaluation: null,
+    })).toThrow('missing workflow run')
+    expect(() => createWorkflowRunLoopEpoch({
+      run_id: missing, workflow_id: 'wf', loop_id: 'l', iteration: 0, iteration_path: [],
+      status: 'completed', exit_reason: null, sequence: 0, started_at: 1, finished_at: 2,
+    })).toThrow('missing workflow run')
+  })
+
+  it('rejects late node execution creation after a run is terminal', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession, updateWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const run = createWorkflowRun({ workflow_id: `terminal-node-${Date.now()}`, status: 'running' })
+    updateWorkflowRun(run.id, { status: 'canceled', finished_at: Date.now(), error: 'stopped' })
+    expect(() => createWorkflowRunNodeSession({
+      run_id: run.id, workflow_id: run.workflow_id, node_id: 'late', execution_id: 'late', session_id: 'late-session', status: 'running',
+    })).toThrow('cannot create node execution for terminal workflow run')
   })
 
   it('rejects late edge and loop evidence after a run is terminal', async () => {
@@ -2612,6 +2973,128 @@ describe('workflow manager', () => {
       expect(listWorkflowRunNodeSessions(runId).map(item => item.status)).toEqual(['canceled'])
       expect(listWorkflowRunEdgeEvaluations(runId)).toEqual([])
       expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+
+  it('starts an any-join inside a loop after the first taken edge while a sibling source is still running', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let releaseSlow!: () => void
+    const slow = new Promise<{ ok: true; output: string }>(resolve => { releaseSlow = () => resolve({ ok: true, output: 'slow-done' }) })
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      if (request.input.includes('slow')) return slow
+      const output = request.input.includes('latch') ? 'stop' : 'done'
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Loop completion driven any ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'fast', type: 'agent', data: { title: 'Fast', agent: 'hermes', input: 'fast' } },
+        { id: 'slow', type: 'agent', data: { title: 'Slow', agent: 'hermes', input: 'slow' } },
+        { id: 'join', type: 'agent', data: { title: 'Join', agent: 'hermes', input: 'join', orchestration: { join: 'any' } } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'header-fast', source: 'header', target: 'fast' },
+        { id: 'header-slow', source: 'header', target: 'slow' },
+        { id: 'fast-join', source: 'fast', target: 'join' },
+        { id: 'slow-join', source: 'slow', target: 'join' },
+        { id: 'join-latch', source: 'join', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 1 } } } },
+      ],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.slow).toBe('running'))
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.join).toBe('completed'))
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.latch).toBe('completed'))
+      let settled = false
+      void runPromise.then(() => { settled = true })
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      releaseSlow()
+      await expect(runPromise).resolves.toMatchObject({ run: { status: 'completed' } })
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(5)
+    } finally { releaseSlow?.(); await manager.delete(workflow.id) }
+  })
+
+  it('does not take feedback or start another iteration when the loop latch is skipped', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations, listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string }) => {
+      chatRunMock.sessionOutputs.set(request.session_id, 'stop')
+      return { ok: true, output: 'stop' }
+    })
+    const workflow = manager.create({
+      name: `Skipped loop latch ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'conditional-latch', source: 'header', target: 'latch', data: { orchestration: { route: 'success', condition: { path: 'output', operator: 'equals', value: 'continue' } } } },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 3 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+      expect(result.nodeSessions.map(session => session.node_id)).toEqual(['header'])
+      expect(manager.getRuntimeStatus(workflow.id).nodeStatuses.latch).toBe('skipped')
+      expect(listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'retry')).toEqual([
+        expect.objectContaining({ source_outcome: 'skipped', status: 'not_taken', reason: 'route_not_matched' }),
+      ])
+      expect(listWorkflowRunLoopEpochs(result.run.id)).toEqual([
+        expect.objectContaining({ iteration: 0, status: 'completed', exit_reason: 'route_not_matched' }),
+      ])
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('carries the taken feedback output and evidence id into the next header execution', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const requests: Array<{ input: string }> = []
+    let call = 0
+    chatRunMock.runAndWait.mockReset().mockImplementation(async (request: { session_id: string; input: string }) => {
+      requests.push({ input: request.input })
+      call += 1
+      const output = call === 2 ? 'feedback-payload' : `output-${call}`
+      chatRunMock.sessionOutputs.set(request.session_id, output)
+      return { ok: true, output }
+    })
+    const workflow = manager.create({
+      name: `Feedback provenance ${Date.now()}`, profile: 'default',
+      nodes: [
+        { id: 'header', type: 'agent', data: { title: 'Header', agent: 'hermes', input: 'header' } },
+        { id: 'latch', type: 'agent', data: { title: 'Latch', agent: 'hermes', input: 'latch' } },
+      ],
+      edges: [
+        { id: 'forward', source: 'header', target: 'latch' },
+        { id: 'retry', source: 'latch', target: 'header', data: { orchestration: { route: 'success', feedback: { maxIterations: 2 } } } },
+      ],
+    })
+    try {
+      const result = await manager.runNow(workflow.id)
+      expect(result.run.status).toBe('completed')
+      expect(requests).toHaveLength(4)
+      expect(requests[2].input).toContain('feedback-payload')
+      const feedbackEvidence = listWorkflowRunEdgeEvaluations(result.run.id).filter(item => item.edge_id === 'retry')
+      expect(feedbackEvidence.map(item => item.status)).toEqual(['taken', 'not_taken'])
+      const secondHeader = listWorkflowRunNodeSessions(result.run.id).find(session => session.execution_id === 'header@loop:retry:1')!
+      expect(secondHeader.consumed_edge_evaluation_ids).toEqual([feedbackEvidence[0].id])
+      expect(feedbackEvidence[0].sequence).toBeLessThan(secondHeader.sequence)
     } finally { await manager.delete(workflow.id) }
   })
 

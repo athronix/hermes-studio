@@ -118,6 +118,11 @@ export interface AgentBridgeContextEstimate extends AgentBridgeResponse {
   provider?: string
 }
 
+export interface AgentBridgeWorkflowCapabilities extends AgentBridgeResponse {
+  profile: string
+  groups: Array<{ toolsets: string[] | null; tool_names: string[] }>
+}
+
 export interface AgentBridgeCommandResult extends AgentBridgeResponse {
   session_id: string
   command: string
@@ -451,6 +456,14 @@ export class AgentBridgeClient {
       ...(options.reasoning_effort ? { reasoning_effort: options.reasoning_effort } : {}),
       ...(options.apiMode ? { api_mode: options.apiMode } : {}),
       ...(options.executionPolicy ? { execution_policy: options.executionPolicy } : {}),
+    })
+  }
+
+  workflowCapabilities(profile: string, toolsetGroups: Array<string[] | null>): Promise<AgentBridgeWorkflowCapabilities> {
+    return this.request<AgentBridgeWorkflowCapabilities>({
+      action: 'workflow_capabilities',
+      profile,
+      toolset_groups: toolsetGroups,
     })
   }
 

@@ -9,26 +9,60 @@ const managerMock = vi.hoisted(() => ({
   approveNode: vi.fn(),
   create: vi.fn(),
 }))
-const listWorkflowRunsMock = vi.hoisted(() => vi.fn())
+const listWorkflowRunsWithEvidenceMock = vi.hoisted(() => vi.fn())
+const getWorkflowRunWithEvidenceMock = vi.hoisted(() => vi.fn())
+const preflightExecutionMock = vi.hoisted(() => vi.fn())
+const preflightRerunMock = vi.hoisted(() => vi.fn())
+const skillDependenciesMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunNodeSessionsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunEdgeEvaluationsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunLoopEpochsMock = vi.hoisted(() => vi.fn())
 const listUserProfilesMock = vi.hoisted(() => vi.fn())
+const getAvailableModelGroupsMock = vi.hoisted(() => vi.fn())
+const assertImportCapabilitiesMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/services/workflow-manager', async importOriginal => {
   const actual = await importOriginal<typeof import('../../packages/server/src/services/workflow-manager')>()
-  return { ...actual, getWorkflowManager: () => managerMock }
+  return {
+    ...actual,
+    getWorkflowManager: () => managerMock,
+    preflightWorkflowExecutionDefinition: preflightExecutionMock,
+    preflightWorkflowRerunDefinition: preflightRerunMock,
+    assertWorkflowNodeSkillDependencies: skillDependenciesMock,
+  }
 })
 
 vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
   listUserProfiles: listUserProfilesMock,
 }))
 
+vi.mock('../../packages/server/src/services/workflow-import-capabilities', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../packages/server/src/services/workflow-import-capabilities')>()
+  return {
+    ...actual,
+    assertWorkflowImportCapabilities: assertImportCapabilitiesMock,
+    workflowImportEnvironmentRevision: () => 'rev-1',
+  }
+})
+
+
+vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
+  AgentBridgeClient: class {
+    workflowCapabilities = vi.fn().mockResolvedValue({ ok: true, profile: 'default', groups: [] })
+  },
+}))
+
+vi.mock('../../packages/server/src/controllers/hermes/models', () => ({
+  getAvailableModelGroupsForProfile: getAvailableModelGroupsMock,
+}))
+
+
 vi.mock('../../packages/server/src/db/hermes/workflow-run-store', () => ({
   listWorkflowRunNodeSessions: listWorkflowRunNodeSessionsMock,
   listWorkflowRunEdgeEvaluations: listWorkflowRunEdgeEvaluationsMock,
   listWorkflowRunLoopEpochs: listWorkflowRunLoopEpochsMock,
-  listWorkflowRuns: listWorkflowRunsMock,
+  listWorkflowRunsWithEvidence: listWorkflowRunsWithEvidenceMock,
+  getWorkflowRunWithEvidence: getWorkflowRunWithEvidenceMock,
 }))
 
 function ctx(overrides: Record<string, any> = {}) {
@@ -56,15 +90,21 @@ describe('workflow controller', () => {
     listWorkflowRunEdgeEvaluationsMock.mockReset()
     listWorkflowRunLoopEpochsMock.mockReset()
     listWorkflowRunLoopEpochsMock.mockReturnValue([])
-    listWorkflowRunsMock.mockReset()
+    listWorkflowRunsWithEvidenceMock.mockReset()
+    getWorkflowRunWithEvidenceMock.mockReset()
+    preflightExecutionMock.mockReset().mockResolvedValue({ compiled: { nodes: [], edges: [], loops: [], startNodeIds: [] }, activeNodeIds: new Set(), activeNodes: [] })
+    preflightRerunMock.mockReset().mockResolvedValue({ compiled: { nodes: [], edges: [], loops: [], startNodeIds: [] }, activeNodeIds: new Set(), activeNodes: [] })
+    skillDependenciesMock.mockReset().mockResolvedValue(undefined)
     listUserProfilesMock.mockReset()
     listUserProfilesMock.mockReturnValue([])
+    getAvailableModelGroupsMock.mockReset().mockResolvedValue([])
+    assertImportCapabilitiesMock.mockReset()
   })
 
   it('exports, previews, and confirms a portable workflow copy', async () => {
     const source = {
       id: 'workflow-1', name: 'Portable', profile: 'default', workspace: '/private',
-      nodes: [{ id: 'n1', type: 'agent', data: { title: 'One', agent: 'hermes', input: 'go' } }],
+      nodes: [{ id: 'n1', type: 'agent', position: { x: 0, y: 0 }, data: { title: 'One', agent: 'hermes', input: 'go' } }],
       edges: [], viewport: null, created_at: 1, updated_at: 2,
     }
     managerMock.get.mockReturnValue(source)
@@ -86,22 +126,42 @@ describe('workflow controller', () => {
     expect(confirmCtx.body).toMatchObject({ ok: true, workflow: { id: 'workflow-copy', name: 'Portable' } })
   })
 
+
+  it('returns 409 and creates nothing when import capability validation fails at confirmation', async () => {
+    const source = {
+      id: 'workflow-1', name: 'Unavailable target', profile: 'default', workspace: null,
+      nodes: [{ id: 'n1', type: 'agent', position: { x: 0, y: 0 }, data: { title: 'One', agent: 'hermes', provider: 'missing', model: 'missing-model', apiMode: 'chat_completions' } }],
+      edges: [], viewport: null, created_at: 1, updated_at: 2,
+    }
+    managerMock.get.mockReturnValue(source)
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const exportCtx = ctx({ params: { id: 'workflow-1' }, state: { user: { id: 'u1', role: 'super_admin' } } })
+    await mod.exportDefinition(exportCtx)
+    const previewCtx = ctx({ request: { body: { document: JSON.stringify(exportCtx.body), profile: 'default' } }, state: { user: { id: 'u1', role: 'super_admin' } } })
+    await mod.previewImport(previewCtx)
+    assertImportCapabilitiesMock.mockImplementation(() => { throw Object.assign(new Error('target capability is unavailable'), { status: 409 }) })
+    const confirmCtx = ctx({ request: { body: { token: previewCtx.body.preview.token, profile: 'default' } }, state: { user: { id: 'u1', role: 'super_admin' } } })
+    await mod.confirmImport(confirmCtx)
+    expect(confirmCtx.status).toBe(409)
+    expect(confirmCtx.body).toMatchObject({ error: expect.stringContaining('unavailable') })
+    expect(managerMock.create).not.toHaveBeenCalled()
+  })
+
   it('lists run records for a workflow', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed' }])
-    listWorkflowRunNodeSessionsMock.mockReturnValue([{ id: 'node-session-1', node_id: 'node-1', status: 'completed' }])
-    listWorkflowRunEdgeEvaluationsMock.mockReturnValue([{ id: 'edge-eval-1', edge_id: 'edge-1', sequence: 0, status: 'taken' }])
-    listWorkflowRunLoopEpochsMock.mockReturnValue([{ id: 'loop-epoch-1', loop_id: 'loop:retry', iteration: 0, status: 'completed' }])
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    listWorkflowRunsWithEvidenceMock.mockReturnValue([{
+      id: 'run-1', workflow_id: 'workflow-1', status: 'completed',
+      node_sessions: [{ id: 'node-session-1', node_id: 'node-1', status: 'completed' }],
+      edge_evaluations: [{ id: 'edge-eval-1', edge_id: 'edge-1', sequence: 0, status: 'taken' }],
+      loop_epochs: [{ id: 'loop-epoch-1', loop_id: 'loop:retry', iteration: 0, status: 'completed' }],
+    }])
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({ params: { id: 'workflow-1' }, query: { limit: '25' } })
 
     await mod.listRuns(c)
 
-    expect(listWorkflowRunsMock).toHaveBeenCalledWith('workflow-1', 25)
-    expect(listWorkflowRunNodeSessionsMock).toHaveBeenCalledWith('run-1')
-    expect(listWorkflowRunEdgeEvaluationsMock).toHaveBeenCalledWith('run-1')
-    expect(listWorkflowRunLoopEpochsMock).toHaveBeenCalledWith('run-1')
+    expect(listWorkflowRunsWithEvidenceMock).toHaveBeenCalledWith('workflow-1', 25)
     expect(c.body).toEqual({
       runs: [{
         id: 'run-1',
@@ -115,10 +175,8 @@ describe('workflow controller', () => {
   })
 
   it('does not return a partial run history when edge evidence loading fails', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed' }])
-    listWorkflowRunNodeSessionsMock.mockReturnValue([])
-    listWorkflowRunEdgeEvaluationsMock.mockImplementation(() => { throw new Error('edge evidence read failed') })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    listWorkflowRunsWithEvidenceMock.mockImplementation(() => { throw new Error('edge evidence read failed') })
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({ params: { id: 'workflow-1' } })
     await expect(mod.listRuns(c)).rejects.toThrow('edge evidence read failed')
@@ -126,11 +184,8 @@ describe('workflow controller', () => {
   })
 
   it('does not return a partial run history when loop epoch loading fails', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed' }])
-    listWorkflowRunNodeSessionsMock.mockReturnValue([])
-    listWorkflowRunEdgeEvaluationsMock.mockReturnValue([])
-    listWorkflowRunLoopEpochsMock.mockImplementation(() => { throw new Error('loop epoch read failed') })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    listWorkflowRunsWithEvidenceMock.mockImplementation(() => { throw new Error('loop epoch read failed') })
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({ params: { id: 'workflow-1' } })
     await expect(mod.listRuns(c)).rejects.toThrow('loop epoch read failed')
@@ -139,8 +194,8 @@ describe('workflow controller', () => {
 
   it('runs a workflow through the workflow manager', async () => {
     const user = { id: 'user-1', role: 'super_admin' }
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    managerMock.runNow.mockResolvedValue({ run: { id: 'run-1', status: 'completed' }, nodeSessions: [] })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    managerMock.runNow.mockImplementation(async (_id: string, input: any) => { const run = { id: 'run-1', status: 'running' }; input.onAccepted?.(run); return { run: { ...run, status: 'completed' }, nodeSessions: [] } })
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({
@@ -151,19 +206,40 @@ describe('workflow controller', () => {
 
     await mod.runNow(c)
 
-    expect(managerMock.runNow).toHaveBeenCalledWith('workflow-1', {
+    expect(managerMock.runNow).toHaveBeenCalledWith('workflow-1', expect.objectContaining({
       profile: 'default',
       user,
       startNodeIds: ['node-1', 'node-2'],
       input: 'go',
       timeoutMs: 1000,
-    })
+      onAccepted: expect.any(Function),
+    }))
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
   })
 
+
+  it('returns one run detail with the same Node, Edge, and Loop evidence contract', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    getWorkflowRunWithEvidenceMock.mockReturnValue({
+      id: 'run-1', workflow_id: 'workflow-1', status: 'completed',
+      node_sessions: [{ id: 'node-session-1', sequence: 1 }],
+      edge_evaluations: [{ id: 'edge-eval-1', sequence: 2 }],
+      loop_epochs: [{ id: 'loop-epoch-1', sequence: 3 }],
+    })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-1' } })
+    await mod.getRun(c)
+    expect(c.body).toEqual({ run: expect.objectContaining({
+      id: 'run-1',
+      node_sessions: [{ id: 'node-session-1', sequence: 1 }],
+      edge_evaluations: [{ id: 'edge-eval-1', sequence: 2 }],
+      loop_epochs: [{ id: 'loop-epoch-1', sequence: 3 }],
+    }) })
+  })
+
   it('stops a workflow run through the workflow manager', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
     managerMock.stopRun.mockResolvedValue({ id: 'run-1', workflow_id: 'workflow-1', status: 'canceled' })
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
@@ -180,8 +256,9 @@ describe('workflow controller', () => {
 
   it('reruns a workflow run from a node through the workflow manager', async () => {
     const user = { id: 'user-1', role: 'super_admin' }
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    managerMock.rerunFromNode.mockResolvedValue({ run: { id: 'run-1', status: 'completed' }, nodeSessions: [] })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
+    managerMock.rerunFromNode.mockImplementation(async (_wid: string, _rid: string, _nid: string, input: any) => { const run = { id: 'run-1', status: 'running' }; input.onAccepted?.(run); return { run: { ...run, status: 'completed' }, nodeSessions: [] } })
+    getWorkflowRunWithEvidenceMock.mockReturnValue({ id: 'run-1', workflow_id: 'workflow-1', profile: 'default', status: 'completed', snapshot_nodes: [], snapshot_edges: [], node_sessions: [], edge_evaluations: [], loop_epochs: [] })
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({
@@ -192,18 +269,19 @@ describe('workflow controller', () => {
 
     await mod.rerunFromNode(c)
 
-    expect(managerMock.rerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-2', {
+    expect(managerMock.rerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-2', expect.objectContaining({
       profile: 'default',
       user,
       preserveStartNode: true,
       timeoutMs: 1000,
-    })
+      onAccepted: expect.any(Function),
+    }))
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
   })
 
   it('deletes a workflow run through the workflow manager', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
     managerMock.deleteRun.mockResolvedValue(true)
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
@@ -216,7 +294,7 @@ describe('workflow controller', () => {
   })
 
   it('approves a pending workflow node through the workflow manager', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
     managerMock.approveNode.mockReturnValue(true)
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
@@ -233,7 +311,7 @@ describe('workflow controller', () => {
   })
 
   it('records a workflow node rejection without stopping the run immediately', async () => {
-    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default', nodes: [], edges: [] })
     managerMock.approveNode.mockReturnValue(true)
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')

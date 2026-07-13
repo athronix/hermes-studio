@@ -71,6 +71,7 @@ export interface WorkflowRunNodeSessionRecord {
   node_id: string
   execution_id: string
   iteration_path: unknown[]
+  consumed_edge_evaluation_ids: string[]
   session_id: string
   profile: string
   agent: string
@@ -207,6 +208,12 @@ export async function previewWorkflowImport(document: string, profile?: string |
   return res.preview
 }
 
+export async function cancelWorkflowImport(token: string, profile?: string | null): Promise<void> {
+  await request<{ ok: true }>('/api/hermes/workflows/import/cancel', {
+    method: 'POST', body: JSON.stringify({ token, profile }),
+  })
+}
+
 export async function confirmWorkflowImport(token: string, profile?: string | null): Promise<WorkflowRecord> {
   const res = await request<{ ok: true; workflow: WorkflowRecord }>('/api/hermes/workflows/import/confirm', {
     method: 'POST', body: JSON.stringify({ token, profile }),
@@ -219,6 +226,13 @@ export async function listWorkflowRuns(id: string, limit = 100): Promise<Workflo
   params.set('limit', String(limit))
   const res = await request<{ runs: WorkflowRunRecord[] }>(`/api/hermes/workflows/${encodeURIComponent(id)}/runs?${params}`)
   return res.runs
+}
+
+export async function fetchWorkflowRun(id: string, runId: string): Promise<WorkflowRunRecord> {
+  const res = await request<{ run: WorkflowRunRecord }>(
+    `/api/hermes/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
+  )
+  return res.run
 }
 
 export async function stopWorkflowRun(id: string, runId: string): Promise<WorkflowRunRecord> {

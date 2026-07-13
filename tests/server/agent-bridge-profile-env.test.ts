@@ -750,6 +750,78 @@ print(json.dumps({
       listener: [4321],
     })
   })
+  it('discovers profile MCP toolsets before computing exact Workflow capability snapshots', async () => {
+    const result = await runBridgeProbe(`
+import contextlib
+import importlib.util
+import json
+import os
+import sys
+import types
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+state = {"discovered": False, "agent_created": False}
+bridge._ensure_agent_imports = lambda: None
+bridge._profile_env = lambda profile: contextlib.nullcontext()
+bridge._refresh_worker_profile_env = lambda: None
+bridge._refresh_approval_allowlist = lambda: None
+bridge._load_enabled_toolsets = lambda: ["mcp-profile-server"]
+def discover():
+    state["discovered"] = True
+    return ["mcp_profile_server_search"]
+bridge._discover_bridge_mcp_tools = discover
+
+model_tools = types.ModuleType("model_tools")
+def get_tool_definitions(enabled_toolsets=None, quiet_mode=False):
+    assert state["discovered"] is True
+    definitions = {
+        "terminal": [{"type": "function", "function": {"name": "terminal"}}],
+        "mcp-profile-server": [{"type": "function", "function": {"name": "mcp_profile_server_search"}}],
+    }
+    return [tool for name in (enabled_toolsets or []) for tool in definitions.get(name, [])]
+model_tools.get_tool_definitions = get_tool_definitions
+sys.modules["model_tools"] = model_tools
+
+toolsets = types.ModuleType("toolsets")
+def resolve_toolset(name):
+    if name == "mcp-profile-server" and state["discovered"]:
+        return ["mcp_profile_server_search"]
+    if name == "terminal":
+        return ["terminal"]
+    return []
+toolsets.resolve_toolset = resolve_toolset
+sys.modules["toolsets"] = toolsets
+
+run_agent = types.ModuleType("run_agent")
+class ForbiddenAgent:
+    def __init__(self, **kwargs):
+        state["agent_created"] = True
+        raise AssertionError("workflow capability snapshot must not create an Agent")
+run_agent.AIAgent = ForbiddenAgent
+sys.modules["run_agent"] = run_agent
+
+pool = bridge.AgentPool()
+result = pool.workflow_capabilities("work", [None, ["terminal"], ["mcp-profile-server"]])
+print(json.dumps({"result": result, "agent_created": state["agent_created"]}))
+`)
+
+    expect(result).toEqual({
+      result: {
+        profile: 'work',
+        groups: [
+          { toolsets: null, tool_names: ['mcp_profile_server_search'] },
+          { toolsets: ['terminal'], tool_names: ['terminal'] },
+          { toolsets: ['mcp-profile-server'], tool_names: ['mcp_profile_server_search'] },
+        ],
+      },
+      agent_created: false,
+    })
+  })
+
   it('applies an exact allowed-tools whitelist after agent tool assembly', async () => {
     await writeFile(join(tempDir, 'config.yaml'), 'model:\n  default: fake-model\n', 'utf-8')
 

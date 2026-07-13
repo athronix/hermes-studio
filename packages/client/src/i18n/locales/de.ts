@@ -2037,6 +2037,10 @@ jobTriggered: 'Job ausgelost',
   },
 
   workflow: {
+    actions: { importWorkflow: 'Workflow importieren', exportWorkflow: 'Workflow exportieren', imported: 'Workflow importiert', exported: 'Workflow exportiert', importFailed: 'Workflow-Import fehlgeschlagen', exportFailed: 'Workflow-Export fehlgeschlagen' },
+    stats: { nodes: 'Knoten', edges: 'Verbindungen' },
+    evidence: { title: 'Ausführungsnachweise', empty: 'Keine Nachweise aufgezeichnet', loadFailed: 'Persistierte Ausführungsnachweise konnten nicht geladen werden', node: 'Knoten', edge: 'Verbindung', loop: 'Schleife' },
+    edgeEditor: { title: 'Verbindung bearbeiten', route: 'Route', conditionPath: 'Bedingungspfad', operator: 'Operator', value: 'Wert', feedback: 'Feedback-Schleife', maxIterations: 'Maximale Iterationen', invalidIterations: 'Maximale Iterationen müssen eine ganze Zahl zwischen 1 und 100 sein', loopId: 'Schleifen-ID (optional)', loopIdPlaceholder: 'Stabile Kennung, z. B. review-loop', invalidLoopId: 'Ungültiges Format der Schleifen-ID', invalidConditionValue: 'Der Bedingungswert muss gültiges JSON sein', conditionValuePlaceholder: 'JSON: "Text", 42, true, ["a"]' },
     node: {
       allowedToolsets: 'Allowed toolsets (empty = none)',
       allowedTools: 'Allowed tools (empty = none)',

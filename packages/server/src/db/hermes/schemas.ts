@@ -207,6 +207,7 @@ export const WORKFLOW_RUN_NODE_SESSIONS_SCHEMA: Record<string, string> = {
   node_id: 'TEXT NOT NULL',
   execution_id: "TEXT NOT NULL DEFAULT ''",
   iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  consumed_edge_evaluation_ids_json: "TEXT NOT NULL DEFAULT '[]'",
   session_id: 'TEXT NOT NULL',
   profile: "TEXT NOT NULL DEFAULT 'default'",
   agent: "TEXT NOT NULL DEFAULT ''",

@@ -742,8 +742,8 @@ export default {
       importFailed: 'Workflow import failed',
       exportFailed: 'Workflow export failed',
     },
-    evidence: { title: 'Execution evidence', empty: 'No evidence recorded', node: 'Node', edge: 'Edge', loop: 'Loop' },
-    edgeEditor: { title: 'Edit connection', route: 'Route', conditionPath: 'Condition path', operator: 'Operator', value: 'Value', feedback: 'Feedback loop', maxIterations: 'Maximum iterations', invalidIterations: 'Maximum iterations must be an integer from 1 to 100' },
+    evidence: { title: 'Execution evidence', empty: 'No evidence recorded', loadFailed: 'Failed to load persisted execution evidence', node: 'Node', edge: 'Edge', loop: 'Loop' },
+    edgeEditor: { title: 'Edit connection', route: 'Route', conditionPath: 'Condition path', operator: 'Operator', value: 'Value', feedback: 'Feedback loop', maxIterations: 'Maximum iterations', invalidIterations: 'Maximum iterations must be an integer from 1 to 100', loopId: 'Loop ID (optional)', loopIdPlaceholder: 'Stable identity, e.g. review-loop', invalidLoopId: 'Loop ID must start with a letter or number and contain only letters, numbers, dot, underscore, colon, or hyphen', invalidConditionValue: 'Condition value must be valid JSON', conditionValuePlaceholder: 'JSON: "text", 42, true, ["a"]' },
     batch: {
       toggle: 'Batch selection',
       selectAll: 'Select all',
@@ -789,6 +789,7 @@ export default {
       running: 'Running',
       pending_approval: 'Pending approval',
       completed: 'Completed',
+      skipped: 'Skipped',
       failed: 'Failed',
       approval_rejected: 'Approval rejected',
       canceled: 'Canceled',

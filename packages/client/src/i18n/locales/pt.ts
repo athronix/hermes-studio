@@ -2037,6 +2037,10 @@ jobTriggered: 'Job acionado',
   },
 
   workflow: {
+    actions: { importWorkflow: 'Importar Workflow', exportWorkflow: 'Exportar Workflow', imported: 'Workflow importado', exported: 'Workflow exportado', importFailed: 'Falha ao importar o Workflow', exportFailed: 'Falha ao exportar o Workflow' },
+    stats: { nodes: 'nós', edges: 'conexões' },
+    evidence: { title: 'Evidências de execução', empty: 'Nenhuma evidência registrada', loadFailed: 'Falha ao carregar as evidências de execução persistidas', node: 'Nó', edge: 'Conexão', loop: 'Loop' },
+    edgeEditor: { title: 'Editar conexão', route: 'Rota', conditionPath: 'Caminho da condição', operator: 'Operador', value: 'Valor', feedback: 'Loop de feedback', maxIterations: 'Máximo de iterações', invalidIterations: 'O máximo de iterações deve ser um inteiro entre 1 e 100', loopId: 'ID do loop (opcional)', loopIdPlaceholder: 'Identidade estável, ex. review-loop', invalidLoopId: 'Formato de ID do loop inválido', invalidConditionValue: 'O valor da condição deve ser JSON válido', conditionValuePlaceholder: 'JSON: "texto", 42, true, ["a"]' },
     node: {
       allowedToolsets: 'Allowed toolsets (empty = none)',
       allowedTools: 'Allowed tools (empty = none)',

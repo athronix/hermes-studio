@@ -186,6 +186,55 @@ class AgentPool:
             "ended_at": kwargs.get("ended_at"),
         })
 
+    def workflow_capabilities(self, profile: str | None, toolset_groups: Any) -> dict[str, Any]:
+        """Return exact tool names for each requested Workflow execution-policy toolset group."""
+        _ensure_agent_imports()
+        groups = toolset_groups if isinstance(toolset_groups, list) else [None]
+        requested_groups: list[list[str] | None] = []
+        seen: set[str] = set()
+        for raw_group in groups:
+            if raw_group is None:
+                requested_group = None
+            elif isinstance(raw_group, list):
+                requested_group = sorted({str(value).strip() for value in raw_group if str(value).strip()})
+            else:
+                raise ValueError("toolset group must be an array or null")
+            key = json.dumps(requested_group, separators=(",", ":"), sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            requested_groups.append(requested_group)
+
+        snapshots: list[dict[str, Any]] = []
+        with _profile_env(profile):
+            _refresh_worker_profile_env()
+            _refresh_approval_allowlist()
+            # Match real Agent construction: MCP discovery first registers the
+            # target profile's dynamic mcp-<server> toolsets in the registry.
+            # get_tool_definitions then applies the exact requested/default
+            # toolset filter; never union MCP names around that authorization.
+            _discover_bridge_mcp_tools()
+            from model_tools import get_tool_definitions
+            from toolsets import resolve_toolset
+
+            for requested_group in requested_groups:
+                resolved_group = _load_enabled_toolsets() if requested_group is None else requested_group
+                for toolset_name in resolved_group:
+                    try:
+                        resolved = resolve_toolset(toolset_name)
+                    except Exception as exc:
+                        raise ValueError(f"unknown toolset: {toolset_name}") from exc
+                    if not resolved:
+                        raise ValueError(f"unknown toolset: {toolset_name}")
+                tools = get_tool_definitions(enabled_toolsets=resolved_group, quiet_mode=True)
+                snapshots.append({
+                    # Preserve the request identity. null means the target profile's
+                    # default toolsets, while tool_names are resolved from that profile.
+                    "toolsets": requested_group,
+                    "tool_names": sorted(set(_tool_names_from_definitions(tools))),
+                })
+        return {"profile": profile or "default", "groups": snapshots}
+
     def get_or_create(
         self,
         session_id: str,
@@ -1314,15 +1363,13 @@ class AgentPool:
                     try:
                         from hermes_constants import parse_reasoning_effort
                         override_cfg = parse_reasoning_effort(str(reasoning_effort).strip())
-                        # parse_reasoning_effort returns None for invalid input; only
-                        # override when we got a recognized value.
-                        if override_cfg is not None:
-                            _saved_reasoning_config = getattr(session.agent, "reasoning_config", None)
-                            session.agent.reasoning_config = override_cfg
-                            _did_override_reasoning = True
-                    except Exception:
-                        # Non-fatal: fall through to default reasoning_config
-                        pass
+                    except Exception as exc:
+                        raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}") from exc
+                    if override_cfg is None:
+                        raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}")
+                    _saved_reasoning_config = getattr(session.agent, "reasoning_config", None)
+                    session.agent.reasoning_config = override_cfg
+                    _did_override_reasoning = True
                 try:
                     result = session.agent.run_conversation(
                         agent_message,

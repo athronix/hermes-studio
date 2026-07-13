@@ -2037,6 +2037,10 @@ jobTriggered: 'Job declenche',
   },
 
   workflow: {
+    actions: { importWorkflow: 'Importer le Workflow', exportWorkflow: 'Exporter le Workflow', imported: 'Workflow importé', exported: 'Workflow exporté', importFailed: 'Échec de l’import du Workflow', exportFailed: 'Échec de l’export du Workflow' },
+    stats: { nodes: 'nœuds', edges: 'connexions' },
+    evidence: { title: 'Preuves d’exécution', empty: 'Aucune preuve enregistrée', loadFailed: 'Échec du chargement des preuves d’exécution persistées', node: 'Nœud', edge: 'Connexion', loop: 'Boucle' },
+    edgeEditor: { title: 'Modifier la connexion', route: 'Route', conditionPath: 'Chemin de condition', operator: 'Opérateur', value: 'Valeur', feedback: 'Boucle de rétroaction', maxIterations: 'Nombre maximal d’itérations', invalidIterations: 'Le nombre maximal d’itérations doit être un entier de 1 à 100', loopId: 'ID de boucle (facultatif)', loopIdPlaceholder: 'Identifiant stable, ex. review-loop', invalidLoopId: 'Format d’ID de boucle invalide', invalidConditionValue: 'La valeur de condition doit être un JSON valide', conditionValuePlaceholder: 'JSON : "texte", 42, true, ["a"]' },
     node: {
       allowedToolsets: 'Allowed toolsets (empty = none)',
       allowedTools: 'Allowed tools (empty = none)',

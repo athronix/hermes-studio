@@ -449,6 +449,14 @@ async function buildAvailableForProfile(
   return { profile, default: currentDefault, default_provider: currentDefaultProvider, groups: groupsWithCustomModels }
 }
 
+export async function getAvailableModelGroupsForProfile(profile: string): Promise<AvailableGroup[]> {
+  const appConfig = await readAppConfig()
+  const modelVisibility = normalizeModelVisibility(appConfig.modelVisibility)
+  const modelCatalogCache = await readProviderModelCatalogCache()
+  const result = await buildAvailableForProfile(profile || 'default', modelCatalogCache, appConfig)
+  return applyModelVisibility(result.groups, modelVisibility)
+}
+
 export async function getAvailable(ctx: any) {
   try {
     const requestedProfile = requestedProfileName(ctx)

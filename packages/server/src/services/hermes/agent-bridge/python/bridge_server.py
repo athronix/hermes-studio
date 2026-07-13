@@ -95,6 +95,9 @@ class BridgeServer:
                 return self.pool.get_result(record.run_id)
             return {"run_id": record.run_id, "session_id": session_id, "status": record.status}
 
+        if action == "workflow_capabilities":
+            return self.pool.workflow_capabilities(req.get("profile"), req.get("toolset_groups"))
+
         if action == "context_estimate":
             session_id = str(req.get("session_id") or "").strip() or uuid.uuid4().hex
             messages = req.get("messages") or req.get("conversation_history") or []

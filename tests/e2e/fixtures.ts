@@ -15,6 +15,9 @@ interface MockHermesApiOptions {
   initialProfileName?: 'default' | 'research'
   sessions?: unknown[]
   workflows?: unknown[]
+  workflowRuns?: unknown[]
+  workflowImportDocument?: unknown
+  workflowImportPreviewError?: string
 }
 
 const sampleModelGroup = {
@@ -166,8 +169,42 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       return
     }
 
+    if (pathname === '/api/hermes/workflows/import/preview' && request.method() === 'POST') {
+      if (options.workflowImportPreviewError) {
+        await route.fulfill(jsonResponse({ error: options.workflowImportPreviewError }, 400))
+        return
+      }
+      await route.fulfill(jsonResponse({ ok: true, preview: { token: 'preview-token', digest: 'digest', expiresAt: Date.now() + 60000, summary: { name: 'Imported flow', nodes: 1, edges: 0 } } }))
+      return
+    }
+
+    if (pathname === '/api/hermes/workflows/import/cancel' && request.method() === 'POST') {
+      await route.fulfill(jsonResponse({ ok: true }))
+      return
+    }
+
+    if (pathname === '/api/hermes/workflows/import/confirm' && request.method() === 'POST') {
+      const definition: any = options.workflowImportDocument || { name: 'Imported flow', nodes: [], edges: [], viewport: null }
+      await route.fulfill(jsonResponse({ ok: true, workflow: { id: 'wf-imported', profile: 'research', workspace: null, created_at: 2, updated_at: 2, ...definition } }, 201))
+      return
+    }
+
+    if (/^\/api\/hermes\/workflows\/[^/]+\/export$/.test(pathname) && request.method() === 'GET') {
+      const workflowId = pathname.split('/').at(-2)
+      const workflow: any = (options.workflows || []).find((item: any) => item?.id === workflowId)
+      await route.fulfill(workflow ? jsonResponse({ format: 'hermes-studio.workflow', version: 1, definition: { name: workflow.name, nodes: workflow.nodes, edges: workflow.edges, viewport: workflow.viewport } }) : jsonResponse({ error: 'workflow not found' }, 404))
+      return
+    }
+
     if (/^\/api\/hermes\/workflows\/[^/]+\/runs$/.test(pathname)) {
-      await route.fulfill(jsonResponse({ runs: [] }))
+      await route.fulfill(jsonResponse({ runs: options.workflowRuns ?? [] }))
+      return
+    }
+
+    if (/^\/api\/hermes\/workflows\/[^/]+\/runs\/[^/]+$/.test(pathname) && request.method() === 'GET') {
+      const runId = pathname.split('/').at(-1)
+      const run = (options.workflowRuns || []).find((item: any) => item?.id === runId)
+      await route.fulfill(run ? jsonResponse({ run }) : jsonResponse({ error: 'workflow run not found' }, 404))
       return
     }
 

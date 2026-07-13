@@ -742,8 +742,8 @@ export default {
       importFailed: 'Workflow 匯入失敗',
       exportFailed: 'Workflow 匯出失敗',
     },
-    evidence: { title: '執行證據', empty: '暫無執行證據', node: '節點', edge: '連線', loop: '循環' },
-    edgeEditor: { title: '編輯連接線', route: '路由', conditionPath: '條件路徑', operator: '操作符', value: '值', feedback: '回饋循環', maxIterations: '最大迭代次數', invalidIterations: '最大迭代次數必須是 1 到 100 的整數' },
+    evidence: { title: '執行證據', empty: '暫無執行證據', loadFailed: '讀取持久化執行證據失敗', node: '節點', edge: '連線', loop: '循環' },
+    edgeEditor: { title: '編輯連接線', route: '路由', conditionPath: '條件路徑', operator: '操作符', value: '值', feedback: '回饋循環', maxIterations: '最大迭代次數', invalidIterations: '最大迭代次數必須是 1 到 100 的整數', loopId: '循環 ID（可選）', loopIdPlaceholder: '穩定識別，例如 review-loop', invalidLoopId: '循環 ID 必須以字母或數字開頭，且只能包含字母、數字、點、底線、冒號或連字號', invalidConditionValue: '條件值必須是有效的 JSON', conditionValuePlaceholder: 'JSON："文字"、42、true、["a"]' },
     batch: {
       toggle: '批次選擇',
       selectAll: '全選',
@@ -789,6 +789,7 @@ export default {
       running: '執行中',
       pending_approval: '待審批',
       completed: '已完成',
+      skipped: '已跳過',
       failed: '失敗',
       approval_rejected: '審批拒絕',
       canceled: '已取消',
