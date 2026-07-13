@@ -487,7 +487,7 @@ export default {
     sessionMissing: 'Die Unterhaltung ist nicht verfügbar.', networkUnavailableNoFallback: 'Die Browser-Spracherkennung ist offline und es ist kein nutzbares Ersatz-STT konfiguriert.', liveTranscript: 'Live-Transkript', transcriptPlaceholder: 'Sprachkern antippen und zu sprechen beginnen',
     recentTurns: 'Letzte Beiträge', you: 'Du', mute: 'Ausgabe stummschalten', unmute: 'Ton einschalten', finishTurn: 'Beitrag beenden', speak: 'Sprechen beginnen', end: 'Beenden',
     status: { idle: 'Bereit', paused: 'Mikrofon aus', listening: 'Hört zu', processing: 'Transkribiert', thinking: '{agent} denkt nach', speaking: '{agent} spricht', error: 'Sprachverbindung unterbrochen' },
-    hint: { idle: 'Mitte antippen, um einen Sprachbeitrag zu starten', paused: 'Schalte das Mikrofon ein, wenn du bereit bist', listening: 'Zum Senden kurz pausieren oder zum Beenden tippen', processing: 'Deine Sprache wird in Text umgewandelt', thinking: 'Deine Nachricht wurde an die Unterhaltung gesendet', speaking: 'Du kannst jederzeit unterbrechen', error: 'Mitte antippen, um es erneut zu versuchen' },
+    hint: { idle: 'Mitte antippen, um einen Sprachbeitrag zu starten', paused: 'Schalte das Mikrofon ein, wenn du bereit bist', listening: 'Zum Senden kurz pausieren oder zum Beenden tippen', listeningManual: 'Aufnahme läuft. Erneut in die Mitte tippen, um zu stoppen und zu transkribieren', processing: 'Deine Sprache wird in Text umgewandelt', thinking: 'Deine Nachricht wurde an die Unterhaltung gesendet', speaking: 'Du kannst jederzeit unterbrechen', error: 'Mitte antippen, um es erneut zu versuchen' },
   },
 
   // Chat

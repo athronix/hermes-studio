@@ -487,7 +487,7 @@ export default {
     sessionMissing: '대화를 사용할 수 없습니다.', networkUnavailableNoFallback: '브라우저 음성 인식이 오프라인이며 사용 가능한 대체 STT가 설정되지 않았습니다.', liveTranscript: '실시간 텍스트', transcriptPlaceholder: '음성 코어를 누르고 말해 보세요',
     recentTurns: '최근 대화', you: '나', mute: '출력 음소거', unmute: '음소거 해제', finishTurn: '말하기 완료', speak: '말하기 시작', end: '종료',
     status: { idle: '준비됨', paused: '마이크 꺼짐', listening: '듣는 중', processing: '변환 중', thinking: '{agent}가 생각 중', speaking: '{agent}가 말하는 중', error: '음성 연결이 중단됨' },
-    hint: { idle: '중앙을 눌러 음성 턴을 시작하세요', paused: '준비되면 마이크를 다시 켜세요', listening: '자연스럽게 멈추면 전송되며 눌러서 끝낼 수도 있습니다', processing: '음성을 텍스트로 변환하고 있습니다', thinking: '현재 대화로 메시지를 보냈습니다', speaking: '언제든지 응답을 중단할 수 있습니다', error: '중앙을 눌러 다시 시도하세요' },
+    hint: { idle: '중앙을 눌러 음성 턴을 시작하세요', paused: '준비되면 마이크를 다시 켜세요', listening: '자연스럽게 멈추면 전송되며 눌러서 끝낼 수도 있습니다', listeningManual: '녹음 중입니다. 중앙을 다시 눌러 중지하고 텍스트로 변환하세요', processing: '음성을 텍스트로 변환하고 있습니다', thinking: '현재 대화로 메시지를 보냈습니다', speaking: '언제든지 응답을 중단할 수 있습니다', error: '중앙을 눌러 다시 시도하세요' },
   },
 
   // 채팅

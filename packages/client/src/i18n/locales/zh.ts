@@ -507,6 +507,7 @@ export default {
       idle: '轻触中央区域开始一轮语音',
       paused: '准备好后重新打开麦克风',
       listening: '自然停顿后自动发送，也可以轻触结束',
+      listeningManual: '正在录音，再次轻触中央区域结束并转写',
       processing: '正在将你的语音转换为文字',
       thinking: '消息已发送到当前对话',
       speaking: '你可以随时打断回答',

@@ -507,6 +507,7 @@ export default {
       idle: 'Tap the center to begin a voice turn',
       paused: 'Turn the microphone back on when you are ready',
       listening: 'Pause naturally to send, or tap to finish',
+      listeningManual: 'Recording now. Tap the center again to stop and transcribe',
       processing: 'Converting your voice into text',
       thinking: 'Your message was sent to the current conversation',
       speaking: 'You can interrupt at any time',

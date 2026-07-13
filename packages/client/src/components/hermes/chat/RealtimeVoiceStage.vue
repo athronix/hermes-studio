@@ -48,7 +48,7 @@ const browserRecognition = useBrowserSpeechRecognition({
     failedWithReason: reason => t('chat.voiceInput.browserSpeechFailedWithReason', { error: reason }),
   },
 })
-const fallbackRecorder = useMicRecorder({
+const micRecorder = useMicRecorder({
   messages: {
     unsupported: t('chat.voiceInput.microphoneUnsupported'),
     recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
@@ -60,6 +60,7 @@ const sessionActive = ref(false)
 const submittedTranscript = ref('')
 const errorMessage = ref('')
 const waitingForResponse = ref(false)
+const manualCapture = ref(false)
 const responseStartedAt = ref(0)
 const audioLevel = ref(0)
 const segmentAudioPlaying = ref(false)
@@ -83,8 +84,9 @@ let playbackGeneration = 0
 let ttsSegmentIndex = 0
 let speechQueueRunning = false
 let activeSynthesisCount = 0
-let activeFallbackSetting: SttProviderSettingsResponse | null = null
-let fallbackSettingPromise: Promise<SttProviderSettingsResponse | null> | null = null
+let activeBackendSetting: SttProviderSettingsResponse | null = null
+let backendSettingPromise: Promise<SttProviderSettingsResponse | null> | null = null
+let activeCaptureMode: 'browser' | 'backend' | null = null
 let handlingRecognitionFailure = false
 const speechQueueIdleWaiters = new Set<() => void>()
 const synthesisControllers = new Set<AbortController>()
@@ -119,7 +121,12 @@ const agentDisplayName = computed(() => {
 const statusLabel = computed(() => t(`realtimeVoice.status.${mode.value}`, {
   agent: agentDisplayName.value,
 }))
-const statusHint = computed(() => t(`realtimeVoice.hint.${mode.value}`))
+const statusHint = computed(() => {
+  if (mode.value === 'listening' && manualCapture.value) {
+    return t('realtimeVoice.hint.listeningManual')
+  }
+  return t(`realtimeVoice.hint.${mode.value}`)
+})
 const sessionTitle = computed(() => chatStore.activeSession?.title?.trim() || t('realtimeVoice.untitledSession'))
 const displayCaption = computed(() => {
   if (errorMessage.value) return errorMessage.value
@@ -174,6 +181,25 @@ function toolDetail(message: Message) {
 
 function browserCaptureLanguage() {
   return sttSettings.openaiLanguage.value.trim() || sttSettings.customLanguage.value.trim() || ''
+}
+
+function isMobileDevice() {
+  if (typeof navigator === 'undefined') return false
+  const userAgent = navigator.userAgent || ''
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)) return true
+
+  const hasTouch = navigator.maxTouchPoints > 1
+  const pointerQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(pointer: coarse), (any-pointer: coarse)')
+    : null
+  const hasCoarsePointer = Boolean(pointerQuery?.matches)
+  const screenShortEdge = typeof window !== 'undefined' && window.screen
+    ? Math.min(window.screen.width, window.screen.height)
+    : Number.POSITIVE_INFINITY
+
+  // "Request desktop site" can replace the mobile UA entirely. Physical
+  // touch/pointer/screen traits still distinguish the phone from a PC.
+  return hasTouch && hasCoarsePointer && screenShortEdge <= 1024
 }
 
 function clearTimers() {
@@ -388,10 +414,10 @@ async function startVisualizer(sourceStream?: MediaStream | null) {
   }
 }
 
-async function loadActiveFallbackSetting() {
-  if (fallbackSettingPromise) return fallbackSettingPromise
+async function loadActiveBackendSetting() {
+  if (backendSettingPromise) return backendSettingPromise
 
-  fallbackSettingPromise = fetchSttSettings()
+  backendSettingPromise = fetchSttSettings()
     .then((response) => {
       const provider = response.activeProvider
       if (!provider || provider === 'browser') return null
@@ -399,7 +425,7 @@ async function loadActiveFallbackSetting() {
     })
     .catch(() => null)
 
-  return fallbackSettingPromise
+  return backendSettingPromise
 }
 
 function setError(cause: unknown) {
@@ -425,24 +451,35 @@ async function startCapture() {
   activeSpeechSegment.value = null
   responseStartedAt.value = 0
   sessionActive.value = true
-  activeFallbackSetting = await loadActiveFallbackSetting()
+  activeBackendSetting = await loadActiveBackendSetting()
+  manualCapture.value = Boolean(activeBackendSetting && isMobileDevice())
+  activeCaptureMode = manualCapture.value ? 'backend' : 'browser'
 
   try {
-    if (activeFallbackSetting) {
+    if (manualCapture.value) {
+      await micRecorder.start()
+      mode.value = 'listening'
+      void startVisualizer(micRecorder.stream.value)
+      return
+    }
+
+    if (activeBackendSetting) {
       try {
-        await fallbackRecorder.start()
+        await micRecorder.start()
       } catch {
-        activeFallbackSetting = null
+        activeBackendSetting = null
       }
     }
+
     await browserRecognition.start({
       language: browserCaptureLanguage(),
       continuous: false,
     })
     mode.value = 'listening'
-    void startVisualizer(fallbackRecorder.stream.value)
+    void startVisualizer(micRecorder.stream.value)
   } catch (cause) {
-    fallbackRecorder.cancel()
+    activeCaptureMode = null
+    micRecorder.cancel()
     setError(cause)
   }
 }
@@ -463,6 +500,29 @@ async function submitTranscript(value: string) {
   await chatStore.sendMessage(transcript)
 }
 
+async function transcribeBackendCapture(audio: Blob, setting: SttProviderSettingsResponse) {
+  if (audio.size <= 0) {
+    mode.value = 'idle'
+    return
+  }
+
+  clearTimers()
+  mode.value = 'processing'
+
+  try {
+    const settings = setting.settings
+    const result = await transcribeSpeech({
+      audio,
+      provider: setting.provider,
+      language: typeof settings.language === 'string' ? settings.language : undefined,
+      prompt: typeof settings.prompt === 'string' ? settings.prompt : undefined,
+    })
+    await submitTranscript(result.text)
+  } catch (cause) {
+    setError(cause)
+  }
+}
+
 async function handleRecognitionFailure() {
   if ((mode.value !== 'listening' && mode.value !== 'processing') || handlingRecognitionFailure || !browserRecognition.error.value) return
   handlingRecognitionFailure = true
@@ -470,33 +530,28 @@ async function handleRecognitionFailure() {
   mode.value = 'processing'
 
   try {
-    if (browserRecognition.errorCode.value === 'network' && activeFallbackSetting) {
-      const audio = await fallbackRecorder.stop()
+    if (browserRecognition.errorCode.value === 'network' && activeBackendSetting) {
+      const audio = await micRecorder.stop()
       stopVisualizer()
+      activeCaptureMode = null
       if (audio.size <= 0) {
         setError(browserRecognition.error.value)
         return
       }
-
-      const settings = activeFallbackSetting.settings
-      const result = await transcribeSpeech({
-        audio,
-        provider: activeFallbackSetting.provider,
-        language: typeof settings.language === 'string' ? settings.language : undefined,
-        prompt: typeof settings.prompt === 'string' ? settings.prompt : undefined,
-      })
-      await submitTranscript(result.text)
+      await transcribeBackendCapture(audio, activeBackendSetting)
       return
     }
 
-    fallbackRecorder.cancel()
+    micRecorder.cancel()
     stopVisualizer()
+    activeCaptureMode = null
     setError(browserRecognition.errorCode.value === 'network'
       ? t('realtimeVoice.networkUnavailableNoFallback')
       : browserRecognition.error.value)
   } catch (cause) {
-    fallbackRecorder.cancel()
+    micRecorder.cancel()
     stopVisualizer()
+    activeCaptureMode = null
     setError(cause)
   } finally {
     handlingRecognitionFailure = false
@@ -507,6 +562,22 @@ async function stopCapture() {
   if (mode.value !== 'listening') return
   clearTimers()
   mode.value = 'processing'
+
+  if (activeCaptureMode === 'backend' && activeBackendSetting) {
+    try {
+      const audio = await micRecorder.stop()
+      stopVisualizer()
+      activeCaptureMode = null
+      await transcribeBackendCapture(audio, activeBackendSetting)
+    } catch (cause) {
+      activeCaptureMode = null
+      micRecorder.cancel()
+      stopVisualizer()
+      setError(cause)
+    }
+    return
+  }
+
   let transcript = ''
 
   try {
@@ -520,9 +591,10 @@ async function stopCapture() {
     return
   }
 
-  if (fallbackRecorder.state.value.status !== 'idle') {
-    await fallbackRecorder.stop().catch(() => undefined)
+  if (micRecorder.state.value.status !== 'idle') {
+    await micRecorder.stop().catch(() => undefined)
   }
+  activeCaptureMode = null
   stopVisualizer()
   await submitTranscript(transcript)
 }
@@ -530,7 +602,8 @@ async function stopCapture() {
 async function stopActiveTurn() {
   clearTimers()
   browserRecognition.cancel()
-  fallbackRecorder.cancel()
+  micRecorder.cancel()
+  activeCaptureMode = null
   stopVisualizer()
   waitingForResponse.value = false
   resetResponseSpeechState()
@@ -553,6 +626,10 @@ async function toggleCapture() {
 
 function scheduleRestart(delay = 420) {
   if (!sessionActive.value) return
+  if (manualCapture.value) {
+    mode.value = 'idle'
+    return
+  }
   if (restartTimer) clearTimeout(restartTimer)
   restartTimer = setTimeout(() => {
     restartTimer = null
@@ -768,7 +845,8 @@ function closeStage() {
   stopPreparedSegmentAudio()
   clearTimers()
   browserRecognition.cancel()
-  fallbackRecorder.cancel()
+  micRecorder.cancel()
+  activeCaptureMode = null
   stopVisualizer()
   speech.stop(true)
   emit('close')
@@ -799,7 +877,12 @@ onMounted(() => {
   sessionActive.value = true
   restartTimer = setTimeout(() => {
     restartTimer = null
-    void startCapture()
+    void loadActiveBackendSetting().then((setting) => {
+      if (!sessionActive.value) return
+      activeBackendSetting = setting
+      manualCapture.value = Boolean(setting && isMobileDevice())
+      if (!manualCapture.value) void startCapture()
+    })
   }, 180)
 })
 
@@ -812,7 +895,8 @@ onBeforeUnmount(() => {
   stopPreparedSegmentAudio()
   clearTimers()
   browserRecognition.cancel()
-  fallbackRecorder.cancel()
+  micRecorder.cancel()
+  activeCaptureMode = null
   stopVisualizer()
   speech.stop(true)
   document.body.style.overflow = previousBodyOverflow

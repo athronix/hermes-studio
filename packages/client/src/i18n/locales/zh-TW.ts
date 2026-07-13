@@ -507,6 +507,7 @@ export default {
       idle: '輕觸中央區域開始一輪語音',
       paused: '準備好後重新開啟麥克風',
       listening: '自然停頓後自動傳送，也可以輕觸結束',
+      listeningManual: '正在錄音，再次輕觸中央區域結束並轉寫',
       processing: '正在將你的語音轉換為文字',
       thinking: '訊息已傳送到目前對話',
       speaking: '你可以隨時中斷回答',

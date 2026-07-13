@@ -185,6 +185,7 @@ function resolveRequest(index: number) {
 
 describe('RealtimeVoiceStage prepared playback queue', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     vi.clearAllMocks()
     testState.requests = []
     testState.activeRequests = 0
@@ -209,6 +210,8 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
@@ -301,7 +304,7 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
   })
 
   it.each(['openai', 'custom', 'doubao'] as const)(
-    'falls back to the currently active %s STT provider on browser network errors',
+    'keeps PC browser capture and falls back to the active %s STT provider on network errors',
     async (provider) => {
     testState.sttSettingsResponse = {
       activeProvider: provider,
@@ -336,11 +339,62 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     },
   )
 
+  it('uses explicit manual backend recording on mobile even when desktop-site mode hides the mobile UA', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138 Safari/537.36',
+      maxTouchPoints: 5,
+    })
+    vi.stubGlobal('screen', { width: 430, height: 932 })
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+    testState.sttSettingsResponse = {
+      activeProvider: 'openai',
+      providers: [{
+        provider: 'openai',
+        settings: { language: 'zh-CN', prompt: '中英混合' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: Date.now(),
+      }],
+    }
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--idle')
+    expect(testState.recorder.start).not.toHaveBeenCalled()
+    expect(testState.browserRecognition.start).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.listeningManual')
+    expect(testState.recorder.start).toHaveBeenCalledTimes(1)
+    expect(testState.browserRecognition.start).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(testState.transcribeSpeech).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'openai',
+      language: 'zh-CN',
+      prompt: '中英混合',
+    }))
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('备用识别文本')
+    wrapper.unmount()
+  })
+
   it('shows a direct network error when the active STT setting has no backend fallback', async () => {
     const wrapper = mount(RealtimeVoiceStage)
 
     await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
     await settle()
+    expect(testState.recorder.start).not.toHaveBeenCalled()
+    expect(testState.browserRecognition.start).toHaveBeenCalledWith({
+      language: 'zh-CN',
+      continuous: false,
+    })
     testState.browserRecognition.errorCode.value = 'network'
     testState.browserRecognition.error.value = new Error('network')
     await settle()

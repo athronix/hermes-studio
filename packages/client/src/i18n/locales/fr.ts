@@ -487,7 +487,7 @@ export default {
     sessionMissing: 'La conversation est indisponible.', networkUnavailableNoFallback: 'La reconnaissance vocale du navigateur est hors ligne et aucun STT de secours utilisable n est configuré.', liveTranscript: 'Transcription en direct', transcriptPlaceholder: 'Touchez le noyau vocal et commencez à parler',
     recentTurns: 'Échanges récents', you: 'Vous', mute: 'Couper le son', unmute: 'Rétablir le son', finishTurn: 'Terminer le tour', speak: 'Commencer à parler', end: 'Terminer',
     status: { idle: 'Prêt', paused: 'Microphone coupé', listening: 'Écoute', processing: 'Transcription', thinking: '{agent} réfléchit', speaking: '{agent} parle', error: 'Liaison vocale interrompue' },
-    hint: { idle: 'Touchez le centre pour commencer un tour vocal', paused: 'Réactivez le microphone quand vous êtes prêt', listening: 'Faites une pause pour envoyer ou touchez pour terminer', processing: 'Conversion de votre voix en texte', thinking: 'Votre message a été envoyé à la conversation', speaking: 'Vous pouvez interrompre à tout moment', error: 'Touchez le centre pour réessayer' },
+    hint: { idle: 'Touchez le centre pour commencer un tour vocal', paused: 'Réactivez le microphone quand vous êtes prêt', listening: 'Faites une pause pour envoyer ou touchez pour terminer', listeningManual: 'Enregistrement en cours. Touchez à nouveau le centre pour arrêter et transcrire', processing: 'Conversion de votre voix en texte', thinking: 'Votre message a été envoyé à la conversation', speaking: 'Vous pouvez interrompre à tout moment', error: 'Touchez le centre pour réessayer' },
   },
 
   // Chat
