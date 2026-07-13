@@ -2246,4 +2246,166 @@ describe('workflow manager', () => {
       await manager.delete(workflow.id)
     }
   })
+  it('recovers every active run after restart without the UI pagination limit', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const {
+      createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listAllWorkflowRuns,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    chatRunMock.abortSession.mockReset().mockResolvedValue(undefined)
+    const manager = new WorkflowManager()
+    const workflow = manager.create({ name: `Recovery ${Date.now()}`, profile: 'default', nodes: [], edges: [] })
+    const activeRuns = Array.from({ length: 501 }, (_, index) => createWorkflowRun({
+      workflow_id: workflow.id, status: index % 2 === 0 ? 'running' : 'queued',
+      snapshot_nodes: [{ id: `node-${index}`, type: 'agent', data: { agent: 'hermes', input: 'work' } }],
+      snapshot_edges: [], started_at: Date.now() - index,
+    }))
+    for (const [index, run] of activeRuns.entries()) {
+      createWorkflowRunNodeSession({
+        run_id: run.id, workflow_id: workflow.id, node_id: `node-${index}`,
+        execution_id: `node-${index}`, session_id: `session-${index}`, status: 'running',
+      })
+    }
+    try {
+      expect(listAllWorkflowRuns(workflow.id)).toHaveLength(501)
+      const recovered = await manager.recoverActiveRuns(workflow.id)
+      expect(recovered).toEqual({ runs: 501, sessions: 501 })
+      expect(activeRuns.every(run => getWorkflowRun(run.id)?.status === 'failed')).toBe(true)
+      expect(chatRunMock.abortSession).toHaveBeenCalledTimes(501)
+      expect(chatRunMock.abortSession).toHaveBeenCalledWith('session-500', expect.stringContaining('server restarted'))
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('persists restart terminal state before aborting surviving runners and never aborts completed sessions', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const {
+      createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const workflow = manager.create({ name: `Recovery ordering ${Date.now()}`, profile: 'default', nodes: [], edges: [] })
+    const run = createWorkflowRun({
+      workflow_id: workflow.id, status: 'running', snapshot_nodes: [], snapshot_edges: [],
+      compiled_loops: [{ id: 'loop:active', bodyNodeIds: ['running'], feedbackEdgeId: 'feedback', headerNodeId: 'running', latchNodeId: 'running', maxIterations: 3, exitNodeIds: [], parentLoopId: null }],
+    })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'running', execution_id: 'running@loop:active:0', iteration_path: [{ loopId: 'loop:active', iteration: 0 }], session_id: 'shared-session', status: 'running' })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'queued', session_id: 'shared-session', status: 'queued' })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'done', session_id: 'completed-session', status: 'completed' })
+    chatRunMock.abortSession.mockReset().mockImplementation(async () => {
+      expect(getWorkflowRun(run.id)?.status).toBe('failed')
+      expect(listWorkflowRunNodeSessions(run.id).filter(item => item.status === 'running' || item.status === 'queued')).toEqual([])
+    })
+    try {
+      await expect(manager.recoverActiveRuns(workflow.id)).resolves.toEqual({ runs: 1, sessions: 1 })
+      const { listWorkflowRunLoopEpochs } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+      expect(listWorkflowRunLoopEpochs(run.id)).toEqual([expect.objectContaining({
+        loop_id: 'loop:active', iteration: 0, status: 'failed', exit_reason: expect.stringContaining('server restarted'),
+      })])
+      expect(chatRunMock.abortSession).toHaveBeenCalledTimes(1)
+      expect(chatRunMock.abortSession).not.toHaveBeenCalledWith('completed-session', expect.anything())
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('keeps recovered and canceled terminal state authoritative against late completion', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const {
+      createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions,
+      updateWorkflowRun, updateWorkflowRunNodeSession,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const workflow = manager.create({ name: `Late completion ${Date.now()}`, profile: 'default', nodes: [], edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running', snapshot_nodes: [], snapshot_edges: [] })
+    const session = createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'agent', session_id: 'late-session', status: 'running' })
+    chatRunMock.abortSession.mockReset().mockResolvedValue(undefined)
+    try {
+      await manager.recoverActiveRuns(workflow.id)
+      updateWorkflowRun(run.id, { status: 'completed', finished_at: Date.now(), error: null })
+      updateWorkflowRunNodeSession(session.id, { status: 'completed', finished_at: Date.now(), error: null })
+      expect(getWorkflowRun(run.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('server restarted') })
+      expect(listWorkflowRunNodeSessions(run.id)[0]).toMatchObject({ status: 'failed', error: expect.stringContaining('server restarted') })
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('persists canceled run and sessions before awaiting runner abort', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, createWorkflowRunNodeSession, getWorkflowRun, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const workflow = manager.create({ name: `Stop ordering ${Date.now()}`, profile: 'default', nodes: [], edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running', snapshot_nodes: [], snapshot_edges: [] })
+    createWorkflowRunNodeSession({ run_id: run.id, workflow_id: workflow.id, node_id: 'agent', session_id: 'stop-session', status: 'running' })
+    chatRunMock.abortSession.mockReset().mockImplementation(async () => {
+      expect(getWorkflowRun(run.id)?.status).toBe('canceled')
+      expect(listWorkflowRunNodeSessions(run.id)[0].status).toBe('canceled')
+    })
+    try {
+      await manager.stopRun(workflow.id, run.id)
+      expect(chatRunMock.abortSession).toHaveBeenCalledTimes(1)
+    } finally { await manager.delete(workflow.id) }
+  })
+
+  it('deletes workflow runs beyond the public 500-run page', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { createWorkflowRun, getWorkflowRun, listAllWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    const workflow = manager.create({ name: `Delete all ${Date.now()}`, profile: 'default', nodes: [], edges: [] })
+    const runs = Array.from({ length: 501 }, () => createWorkflowRun({ workflow_id: workflow.id, status: 'completed', snapshot_nodes: [], snapshot_edges: [] }))
+    expect(listAllWorkflowRuns(workflow.id)).toHaveLength(501)
+    await expect(manager.delete(workflow.id)).resolves.toBe(true)
+    expect(runs.every(run => getWorkflowRun(run.id) === null)).toBe(true)
+  })
+
+  it('rejects late edge and loop evidence after a run is terminal', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const {
+      createWorkflowRun, createWorkflowRunEdgeEvaluation, createWorkflowRunLoopEpoch, updateWorkflowRun,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    initAllStores()
+    const run = createWorkflowRun({ workflow_id: `terminal-evidence-${Date.now()}`, status: 'running' })
+    updateWorkflowRun(run.id, { status: 'failed', finished_at: Date.now(), error: 'terminal' })
+    expect(() => createWorkflowRunEdgeEvaluation({
+      run_id: run.id, workflow_id: run.workflow_id, edge_id: 'late-edge', source_node_id: 'a', target_node_id: 'b',
+      source_outcome: 'success', status: 'taken', route: 'success', reason: null, sequence: 1,
+      orchestration: { route: 'success' }, condition_evaluation: null,
+    })).toThrow('cannot append edge evidence to terminal workflow run')
+    expect(() => createWorkflowRunLoopEpoch({
+      run_id: run.id, workflow_id: run.workflow_id, loop_id: 'late-loop', iteration: 0, iteration_path: [],
+      status: 'completed', exit_reason: 'late', sequence: 2, started_at: Date.now(), finished_at: Date.now(),
+    })).toThrow('cannot append loop evidence to terminal workflow run')
+  })
+
+  it('does not let a late successful node completion override stopRun', async () => {
+    const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
+    const { listWorkflowRunEdgeEvaluations, listWorkflowRunNodeSessions } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    initAllStores()
+    const manager = new WorkflowManager()
+    let release!: (value: any) => void
+    chatRunMock.runAndWait.mockReset().mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    chatRunMock.abortSession.mockReset().mockResolvedValue(undefined)
+    const workflow = manager.create({
+      name: `Late success stop ${Date.now()}`, profile: 'default',
+      nodes: [{ id: 'a', type: 'agent', data: { title: 'A', agent: 'hermes', input: 'a' } }, { id: 'b', type: 'agent', data: { title: 'B', agent: 'hermes', input: 'b' } }], edges: [{ id: 'a-b', source: 'a', target: 'b' }],
+    })
+    try {
+      const runPromise = manager.runNow(workflow.id)
+      await vi.waitFor(() => expect(manager.getRuntimeStatus(workflow.id).status).toBe('running'))
+      const runId = manager.getRuntimeStatus(workflow.id).runId!
+      await manager.stopRun(workflow.id, runId)
+      release({ ok: true, output: 'late success' })
+      const result = await runPromise
+      expect(result.run.status).toBe('canceled')
+      expect(listWorkflowRunNodeSessions(runId).map(item => item.status)).toEqual(['canceled'])
+      expect(listWorkflowRunEdgeEvaluations(runId)).toEqual([])
+      expect(chatRunMock.runAndWait).toHaveBeenCalledTimes(1)
+    } finally { await manager.delete(workflow.id) }
+  })
+
 })

@@ -123,6 +123,8 @@ function rowToEdgeEvaluationRecord(row: Record<string, any>): WorkflowRunEdgeEva
 }
 
 export function createWorkflowRunEdgeEvaluation(input: Omit<WorkflowRunEdgeEvaluationRecord, 'id' | 'evaluated_at' | 'source_execution_id' | 'iteration_path'> & { id?: string; evaluated_at?: number; source_execution_id?: string; iteration_path?: unknown[] }): WorkflowRunEdgeEvaluationRecord {
+  const run = getWorkflowRun(input.run_id)
+  if (run && run.status !== 'queued' && run.status !== 'running') throw new Error(`cannot append edge evidence to terminal workflow run ${input.run_id}`)
   const record = { ...input, id: input.id?.trim() || randomUUID(), source_execution_id: input.source_execution_id?.trim() || input.source_node_id, iteration_path: input.iteration_path || [], reason: input.reason ?? null, evaluated_at: input.evaluated_at ?? Date.now() } as WorkflowRunEdgeEvaluationRecord
   const row = { ...record, iteration_path_json: JSON.stringify(record.iteration_path), orchestration_json: JSON.stringify(record.orchestration), condition_evaluation_json: record.condition_evaluation == null ? null : JSON.stringify(record.condition_evaluation) }
   const db = getDb()
@@ -144,13 +146,26 @@ function rowToLoopEpochRecord(row: Record<string, any>): WorkflowRunLoopEpochRec
     started_at: Number(row.started_at), finished_at: Number(row.finished_at) }
 }
 
-export function createWorkflowRunLoopEpoch(input: Omit<WorkflowRunLoopEpochRecord, 'id'> & { id?: string }): WorkflowRunLoopEpochRecord {
+type WorkflowRunLoopEpochInput = Omit<WorkflowRunLoopEpochRecord, 'id'> & { id?: string }
+
+function insertWorkflowRunLoopEpoch(input: WorkflowRunLoopEpochInput): WorkflowRunLoopEpochRecord {
   const record = { ...input, id: input.id?.trim() || randomUUID(), exit_reason: input.exit_reason ?? null } as WorkflowRunLoopEpochRecord
   const row = { ...record, iteration_path_json: JSON.stringify(record.iteration_path) }
   const db = getDb()
   if (!db) { jsonSet(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, record.id, row as any); return record }
   db.prepare(`INSERT INTO ${WORKFLOW_RUN_LOOP_EPOCHS_TABLE} (id, run_id, workflow_id, loop_id, iteration, iteration_path_json, status, exit_reason, sequence, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.id, record.run_id, record.workflow_id, record.loop_id, record.iteration, row.iteration_path_json, record.status, record.exit_reason, record.sequence, record.started_at, record.finished_at)
   return record
+}
+
+export function createWorkflowRunLoopEpoch(input: WorkflowRunLoopEpochInput): WorkflowRunLoopEpochRecord {
+  const run = getWorkflowRun(input.run_id)
+  const isCanceledTerminalEvidence = run?.status === 'canceled' && input.status === 'canceled'
+  if (run && run.status !== 'queued' && run.status !== 'running' && !isCanceledTerminalEvidence) throw new Error(`cannot append loop evidence to terminal workflow run ${input.run_id}`)
+  return insertWorkflowRunLoopEpoch(input)
+}
+
+export function createWorkflowRunRecoveryLoopEpoch(input: WorkflowRunLoopEpochInput): WorkflowRunLoopEpochRecord {
+  return insertWorkflowRunLoopEpoch(input)
 }
 
 export function listWorkflowRunLoopEpochs(runId: string): WorkflowRunLoopEpochRecord[] {
@@ -236,9 +251,12 @@ export function updateWorkflowRun(id: string, patch: {
   started_at?: number | null
   finished_at?: number | null
   error?: string | null
+  allow_terminal_reset?: boolean
 }): WorkflowRunRecord | null {
   const existing = getWorkflowRun(id)
   if (!existing) return null
+  const terminalStatuses: WorkflowRunStatus[] = ['completed', 'failed', 'canceled']
+  if (patch.status && terminalStatuses.includes(existing.status) && patch.status !== existing.status && !patch.allow_terminal_reset) return existing
   const next: WorkflowRunRecord = {
     ...existing,
     status: patch.status ?? existing.status,
@@ -304,6 +322,28 @@ export function deleteWorkflowRun(id: string): boolean {
     throw err
   }
   return true
+}
+
+export function listAllWorkflowRuns(workflowId?: string | null): WorkflowRunRecord[] {
+  const normalizedWorkflowId = workflowId?.trim() || ''
+  const db = getDb()
+  if (!db) {
+    return Object.values(jsonGetAll(WORKFLOW_RUNS_TABLE))
+      .map(rowToRunRecord)
+      .filter(record => !normalizedWorkflowId || record.workflow_id === normalizedWorkflowId)
+      .sort((a, b) => b.created_at - a.created_at)
+  }
+  const rows = normalizedWorkflowId
+    ? db.prepare(`SELECT * FROM ${WORKFLOW_RUNS_TABLE} WHERE workflow_id = ? ORDER BY created_at DESC`).all(normalizedWorkflowId)
+    : db.prepare(`SELECT * FROM ${WORKFLOW_RUNS_TABLE} ORDER BY created_at DESC`).all()
+  return (rows as Record<string, any>[]).map(rowToRunRecord)
+}
+
+export function listActiveWorkflowRuns(): WorkflowRunRecord[] {
+  const db = getDb()
+  if (!db) return listAllWorkflowRuns().filter(run => run.status === 'queued' || run.status === 'running')
+  const rows = db.prepare(`SELECT * FROM ${WORKFLOW_RUNS_TABLE} WHERE status IN ('queued', 'running') ORDER BY created_at DESC`).all() as Record<string, any>[]
+  return rows.map(rowToRunRecord)
 }
 
 export function listWorkflowRuns(workflowId?: string | null, limit = 100): WorkflowRunRecord[] {
@@ -411,6 +451,8 @@ export function updateWorkflowRunNodeSession(id: string, patch: {
 }): WorkflowRunNodeSessionRecord | null {
   const existing = getWorkflowRunNodeSession(id)
   if (!existing) return null
+  const terminalStatuses: WorkflowRunNodeStatus[] = ['completed', 'failed', 'blocked', 'approval_rejected', 'canceled']
+  if (patch.status && terminalStatuses.includes(existing.status) && patch.status !== existing.status) return existing
   const next: WorkflowRunNodeSessionRecord = {
     ...existing,
     status: patch.status ?? existing.status,

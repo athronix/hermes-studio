@@ -341,6 +341,15 @@ export async function bootstrap() {
   setChatRunServer(chatRunServer)
   chatRunServer.init()
 
+  // A process restart loses in-memory scheduler, approval, and runner ownership.
+  // Persist a fail-closed terminal state before exposing workflow sockets, then abort
+  // any surviving session runners through the now-registered ChatRun service.
+  const { getWorkflowManager } = await import('./services/workflow-manager')
+  const recoveredWorkflows = await getWorkflowManager().recoverActiveRuns()
+  if (recoveredWorkflows.runs > 0) {
+    logger.warn('Recovered %d orphaned workflow runs and aborted %d sessions', recoveredWorkflows.runs, recoveredWorkflows.sessions)
+  }
+
   workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
   workflowSocketServer.init()
 

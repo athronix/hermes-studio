@@ -15,11 +15,15 @@ import {
   createWorkflowRun,
   createWorkflowRunEdgeEvaluation,
   createWorkflowRunLoopEpoch,
+  createWorkflowRunRecoveryLoopEpoch,
   createWorkflowRunNodeSession,
   deleteWorkflowRun,
   deleteWorkflowRunNodeSessions,
   getWorkflowRun,
   listWorkflowRunNodeSessions,
+  listWorkflowRunLoopEpochs,
+  listActiveWorkflowRuns,
+  listAllWorkflowRuns,
   listWorkflowRuns,
   updateWorkflowRun,
   updateWorkflowRunNodeSession,
@@ -715,7 +719,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
   async delete(id: string): Promise<boolean> {
     const workflow = getWorkflow(id)
     if (!workflow) return false
-    const runs = listWorkflowRuns(id, 500)
+    const runs = listAllWorkflowRuns(id)
     for (const run of runs) {
       await this.deleteRun(id, run.id)
     }
@@ -724,13 +728,60 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     return deleted
   }
 
+  async recoverActiveRuns(workflowId?: string): Promise<{ runs: number; sessions: number }> {
+    const activeRuns = listActiveWorkflowRuns().filter(run => !workflowId || run.workflow_id === workflowId)
+    if (activeRuns.length === 0) return { runs: 0, sessions: 0 }
+    const reason = 'Workflow runtime cannot safely resume because the server restarted'
+    const finishedAt = Date.now()
+    const sessionIds = new Set<string>()
+    for (const run of activeRuns) {
+      updateWorkflowRun(run.id, { status: 'failed', finished_at: finishedAt, error: reason })
+      const activeSessions = listWorkflowRunNodeSessions(run.id).filter(session => session.status === 'queued' || session.status === 'running')
+      for (const session of activeSessions) {
+        updateWorkflowRunNodeSession(session.id, { status: 'failed', finished_at: finishedAt, error: reason })
+        if (session.session_id) sessionIds.add(session.session_id)
+      }
+      let sequence = Math.max(-1, ...listWorkflowRunLoopEpochs(run.id).map(epoch => epoch.sequence)) + 1
+      const activeLoopIterations = new Map<string, { iteration: number; iterationPath: unknown[] }>()
+      for (const session of activeSessions) {
+        for (const entry of Array.isArray(session.iteration_path) ? session.iteration_path : []) {
+          if (!entry || typeof entry !== 'object') continue
+          const loopId = String((entry as any).loopId || '')
+          const iteration = Number((entry as any).iteration)
+          if (!loopId || !Number.isSafeInteger(iteration) || iteration < 0) continue
+          activeLoopIterations.set(`${loopId}:${iteration}`, { iteration, iterationPath: session.iteration_path })
+        }
+      }
+      for (const [key, active] of activeLoopIterations) {
+        createWorkflowRunRecoveryLoopEpoch({
+          run_id: run.id, workflow_id: run.workflow_id, loop_id: key.slice(0, key.lastIndexOf(':')),
+          iteration: active.iteration, iteration_path: active.iterationPath, status: 'failed', exit_reason: reason,
+          sequence: sequence++, started_at: run.started_at || run.created_at, finished_at: finishedAt,
+        })
+      }
+      this.setRuntimeStatus(run.workflow_id, {
+        status: 'failed', runId: run.id, startedAt: run.started_at,
+        completedAt: finishedAt, error: reason, nodeStatuses: {},
+      })
+    }
+    const abortResults = await Promise.allSettled([...sessionIds].map(async (sessionId) => {
+      await getChatRunServer()?.abortSession?.(sessionId, reason)
+    }))
+    for (const result of abortResults) {
+      if (result.status === 'rejected') logger.warn('Failed to abort recovered workflow session: %s', result.reason instanceof Error ? result.reason.message : String(result.reason))
+    }
+    return { runs: activeRuns.length, sessions: sessionIds.size }
+  }
+
   async stopRun(workflowId: string, runId: string, reason = 'Workflow run canceled'): Promise<WorkflowRunRecord | null> {
     const run = getWorkflowRun(runId)
     if (!run || run.workflow_id !== workflowId) return null
+    if (run.status !== 'queued' && run.status !== 'running') return run
     this.canceledRunIds.add(runId)
     this.cancelPendingNodeApprovals(runId)
     const finishedAt = Date.now()
     const nodeStatuses: Record<string, WorkflowRuntimeState> = {}
+    const activeSessionIds = new Set<string>()
     const nodeSessions = listWorkflowRunNodeSessions(runId)
     for (const session of nodeSessions) {
       const status = session.status === 'completed' || session.status === 'failed'
@@ -739,27 +790,23 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       nodeStatuses[session.node_id] = status
       if (status === 'canceled') {
         updateWorkflowRunNodeSession(session.id, {
-          status: 'canceled',
-          finished_at: finishedAt,
-          error: reason,
+          status: 'canceled', finished_at: finishedAt, error: reason,
         })
       }
-      if (session.status === 'queued' || session.status === 'running') {
-        await getChatRunServer()?.abortSession?.(session.session_id, reason)
-      }
+      if ((session.status === 'queued' || session.status === 'running') && session.session_id) activeSessionIds.add(session.session_id)
     }
     const stopped = updateWorkflowRun(runId, {
-      status: 'canceled',
-      finished_at: finishedAt,
-      error: reason,
+      status: 'canceled', finished_at: finishedAt, error: reason,
     }) || run
     this.setRuntimeStatus(workflowId, {
-      status: 'canceled',
-      runId,
-      completedAt: finishedAt,
-      error: reason,
-      nodeStatuses,
+      status: 'canceled', runId, completedAt: finishedAt, error: reason, nodeStatuses,
     })
+    const abortResults = await Promise.allSettled([...activeSessionIds].map(async sessionId => {
+      await getChatRunServer()?.abortSession?.(sessionId, reason)
+    }))
+    for (const result of abortResults) {
+      if (result.status === 'rejected') logger.warn('Failed to abort canceled workflow session: %s', result.reason instanceof Error ? result.reason.message : String(result.reason))
+    }
     return stopped
   }
 
@@ -1199,7 +1246,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             } catch (evidenceError) {
               const evidenceMessage = evidenceError instanceof Error ? evidenceError.message : String(evidenceError)
               this.canceledRunIds.delete(run.id)
-              updateWorkflowRun(run.id, { status: 'failed', finished_at: Date.now(), error: evidenceMessage })
+              updateWorkflowRun(run.id, { status: 'failed', finished_at: Date.now(), error: evidenceMessage, allow_terminal_reset: true })
               ;(evidenceError as any).workflowEvidenceFailure = true
               throw evidenceError
             }
@@ -1667,6 +1714,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       started_at: startedAt,
       finished_at: null,
       error: null,
+      allow_terminal_reset: true,
     }) || run
     this.canceledRunIds.delete(run.id)
     for (const node of activeNodes) nodeStatuses[node.id] = 'queued'

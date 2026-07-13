@@ -803,7 +803,11 @@ export class ChatRunSocket {
       }
       const timer = timeoutMs
         ? setTimeout(() => {
-            finish({ ok: false, event: 'run.failed', error: `chat-run timed out after ${timeoutMs}ms` })
+            const error = `chat-run timed out after ${timeoutMs}ms`
+            finish({ ok: false, event: 'run.failed', error })
+            void this.abortSession(sessionId, error).catch(err => {
+              logger.warn(err, '[chat-run-socket] failed to abort timed-out session %s', sessionId)
+            })
           }, timeoutMs)
         : null
       waiters.add(onEvent)
