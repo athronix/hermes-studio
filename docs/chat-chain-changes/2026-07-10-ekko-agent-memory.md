@@ -19,16 +19,19 @@ model in a separate non-streaming request. That request receives only the four
 memory tools and a bounded input containing the previous rolling summary plus
 the accumulated new messages. It does not receive filesystem, terminal, browser, MCP, skill, or
 other runtime tools. The model writes durable nodes through validated memory
-tools and returns the next rolling summary as JSON. Invalid or failed model
-summaries fall back to the rule-based extractor without failing the completed
-chat response.
+tools and returns structured rolling session state as JSON. The server clears
+unsupported active goals, filters transient metrics and unsupported strengthened
+claims, and deterministically builds the stored summary. Summary requests retry
+three times, and malformed JSON gets one repair request. If all attempts fail,
+the service stores a compact safe summary and records the fallback reason in
+memory audit without failing the completed chat response.
 
 Memory message IDs remain stable when unrelated messages are inserted into the
 history, preventing completed turns from being captured and summarized again.
 Tool payloads are excluded from the summarizer transcript. The model returns
 the structured summary categories directly, and its prompt excludes completed
 weather, news, search, and other time-sensitive lookup details from rolling
-active state.
+active state. With no pending work or known issue, `currentGoal` is forced empty.
 
 Every periodic summarizer model response is attributed in `session_usage` with
 `purpose=ekko-memory-summary`, a unique `memory-summary:*` run id, and the

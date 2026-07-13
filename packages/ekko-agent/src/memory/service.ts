@@ -371,8 +371,13 @@ export class MemoryService {
         workspaceId: identity.workspaceId,
         userId: identity.userId,
         actor: 'memory-extractor',
-        reason: 'Periodic chained summary',
-        payload: { summaryId: summary.id, fromMessageId: summary.fromMessageId, toMessageId: summary.toMessageId },
+        reason: extraction.fallbackReason ? 'Periodic chained summary (safe fallback)' : 'Periodic chained summary',
+        payload: {
+          summaryId: summary.id,
+          fromMessageId: summary.fromMessageId,
+          toMessageId: summary.toMessageId,
+          ...(extraction.fallbackReason ? { fallbackReason: extraction.fallbackReason } : {}),
+        },
         createdAt: summary.createdAt,
       })
       lastSummaryMessageId = sinceSummary.at(-1)?.id
@@ -391,8 +396,15 @@ export class MemoryService {
       workspaceId: identity.workspaceId,
       userId: identity.userId,
       actor: 'memory-extractor',
-      reason: 'Processed new conversation messages',
-      payload: { fromMessageId: messages[0].id, toMessageId: lastExtractedMessageId, operations: extraction.nodes.length },
+      reason: extraction.fallbackReason
+        ? 'Processed new conversation messages using safe fallback'
+        : 'Processed new conversation messages',
+      payload: {
+        fromMessageId: messages[0].id,
+        toMessageId: lastExtractedMessageId,
+        operations: extraction.nodes.length,
+        ...(extraction.fallbackReason ? { fallbackReason: extraction.fallbackReason } : {}),
+      },
       createdAt: new Date().toISOString(),
     })
   }

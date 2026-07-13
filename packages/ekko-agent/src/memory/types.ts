@@ -161,6 +161,7 @@ export interface MemoryExtraction {
   knownIssues?: string[]
   nodes: MemoryExtractionOperation[]
   forceSummary?: boolean
+  fallbackReason?: string
 }
 
 export interface MemoryExtractor {

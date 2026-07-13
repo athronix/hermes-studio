@@ -29,9 +29,9 @@
 - 记忆整理调用只注册四个记忆工具，不注入文件、终端、浏览器、MCP、skills 或主 Agent 系统提示词。
 - 记忆整理模型只读取上一份滚动摘要和上次整理后的新增消息；上一份摘要最多 4,000 字符，新增消息最多 12,000 字符，优先保留最新内容。
 - 原始工具结果不进入记忆整理模型的 transcript；天气、新闻、榜单和网页抓取等一次性结果在请求完成后不保留到滚动摘要。
-- 模型通过记忆工具写入结构化长期记忆，并输出 JSON 格式的滚动会话摘要。模型调用失败或输出不合法时回退到规则提取器，不能影响主 Agent 已完成的回复。
+- 模型通过记忆工具写入结构化长期记忆，并输出 JSON 格式的滚动会话状态；服务端校验活动目标、过滤时效性指标和未经用户确认的强化表述，再根据结构化字段生成最多 500 字符的摘要。模型请求默认重试 3 次，无效 JSON 额外修复 1 次；全部失败后生成紧凑安全摘要并在审核事件中记录回退原因，不能影响主 Agent 已完成的回复。
 - 每次周期性摘要模型响应以 `purpose = ekko-memory-summary` 单独写入会话 usage 表，计入实际模型调用和 token 开销，但不与主回答的 `model.usage` 重复记录。
-- 模型摘要直接返回并持久化 `constraints`、`preferences`、`decisions`、`completedWork`、`pendingWork` 和 `knownIssues`；正则分类只用于模型提取失败时的降级路径。
+- 模型直接返回并持久化 `constraints`、`preferences`、`decisions`、`completedWork`、`pendingWork` 和 `knownIssues`；当 `pendingWork` 与 `knownIssues` 都为空时服务端强制清空 `currentGoal`。正则分类只用于模型提取失败时的降级路径。
 - 无服务端 ID 的消息按 `session + role + content + metadata + 同内容出现序号` 生成稳定 ID，历史中插入其他消息不会导致整段对话被重复采集。
 
 ## 记忆分层

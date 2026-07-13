@@ -238,13 +238,13 @@ describe('MemoryService', () => {
       })
       .mockResolvedValueOnce({
         content: JSON.stringify({
-          summary: 'The user asked Ekko to remember a preference for TypeScript examples.',
-          currentGoal: 'Remember the TypeScript preference',
+          recentTopic: 'Configured a preference for TypeScript examples',
+          currentGoal: '',
           constraints: ['Do not use JavaScript examples'],
           preferences: ['Prefer TypeScript examples'],
           decisions: ['Use TypeScript by default'],
-          completedWork: [],
-          pendingWork: ['Apply the preference to future examples'],
+          completedWork: ['Stored the TypeScript preference'],
+          pendingWork: [],
           knownIssues: [],
         }),
       })
@@ -275,12 +275,13 @@ describe('MemoryService', () => {
     expect(summaryRequest.messages[0].content).toContain('dedicated memory curator')
     expect(summaryRequest.messages[1].content).toContain('请记住以后代码示例优先使用 TypeScript')
     await expect(store.getLatestSummary({ sessionId: 's1' })).resolves.toMatchObject({
-      summary: 'The user asked Ekko to remember a preference for TypeScript examples.',
-      currentGoal: 'Remember the TypeScript preference',
+      summary: '最近话题：Configured a preference for TypeScript examples。 当前没有待处理请求。',
+      currentGoal: undefined,
       constraints: ['Do not use JavaScript examples'],
       preferences: ['Prefer TypeScript examples'],
       decisions: ['Use TypeScript by default'],
-      pendingWork: ['Apply the preference to future examples'],
+      completedWork: ['Stored the TypeScript preference'],
+      pendingWork: [],
     })
     const memories = await service.search(
       { sessionId: 's1', workspaceId: '/repo', userId: 'u1' },
@@ -313,7 +314,7 @@ describe('MemoryService', () => {
     const onUsage = vi.fn()
     vi.mocked(client.create).mockResolvedValueOnce({
       content: JSON.stringify({
-        summary: 'The user requested a weather lookup, which is now complete.',
+        recentTopic: '',
         currentGoal: '',
         constraints: [],
         preferences: [],
@@ -346,6 +347,161 @@ describe('MemoryService', () => {
       model: 'summary-model',
       callIndex: 1,
     })
+  })
+
+  it('retries transient summary model failures before falling back', async () => {
+    const client = modelClient()
+    vi.mocked(client.create)
+      .mockRejectedValueOnce(new Error('temporary capacity error'))
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          recentTopic: '讨论记忆系统',
+          currentGoal: '',
+          constraints: [],
+          preferences: [],
+          decisions: [],
+          completedWork: [],
+          pendingWork: [],
+          knownIssues: [],
+        }),
+      })
+    const extractor = new ModelMemoryExtractor({ modelClient: client, memory: service })
+
+    const result = await extractor.extract({
+      sessionId: 'retry-session',
+      messages: [
+        memoryMessage('user', '我们讨论一下记忆系统', 'm1'),
+        memoryMessage('assistant', '好的。', 'm2'),
+      ],
+    })
+
+    expect(client.create).toHaveBeenCalledTimes(2)
+    expect(result).toMatchObject({
+      summaryPatch: '最近话题：讨论记忆系统。 当前没有待处理请求。',
+      currentGoal: undefined,
+    })
+    expect(result.fallbackReason).toBeUndefined()
+  })
+
+  it('asks the summary model to repair malformed JSON before falling back', async () => {
+    const client = modelClient()
+    vi.mocked(client.create)
+      .mockResolvedValueOnce({ content: 'I summarized the conversation.' })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          recentTopic: '讨论记忆系统',
+          currentGoal: '',
+          constraints: [],
+          preferences: [],
+          decisions: [],
+          completedWork: [],
+          pendingWork: [],
+          knownIssues: [],
+        }),
+      })
+    const extractor = new ModelMemoryExtractor({ modelClient: client, memory: service })
+
+    const result = await extractor.extract({
+      sessionId: 'repair-session',
+      messages: [
+        memoryMessage('user', '我们讨论一下记忆系统', 'm1'),
+        memoryMessage('assistant', '好的。', 'm2'),
+      ],
+    })
+
+    expect(client.create).toHaveBeenCalledTimes(2)
+    const repairRequest = vi.mocked(client.create).mock.calls[1][0] as ModelRequest
+    expect(repairRequest.toolChoice).toBe('none')
+    expect(repairRequest.tools).toBeUndefined()
+    expect(repairRequest.messages.some(message => message.content.includes('not valid JSON'))).toBe(true)
+    expect(result.fallbackReason).toBeUndefined()
+  })
+
+  it('persists a compact safe summary and the failure reason after retries are exhausted', async () => {
+    const client = modelClient()
+    vi.mocked(client.create).mockRejectedValue(new Error('summary provider unavailable'))
+    const extractor = new ModelMemoryExtractor({ modelClient: client, memory: service })
+
+    const result = await extractor.extract({
+      sessionId: 'safe-fallback-session',
+      messages: [
+        memoryMessage('user', '是吗？那你觉得我要怎么做得更好', 'm1'),
+        memoryMessage('assistant', '可以从产品定位和社区运营入手。', 'm2'),
+      ],
+    })
+
+    expect(client.create).toHaveBeenCalledTimes(4)
+    expect(result).toMatchObject({
+      summaryPatch: '最近话题：是吗？那你觉得我要怎么做得更好。 当前没有待处理请求。',
+      currentGoal: undefined,
+      knownIssues: [],
+      fallbackReason: 'summary provider unavailable',
+    })
+    expect(result.summaryPatch).not.toContain('Assistant:')
+  })
+
+  it('normalizes completed lookup state before persisting a rolling summary', async () => {
+    const client = modelClient()
+    vi.mocked(client.create).mockResolvedValueOnce({
+      content: JSON.stringify({
+        recentTopic: '讨论 hermes-web-ui 项目及 GitHub 表现',
+        currentGoal: '探索 hermes-web-ui 项目，了解 GitHub 数据表现',
+        constraints: ['以“丫鬟”身份与“老爷”互动'],
+        preferences: ['称呼用户为“老爷”，以“丫鬟”角色互动'],
+        decisions: [],
+        completedWork: ['GitHub 3个月达到 9K+ Stars，最新版 v0.6.29'],
+        pendingWork: [],
+        knownIssues: [],
+      }),
+    })
+    const extractor = new ModelMemoryExtractor({ modelClient: client, memory: service })
+
+    const result = await extractor.extract({
+      sessionId: 'summary-quality-session',
+      messages: [
+        memoryMessage('user', '你帮我看下桌面 git/hermes-web-ui 的项目', 'm1'),
+        memoryMessage('assistant', '已经查看并介绍了项目。', 'm2'),
+        memoryMessage('user', '分析下这个项目 GitHub 的数据', 'm3'),
+        memoryMessage('assistant', '已经完成 GitHub 数据分析。', 'm4'),
+        memoryMessage('user', '你也觉得很不错吗', 'm5'),
+        memoryMessage('assistant', '是的，这个项目表现不错。', 'm6'),
+      ],
+    })
+
+    expect(result).toMatchObject({
+      summaryPatch: '最近话题：讨论 hermes-web-ui 项目及 GitHub 表现。 当前没有待处理请求。',
+      currentGoal: undefined,
+      preferences: ['称呼用户为“老爷”，以“丫鬟”角色互动'],
+      completedWork: [],
+      pendingWork: [],
+      knownIssues: [],
+    })
+    expect(result.summaryPatch).not.toContain('9K')
+    expect(result.summaryPatch).not.toContain('v0.6.29')
+  })
+
+  it('drops unsupported strengthened claims from the recent topic', async () => {
+    const client = modelClient()
+    vi.mocked(client.create).mockResolvedValueOnce({
+      content: JSON.stringify({
+        recentTopic: '用户的主力项目 hermes-web-ui',
+        currentGoal: '',
+        constraints: [],
+        preferences: [],
+        decisions: [],
+        completedWork: [],
+        pendingWork: [],
+        knownIssues: [],
+      }),
+    })
+    const extractor = new ModelMemoryExtractor({ modelClient: client, memory: service })
+
+    const result = await extractor.extract({
+      sessionId: 'unsupported-claim-session',
+      messages: [memoryMessage('user', '帮我看下 hermes-web-ui 项目', 'm1')],
+    })
+
+    expect(result.summaryPatch).toBe('当前没有待处理请求。')
   })
 
   it('normalizes common model aliases in memory update tool arguments', async () => {
