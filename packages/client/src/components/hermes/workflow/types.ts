@@ -7,6 +7,13 @@ export interface WorkflowSelectOption extends SelectOption {
   value: string
 }
 
+export interface WorkflowExecutionPolicy {
+  allowedToolsets?: string[]
+  allowedTools?: string[]
+  skipMemory?: boolean
+  skipContextFiles?: boolean
+}
+
 export type WorkflowNodeStatus = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'approval_rejected' | 'canceled'
 
 export interface WorkflowAgentNodeData {
@@ -15,10 +22,12 @@ export interface WorkflowAgentNodeData {
   provider: string
   model: string
   apiMode: CodingAgentApiMode
+  reasoningEffort: string
   input: string
   skills: string[]
   images: string[]
   approvalRequired: boolean
+  executionPolicy?: WorkflowExecutionPolicy
   orchestration: { join: 'all' | 'any' }
   status: WorkflowNodeStatus
   statusError?: string | null
@@ -31,4 +40,4 @@ export interface WorkflowAgentNodeData {
   onUploadImages: (id: string, files: File[]) => Promise<string[]>
 }
 
-export type WorkflowAgentNodeEditableData = Pick<WorkflowAgentNodeData, 'title' | 'agent' | 'provider' | 'model' | 'apiMode' | 'input' | 'skills' | 'images' | 'approvalRequired' | 'orchestration'>
+export type WorkflowAgentNodeEditableData = Pick<WorkflowAgentNodeData, 'title' | 'agent' | 'provider' | 'model' | 'apiMode' | 'reasoningEffort' | 'input' | 'skills' | 'images' | 'approvalRequired' | 'executionPolicy' | 'orchestration'>

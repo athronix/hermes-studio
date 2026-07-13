@@ -538,6 +538,7 @@ export default {
         low: 'Bajo',
         medium: 'Medio',
         high: 'Alto',
+        max: 'Max',
         xhigh: 'Extra alto',
       },
     },
@@ -2037,6 +2038,10 @@ jobTriggered: 'Job ejecutado',
 
   workflow: {
     node: {
+      allowedToolsets: 'Allowed toolsets (empty = none)',
+      allowedTools: 'Allowed tools (empty = none)',
+      skipMemory: 'Skip memory',
+      skipContextFiles: 'Skip context files',
       approvalRequired: 'Aprobacion tras nodo',
     },
     status: {

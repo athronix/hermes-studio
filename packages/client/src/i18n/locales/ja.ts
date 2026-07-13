@@ -538,6 +538,7 @@ export default {
         low: '低',
         medium: '中',
         high: '高',
+        max: 'Max',
         xhigh: '最高',
       },
     },
@@ -2036,6 +2037,10 @@ export default {
 
   workflow: {
     node: {
+      allowedToolsets: 'Allowed toolsets (empty = none)',
+      allowedTools: 'Allowed tools (empty = none)',
+      skipMemory: 'Skip memory',
+      skipContextFiles: 'Skip context files',
       approvalRequired: '完了後承認',
     },
     status: {

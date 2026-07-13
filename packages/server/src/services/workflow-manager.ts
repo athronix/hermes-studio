@@ -89,10 +89,17 @@ interface WorkflowNodeSnapshot {
     provider: string
     model: string
     apiMode: string
+    reasoningEffort: string
     input: string
     skills: string[]
     images: string[]
     approvalRequired: boolean
+    executionPolicy?: {
+      allowedToolsets?: string[]
+      allowedTools?: string[]
+      skipMemory?: boolean
+      skipContextFiles?: boolean
+    }
     orchestration: { join: 'all' | 'any' }
   }
 }
@@ -183,6 +190,37 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()) : []
 }
 
+const WORKFLOW_REASONING_EFFORTS = new Set(['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const WORKFLOW_API_MODES = new Set(['chat_completions', 'codex_responses', 'anthropic_messages'])
+const WORKFLOW_EXECUTION_POLICY_KEYS = new Set(['allowedToolsets', 'allowedTools', 'skipMemory', 'skipContextFiles'])
+
+function normalizeWorkflowExecutionPolicy(nodeId: string, value: unknown): WorkflowNodeSnapshot['data']['executionPolicy'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+  }
+  const record = value as Record<string, unknown>
+  if (!Object.keys(record).every(key => WORKFLOW_EXECUTION_POLICY_KEYS.has(key))) {
+    throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+  }
+  for (const key of ['allowedToolsets', 'allowedTools'] as const) {
+    if (Object.prototype.hasOwnProperty.call(record, key)
+      && (!Array.isArray(record[key]) || !(record[key] as unknown[]).every(item => typeof item === 'string' && item.trim()))) {
+      throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+    }
+  }
+  for (const key of ['skipMemory', 'skipContextFiles'] as const) {
+    if (Object.prototype.hasOwnProperty.call(record, key) && typeof record[key] !== 'boolean') {
+      throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+    }
+  }
+  return {
+    ...(Object.prototype.hasOwnProperty.call(record, 'allowedToolsets') ? { allowedToolsets: stringArray(record.allowedToolsets) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'allowedTools') ? { allowedTools: stringArray(record.allowedTools) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'skipMemory') ? { skipMemory: record.skipMemory as boolean } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'skipContextFiles') ? { skipContextFiles: record.skipContextFiles as boolean } : {}),
+  }
+}
+
 export function normalizeWorkflowNode(raw: unknown): WorkflowNodeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : ''
@@ -197,19 +235,44 @@ export function normalizeWorkflowNode(raw: unknown): WorkflowNodeSnapshot | null
     }
     join = orchestration.join
   }
+  const agent = typeof data.agent === 'string' && data.agent.trim() ? data.agent.trim() : 'hermes'
+  const provider = typeof data.provider === 'string' ? data.provider.trim() : ''
+  const model = typeof data.model === 'string' ? data.model.trim() : ''
+  const apiMode = typeof data.apiMode === 'string' ? data.apiMode.trim() : ''
+  const targetFieldCount = [provider, model, apiMode].filter(Boolean).length
+  if (targetFieldCount !== 0 && targetFieldCount !== 3) {
+    throw new Error(`workflow node ${id} target must set provider, model, and apiMode together`)
+  }
+  if (apiMode && !WORKFLOW_API_MODES.has(apiMode)) {
+    throw new Error(`workflow node ${id} has invalid apiMode`)
+  }
+  const reasoningEffort = typeof data.reasoningEffort === 'string' && data.reasoningEffort.trim()
+    ? data.reasoningEffort.trim()
+    : 'default'
+  if (!WORKFLOW_REASONING_EFFORTS.has(reasoningEffort)) {
+    throw new Error(`workflow node ${id} has invalid reasoningEffort`)
+  }
+  const executionPolicy = Object.prototype.hasOwnProperty.call(data, 'executionPolicy')
+    ? normalizeWorkflowExecutionPolicy(id, data.executionPolicy)
+    : undefined
+  if (executionPolicy && agent !== 'hermes') {
+    throw new Error(`workflow node ${id} executionPolicy is supported for Hermes nodes only`)
+  }
   return {
     id,
     type: typeof record.type === 'string' && record.type ? record.type : 'agent',
     data: {
       title: typeof data.title === 'string' && data.title.trim() ? data.title.trim() : id,
-      agent: typeof data.agent === 'string' && data.agent.trim() ? data.agent.trim() : 'hermes',
-      provider: typeof data.provider === 'string' ? data.provider.trim() : '',
-      model: typeof data.model === 'string' ? data.model.trim() : '',
-      apiMode: typeof data.apiMode === 'string' ? data.apiMode.trim() : '',
+      agent,
+      provider,
+      model,
+      apiMode,
+      reasoningEffort,
       input: typeof data.input === 'string' ? data.input : '',
       skills: stringArray(data.skills),
       images: stringArray(data.images),
       approvalRequired: data.approvalRequired === true,
+      executionPolicy,
       orchestration: { join },
     },
   }
@@ -979,6 +1042,9 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             profile, workspace: workflow.workspace, model: node.data.model || undefined,
             provider: node.data.provider || undefined, mode: node.data.agent === 'hermes' ? undefined : 'scoped',
             coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
+            one_shot_model: true,
+            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
           }, { profile, user: input.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
           if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
           if (!runResult.ok) {
@@ -1318,6 +1384,9 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             coding_agent_id: target.codingAgentId,
             agent_id: target.codingAgentId,
             apiMode: node.data.apiMode || undefined,
+            one_shot_model: true,
+            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
           }, {
             profile,
             user: input.user,
@@ -1704,6 +1773,9 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             coding_agent_id: target.codingAgentId,
             agent_id: target.codingAgentId,
             apiMode: node.data.apiMode || undefined,
+            one_shot_model: true,
+            ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
           }, {
             profile,
             user: input.user,

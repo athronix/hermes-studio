@@ -9,7 +9,7 @@ export const MAX_WORKFLOW_IMPORT_NODES = 500
 export const MAX_WORKFLOW_IMPORT_EDGES = 2000
 const PREVIEW_TTL_MS = 5 * 60 * 1000
 const CREDENTIAL_KEYS = new Set(['token', 'apikey', 'api_key', 'password', 'secret', 'authorization', 'cookie'])
-const NODE_DATA_KEYS = ['title', 'agent', 'provider', 'model', 'apiMode', 'input', 'skills', 'images', 'approvalRequired', 'orchestration']
+const NODE_DATA_KEYS = ['title', 'agent', 'provider', 'model', 'apiMode', 'reasoningEffort', 'executionPolicy', 'input', 'skills', 'images', 'approvalRequired', 'orchestration']
 const EDGE_KEYS = ['id', 'source', 'target', 'sourceHandle', 'targetHandle', 'type', 'animated', 'markerEnd', 'style', 'data']
 const EDGE_DATA_KEYS = ['orchestration']
 

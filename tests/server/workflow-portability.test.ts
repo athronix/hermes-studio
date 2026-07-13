@@ -13,6 +13,23 @@ const workflow = {
 const options = (ownerId = 'u1', profile = 'default', now = () => 1000) => ({ ownerId, profile, now, validateGraph: compileWorkflowGraphPreflight })
 
 describe('workflow portability', () => {
+  it('round-trips execution identity while excluding credential and runtime state', () => {
+    const exported = exportWorkflowDefinition({
+      id: 'wf', name: 'Portable identity', profile: 'private', workspace: '/private/path',
+      nodes: [{ id: 'n', type: 'agent', position: { x: 0, y: 0 }, data: {
+        title: 'N', agent: 'hermes', provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions',
+        reasoningEffort: 'high', executionPolicy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true },
+        token: 'secret', session_id: 'runtime',
+      } }], edges: [], viewport: null,
+    } as any)
+    expect(exported.definition.nodes[0].data).toEqual({
+      title: 'N', agent: 'hermes', provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions',
+      reasoningEffort: 'high', executionPolicy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true },
+    })
+    expect(JSON.stringify(exported)).not.toContain('secret')
+    expect(JSON.stringify(exported)).not.toContain('/private/path')
+  })
+
   it('exports a versioned credential-free definition without runtime or machine state', () => {
     const envelope = exportWorkflowDefinition(workflow as any)
     expect(envelope).toEqual({ format: 'hermes-studio.workflow', version: 1, definition: {
