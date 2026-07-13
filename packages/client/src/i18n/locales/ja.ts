@@ -2041,10 +2041,6 @@ export default {
     evidence: { title: '実行証跡', empty: '実行証跡はありません', loadFailed: '保存済み実行証跡の読み込みに失敗しました', node: 'ノード', edge: '接続', loop: 'ループ' },
     edgeEditor: { title: '接続を編集', route: 'ルート', conditionPath: '条件パス', operator: '演算子', value: '値', feedback: 'フィードバックループ', maxIterations: '最大反復回数', invalidIterations: '最大反復回数は 1 から 100 の整数にしてください', loopId: 'ループ ID（任意）', loopIdPlaceholder: '安定した識別子（例: review-loop）', invalidLoopId: 'ループ ID の形式が正しくありません', invalidConditionValue: '条件値は有効な JSON である必要があります', conditionValuePlaceholder: 'JSON: "text", 42, true, ["a"]' },
     node: {
-      allowedToolsets: 'Allowed toolsets (empty = none)',
-      allowedTools: 'Allowed tools (empty = none)',
-      skipMemory: 'Skip memory',
-      skipContextFiles: 'Skip context files',
       approvalRequired: '完了後承認',
     },
     status: {

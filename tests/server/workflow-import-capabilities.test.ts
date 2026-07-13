@@ -1,5 +1,6 @@
+import { createHash } from 'crypto'
 import { describe, expect, it } from 'vitest'
-import { assertWorkflowImportCapabilities, assertWorkflowImportToolCapabilities, workflowImportEnvironmentRevision, workflowImportRequestedToolsetGroups } from '../../packages/server/src/services/workflow-import-capabilities'
+import { assertWorkflowImportCapabilities, workflowImportEnvironmentRevision } from '../../packages/server/src/services/workflow-import-capabilities'
 
 const node = (data: Record<string, unknown>) => ({ id: 'agent', type: 'agent', data: { agent: 'hermes', ...data } })
 
@@ -19,36 +20,10 @@ describe('workflow import capabilities', () => {
     const changed = workflowImportEnvironmentRevision([{ provider: 'p', models: ['b'], api_mode: 'chat_completions' }])
     expect(one).toBe(reordered)
     expect(changed).not.toBe(one)
+    const expected = createHash('sha256').update(JSON.stringify({ models: ['p\u0000a\u0000chat_completions'] })).digest('hex')
+    expect(one).toBe(expected)
   })
 
-  it('binds execution policies to the exact requested toolset snapshot and required tools', () => {
-    const policies = [
-      node({ executionPolicy: { allowedTools: ['terminal'] } }),
-      node({ executionPolicy: { allowedToolsets: ['web', 'terminal'], allowedTools: ['browser'] } }),
-    ]
-    expect(workflowImportRequestedToolsetGroups(policies)).toEqual([null, ['terminal', 'web']])
-    const groups = [
-      { toolsets: null, tool_names: ['terminal', 'read_file'] },
-      { toolsets: ['terminal', 'web'], tool_names: ['browser', 'terminal'] },
-    ]
-    expect(() => assertWorkflowImportToolCapabilities(policies, groups)).not.toThrow()
-    expect(() => assertWorkflowImportToolCapabilities(
-      [node({ executionPolicy: { allowedTools: ['missing-tool'] } })], groups,
-    )).toThrow('tool capability is unavailable')
-    expect(() => assertWorkflowImportToolCapabilities(
-      [node({ executionPolicy: { allowedToolsets: ['unknown'] } })], groups,
-    )).toThrow('toolset capability is unavailable')
-  })
 
-  it('includes resolved tool capability changes in the environment revision without exposing credentials', () => {
-    const models = [{ provider: 'p', models: ['m'], api_mode: 'chat_completions' }]
-    const first = workflowImportEnvironmentRevision(models, [{ toolsets: null, tool_names: ['terminal'] }])
-    const reordered = workflowImportEnvironmentRevision(models, [{ toolsets: null, tool_names: ['terminal'] }])
-    const changed = workflowImportEnvironmentRevision(models, [{ toolsets: null, tool_names: ['terminal', 'browser'] }])
-    expect(first).toBe(reordered)
-    expect(changed).not.toBe(first)
-    expect(first).toMatch(/^[a-f0-9]{64}$/)
-    expect(first).not.toContain('terminal')
-  })
 
 })

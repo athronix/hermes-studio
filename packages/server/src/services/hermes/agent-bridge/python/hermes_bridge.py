@@ -213,10 +213,9 @@ class AgentPool(_pool.AgentPool):
         model: str | None = None,
         provider: str | None = None,
         api_mode: str | None = None,
-        execution_policy: dict[str, Any] | None = None,
     ) -> AgentSession:
         _sync_pool_patches()
-        return super().get_or_create(session_id, profile, model, provider, api_mode, execution_policy)
+        return super().get_or_create(session_id, profile, model, provider, api_mode)
 
     def start_chat(self, *args: Any, **kwargs: Any) -> RunRecord:
         _sync_pool_patches()

@@ -24,10 +24,21 @@ describe('workflow portability', () => {
     } as any)
     expect(exported.definition.nodes[0].data).toEqual({
       title: 'N', agent: 'hermes', provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions',
-      reasoningEffort: 'high', executionPolicy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true },
+      reasoningEffort: 'high',
     })
+    expect(exported.definition.nodes[0].data).not.toHaveProperty('executionPolicy')
     expect(JSON.stringify(exported)).not.toContain('secret')
     expect(JSON.stringify(exported)).not.toContain('/private/path')
+  })
+
+  it('accepts legacy imports with removed execution-policy fields and strips them from the imported definition', () => {
+    const legacy = exportWorkflowDefinition(workflow as any) as any
+    legacy.definition.nodes[0].data.executionPolicy = {
+      allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true,
+    }
+    const preview = previewWorkflowImport(JSON.stringify(legacy), options('legacy-owner', 'default'))
+    const imported = confirmWorkflowImport(preview.token, options('legacy-owner', 'default'))
+    expect(imported.nodes[0].data).not.toHaveProperty('executionPolicy')
   })
 
   it('exports a versioned credential-free definition without runtime or machine state', () => {
@@ -113,9 +124,8 @@ describe('workflow portability', () => {
       edges: [], viewport: null, created_at: 1, updated_at: 1,
     }
     const exported = exportWorkflowDefinition(nested as any)
-    expect(exported.definition.nodes[0].data).toMatchObject({
-      executionPolicy: { allowedTools: ['terminal'] }, orchestration: { join: 'all' },
-    })
+    expect(exported.definition.nodes[0].data).toMatchObject({ orchestration: { join: 'all' } })
+    expect(exported.definition.nodes[0].data).not.toHaveProperty('executionPolicy')
     expect(JSON.stringify(exported)).not.toContain('drop-me')
 
     const unsafeCondition = structuredClone(nested) as any

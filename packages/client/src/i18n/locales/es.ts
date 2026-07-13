@@ -2042,10 +2042,6 @@ jobTriggered: 'Job ejecutado',
     evidence: { title: 'Evidencia de ejecución', empty: 'No hay evidencia registrada', loadFailed: 'No se pudo cargar la evidencia de ejecución persistida', node: 'Nodo', edge: 'Conexión', loop: 'Bucle' },
     edgeEditor: { title: 'Editar conexión', route: 'Ruta', conditionPath: 'Ruta de condición', operator: 'Operador', value: 'Valor', feedback: 'Bucle de retroalimentación', maxIterations: 'Iteraciones máximas', invalidIterations: 'Las iteraciones máximas deben ser un entero entre 1 y 100', loopId: 'ID del bucle (opcional)', loopIdPlaceholder: 'Identidad estable, p. ej. review-loop', invalidLoopId: 'El formato del ID del bucle no es válido', invalidConditionValue: 'El valor de condición debe ser JSON válido', conditionValuePlaceholder: 'JSON: "texto", 42, true, ["a"]' },
     node: {
-      allowedToolsets: 'Allowed toolsets (empty = none)',
-      allowedTools: 'Allowed tools (empty = none)',
-      skipMemory: 'Skip memory',
-      skipContextFiles: 'Skip context files',
       approvalRequired: 'Aprobacion tras nodo',
     },
     status: {

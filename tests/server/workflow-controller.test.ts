@@ -46,12 +46,6 @@ vi.mock('../../packages/server/src/services/workflow-import-capabilities', async
 })
 
 
-vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
-  AgentBridgeClient: class {
-    workflowCapabilities = vi.fn().mockResolvedValue({ ok: true, profile: 'default', groups: [] })
-  },
-}))
-
 vi.mock('../../packages/server/src/controllers/hermes/models', () => ({
   getAvailableModelGroupsForProfile: getAvailableModelGroupsMock,
 }))

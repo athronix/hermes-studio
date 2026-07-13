@@ -1,4 +1,3 @@
-import type { WorkflowExecutionPolicy } from '../run-chat/types'
 import { setTimeout as delay } from 'timers/promises'
 import { createConnection, type Socket } from 'net'
 import { tmpdir } from 'os'
@@ -55,7 +54,6 @@ export interface AgentBridgeChatOptions {
    * Empty/undefined = use config.yaml default. */
   reasoning_effort?: string
   apiMode?: string
-  executionPolicy?: WorkflowExecutionPolicy
 }
 
 export type AgentBridgeMessage =
@@ -116,11 +114,6 @@ export interface AgentBridgeContextEstimate extends AgentBridgeResponse {
   profile?: string
   model?: string
   provider?: string
-}
-
-export interface AgentBridgeWorkflowCapabilities extends AgentBridgeResponse {
-  profile: string
-  groups: Array<{ toolsets: string[] | null; tool_names: string[] }>
 }
 
 export interface AgentBridgeCommandResult extends AgentBridgeResponse {
@@ -455,15 +448,6 @@ export class AgentBridgeClient {
       // Local patch (reasoning-effort): per-session reasoning effort override.
       ...(options.reasoning_effort ? { reasoning_effort: options.reasoning_effort } : {}),
       ...(options.apiMode ? { api_mode: options.apiMode } : {}),
-      ...(options.executionPolicy ? { execution_policy: options.executionPolicy } : {}),
-    })
-  }
-
-  workflowCapabilities(profile: string, toolsetGroups: Array<string[] | null>): Promise<AgentBridgeWorkflowCapabilities> {
-    return this.request<AgentBridgeWorkflowCapabilities>({
-      action: 'workflow_capabilities',
-      profile,
-      toolset_groups: toolsetGroups,
     })
   }
 
@@ -472,7 +456,7 @@ export class AgentBridgeClient {
     messages: unknown[],
     instructions?: string,
     profile?: string,
-    options: Pick<AgentBridgeChatOptions, 'model' | 'provider' | 'workspace' | 'executionPolicy'> = {},
+    options: Pick<AgentBridgeChatOptions, 'model' | 'provider' | 'workspace'> = {},
   ): Promise<AgentBridgeContextEstimate> {
     return this.request<AgentBridgeContextEstimate>({
       action: 'context_estimate',
@@ -483,7 +467,6 @@ export class AgentBridgeClient {
       ...(options.model ? { model: options.model } : {}),
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.workspace ? { workspace: options.workspace } : {}),
-      ...(options.executionPolicy ? { execution_policy: options.executionPolicy } : {}),
     })
   }
 

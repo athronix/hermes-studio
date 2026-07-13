@@ -29,17 +29,21 @@ describe('workflow reasoning effort authoring contract', () => {
       expect(text, locale).toMatch(/max:\s*['"]/)
     }
   })
-  it('preserves the Hermes execution policy through authoring and serialization', () => {
+  it('keeps Workflow nodes aligned with upstream defaults instead of exposing execution-policy controls', () => {
     const types = read('packages/client/src/components/hermes/workflow/types.ts')
     const node = read('packages/client/src/components/hermes/workflow/WorkflowAgentNode.vue')
     const view = read('packages/client/src/views/hermes/WorkflowView.vue')
-    expect(types).toMatch(/executionPolicy\?:\s*WorkflowExecutionPolicy/)
-    expect(node).toContain("updateExecutionPolicy('allowedToolsets'")
-    expect(node).toContain("updateExecutionPolicy('allowedTools'")
-    expect(node).toContain("updateExecutionPolicy('skipMemory'")
-    expect(node).toContain("updateExecutionPolicy('skipContextFiles'")
-    expect(view).toContain('executionPolicy: cloneExecutionPolicy(node.data.executionPolicy)')
-    expect(view).toContain('executionPolicy: normalizeExecutionPolicy(data.executionPolicy)')
+    for (const removed of ['executionPolicy', 'allowedToolsets', 'allowedTools', 'skipMemory', 'skipContextFiles']) {
+      expect(types).not.toContain(removed)
+      expect(node).not.toContain(removed)
+      expect(view).not.toContain(removed)
+    }
+    for (const locale of locales) {
+      const text = read(`packages/client/src/i18n/locales/${locale}`)
+      for (const removed of ['allowedToolsets', 'allowedTools', 'skipMemory', 'skipContextFiles']) {
+        expect(text, locale).not.toContain(removed)
+      }
+    }
   })
 
 })

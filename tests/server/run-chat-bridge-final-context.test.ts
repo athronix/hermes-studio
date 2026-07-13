@@ -275,10 +275,7 @@ describe('bridge run final context usage', () => {
     await handleBridgeRun(
       nsp,
       socket,
-      {
-        input: 'hello', session_id: 'session-1',
-        execution_policy: { allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true },
-      },
+      { input: 'hello', session_id: 'session-1' },
       'default',
       sessionMap,
       bridge,
@@ -296,7 +293,6 @@ describe('bridge run final context usage', () => {
         model: 'gpt-test',
         provider: 'openai',
         workspace: '/tmp/hermes-bridge-final-context/default/workspace',
-        executionPolicy: { allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true },
       },
     )
     expect(bridge.contextEstimate.mock.calls[0][2]).toContain('system prompt')

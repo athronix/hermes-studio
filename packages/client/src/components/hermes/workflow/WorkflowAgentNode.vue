@@ -5,7 +5,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import { NInput, NSelect, NSwitch, NTooltip, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import WorkflowModelSelector from './WorkflowModelSelector.vue'
-import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData, WorkflowExecutionPolicy } from './types'
+import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './types'
 import type { CodingAgentApiMode } from '@/api/coding-agents'
 import type { ProviderApiMode } from '@/api/hermes/system'
 import { getFileDownloadUrl } from '@/api/hermes/files'
@@ -63,10 +63,6 @@ function handleModelSelect(selection: { provider: string; model: string; apiMode
     patch.apiMode = selection.apiMode
   }
   props.data.onUpdate(props.id, patch)
-}
-
-function updateExecutionPolicy<K extends keyof WorkflowExecutionPolicy>(key: K, value: WorkflowExecutionPolicy[K]) {
-  updateField('executionPolicy', { ...(props.data.executionPolicy || {}), [key]: value })
 }
 
 function handleControlEvent(event: Event) {
@@ -198,12 +194,6 @@ async function uploadImages(files: File[]) {
         :placeholder="t('chat.reasoningEffort.tooltip')"
         @update:value="value => updateField('reasoningEffort', value as string)"
       />
-      <template v-if="data.agent === 'hermes'">
-        <NSelect :value="data.executionPolicy?.allowedToolsets" multiple tag filterable size="small" :disabled="data.readonly" :placeholder="t('workflow.node.allowedToolsets')" @update:value="value => updateExecutionPolicy('allowedToolsets', value as string[])" />
-        <NSelect :value="data.executionPolicy?.allowedTools" multiple tag filterable size="small" :disabled="data.readonly" :placeholder="t('workflow.node.allowedTools')" @update:value="value => updateExecutionPolicy('allowedTools', value as string[])" />
-        <label class="node-toggle-row"><span>{{ t('workflow.node.skipMemory') }}</span><NSwitch :value="data.executionPolicy?.skipMemory === true" size="small" :disabled="data.readonly" @update:value="value => updateExecutionPolicy('skipMemory', value)" /></label>
-        <label class="node-toggle-row"><span>{{ t('workflow.node.skipContextFiles') }}</span><NSwitch :value="data.executionPolicy?.skipContextFiles === true" size="small" :disabled="data.readonly" @update:value="value => updateExecutionPolicy('skipContextFiles', value)" /></label>
-      </template>
       <label class="node-field-row">
         <span>{{ t('workflow.node.join') }}</span>
         <NSelect

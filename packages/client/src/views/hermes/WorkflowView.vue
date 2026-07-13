@@ -382,27 +382,6 @@ function ensureSkillOptionsForVisibleNodes() {
   for (const agent of agents) void ensureSkillOptionsForAgent(agent)
 }
 
-function cloneExecutionPolicy(policy: WorkflowAgentNodeData['executionPolicy']): WorkflowAgentNodeData['executionPolicy'] {
-  if (!policy) return undefined
-  return {
-    ...(policy.allowedToolsets !== undefined ? { allowedToolsets: [...policy.allowedToolsets] } : {}),
-    ...(policy.allowedTools !== undefined ? { allowedTools: [...policy.allowedTools] } : {}),
-    ...(policy.skipMemory !== undefined ? { skipMemory: policy.skipMemory } : {}),
-    ...(policy.skipContextFiles !== undefined ? { skipContextFiles: policy.skipContextFiles } : {}),
-  }
-}
-
-function normalizeExecutionPolicy(value: unknown): WorkflowAgentNodeData['executionPolicy'] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const record = value as Record<string, unknown>
-  return {
-    ...(Object.prototype.hasOwnProperty.call(record, 'allowedToolsets') ? { allowedToolsets: Array.isArray(record.allowedToolsets) ? record.allowedToolsets.filter((item): item is string => typeof item === 'string') : [] } : {}),
-    ...(Object.prototype.hasOwnProperty.call(record, 'allowedTools') ? { allowedTools: Array.isArray(record.allowedTools) ? record.allowedTools.filter((item): item is string => typeof item === 'string') : [] } : {}),
-    ...(typeof record.skipMemory === 'boolean' ? { skipMemory: record.skipMemory } : {}),
-    ...(typeof record.skipContextFiles === 'boolean' ? { skipContextFiles: record.skipContextFiles } : {}),
-  }
-}
-
 function makeNode(
   id: string,
   title: string,
@@ -426,7 +405,6 @@ function makeNode(
       skills: data.skills || [],
       images: data.images || [],
       approvalRequired: data.approvalRequired === true,
-      executionPolicy: cloneExecutionPolicy(data.executionPolicy),
       orchestration: { join: data.orchestration?.join === 'any' ? 'any' : 'all' },
       status: data.status || 'idle',
       agentOptions: agentOptions.value,
@@ -655,7 +633,6 @@ function serializeWorkflowNodes(source: WorkflowNode[]): unknown[] {
       skills: [...node.data.skills],
       images: [...node.data.images],
       approvalRequired: node.data.approvalRequired === true,
-      executionPolicy: cloneExecutionPolicy(node.data.executionPolicy),
       orchestration: { join: node.data.orchestration?.join === 'any' ? 'any' : 'all' },
     },
   }))
@@ -704,7 +681,6 @@ function normalizeStoredNode(raw: unknown, index: number): WorkflowNode {
       skills: Array.isArray(data.skills) ? data.skills.filter(item => typeof item === 'string') : [],
       images: Array.isArray(data.images) ? data.images.filter(item => typeof item === 'string') : [],
       approvalRequired: data.approvalRequired === true,
-      executionPolicy: normalizeExecutionPolicy(data.executionPolicy),
       orchestration: { join: data.orchestration?.join === 'any' ? 'any' : 'all' },
       status: 'idle',
     },

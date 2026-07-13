@@ -245,10 +245,6 @@ class BridgeBroker:
             profile = self._normalize_profile(req.get("profile"))
             return self._forward(profile, req, self._normalize_worker_key(profile, req.get("worker_key")))
 
-        if action == "workflow_capabilities":
-            profile = self._normalize_profile(req.get("profile"))
-            return self._forward(profile, req, self._normalize_worker_key(profile, req.get("worker_key")))
-
         if action == "context_estimate":
             profile = self._normalize_profile(req.get("profile"))
             return self._forward(profile, req, self._normalize_worker_key(profile, req.get("worker_key")))

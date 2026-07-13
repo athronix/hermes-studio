@@ -5,9 +5,8 @@ import { getWorkflowRunWithEvidence, listWorkflowRunsWithEvidence } from '../../
 import { logger } from '../../services/logger'
 import { compileWorkflowGraphPreflight } from '../../services/workflow-manager'
 import { cancelWorkflowImport, consumeWorkflowImportPreview, exportWorkflowDefinition, finalizeConsumedWorkflowImport, inspectWorkflowImportDocument, previewWorkflowImport } from '../../services/workflow-portability'
-import { assertWorkflowImportCapabilities, assertWorkflowImportToolCapabilities, workflowImportEnvironmentRevision, workflowImportRequestedToolsetGroups } from '../../services/workflow-import-capabilities'
+import { assertWorkflowImportCapabilities, workflowImportEnvironmentRevision } from '../../services/workflow-import-capabilities'
 import { getAvailableModelGroupsForProfile } from './models'
-import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
 
 const MAX_BATCH_DELETE = 200
 
@@ -125,28 +124,17 @@ function importOwnerId(ctx: Context): string {
   return String(ctx.state?.user?.id || 'anonymous')
 }
 
-async function workflowImportCapabilityContext(profile: string, nodes: unknown[]) {
+async function workflowImportCapabilityContext(profile: string) {
   const capabilityGroups = await getAvailableModelGroupsForProfile(profile)
-  const requestedToolsets = workflowImportRequestedToolsetGroups(nodes)
-  let toolGroups: Array<{ toolsets: string[] | null; tool_names: string[] }> = []
-  if (requestedToolsets.length > 0) {
-    try {
-      toolGroups = (await new AgentBridgeClient().workflowCapabilities(profile, requestedToolsets)).groups
-    } catch (err: any) {
-      throw Object.assign(new Error(`workflow execution-policy capabilities are unavailable for profile: ${err?.message || 'Agent Bridge unavailable'}`), { status: 409 })
-    }
-  }
   return {
     capabilityGroups,
-    toolGroups,
-    revision: workflowImportEnvironmentRevision(capabilityGroups, toolGroups),
+    revision: workflowImportEnvironmentRevision(capabilityGroups),
   }
 }
 
 async function assertWorkflowExecutionCapabilities(profile: string, nodes: unknown[]): Promise<void> {
-  const capabilities = await workflowImportCapabilityContext(profile, nodes)
+  const capabilities = await workflowImportCapabilityContext(profile)
   assertWorkflowImportCapabilities(nodes, capabilities.capabilityGroups)
-  assertWorkflowImportToolCapabilities(nodes, capabilities.toolGroups)
 }
 
 function validateWorkflowDefinitionMutation(nodes: unknown[], edges: unknown[]): void {
@@ -174,11 +162,10 @@ export async function previewImport(ctx: Context) {
   try {
     const inspectGraph = (nodes: unknown[], edges: unknown[], starts?: string[]) => compileWorkflowGraphPreflight(nodes, edges, starts)
     const inspected = inspectWorkflowImportDocument(body.document, inspectGraph)
-    const capabilities = await workflowImportCapabilityContext(profile, inspected.nodes)
+    const capabilities = await workflowImportCapabilityContext(profile)
     const validateGraph = (nodes: unknown[], edges: unknown[], starts?: string[]) => {
       const compiled = compileWorkflowGraphPreflight(nodes, edges, starts)
       assertWorkflowImportCapabilities(compiled.nodes, capabilities.capabilityGroups)
-      assertWorkflowImportToolCapabilities(compiled.nodes, capabilities.toolGroups)
       return compiled
     }
     validateGraph(inspected.nodes, inspected.edges)
@@ -206,11 +193,10 @@ export async function confirmImport(ctx: Context) {
   if (typeof body.token !== 'string' || !body.token.trim()) { ctx.status = 400; ctx.body = { error: 'token is required' }; return }
   try {
     const consumed = consumeWorkflowImportPreview(body.token.trim(), importOwnerId(ctx), profile)
-    const capabilities = await workflowImportCapabilityContext(profile, consumed.definition.nodes)
+    const capabilities = await workflowImportCapabilityContext(profile)
     const validateGraph = (nodes: unknown[], edges: unknown[], starts?: string[]) => {
       const compiled = compileWorkflowGraphPreflight(nodes, edges, starts)
       assertWorkflowImportCapabilities(compiled.nodes, capabilities.capabilityGroups)
-      assertWorkflowImportToolCapabilities(compiled.nodes, capabilities.toolGroups)
       return compiled
     }
     const input = finalizeConsumedWorkflowImport(consumed, {

@@ -2042,10 +2042,6 @@ jobTriggered: 'Job acionado',
     evidence: { title: 'Evidências de execução', empty: 'Nenhuma evidência registrada', loadFailed: 'Falha ao carregar as evidências de execução persistidas', node: 'Nó', edge: 'Conexão', loop: 'Loop' },
     edgeEditor: { title: 'Editar conexão', route: 'Rota', conditionPath: 'Caminho da condição', operator: 'Operador', value: 'Valor', feedback: 'Loop de feedback', maxIterations: 'Máximo de iterações', invalidIterations: 'O máximo de iterações deve ser um inteiro entre 1 e 100', loopId: 'ID do loop (opcional)', loopIdPlaceholder: 'Identidade estável, ex. review-loop', invalidLoopId: 'Formato de ID do loop inválido', invalidConditionValue: 'O valor da condição deve ser JSON válido', conditionValuePlaceholder: 'JSON: "texto", 42, true, ["a"]' },
     node: {
-      allowedToolsets: 'Allowed toolsets (empty = none)',
-      allowedTools: 'Allowed tools (empty = none)',
-      skipMemory: 'Skip memory',
-      skipContextFiles: 'Skip context files',
       approvalRequired: 'Aprovacao apos no',
     },
     status: {

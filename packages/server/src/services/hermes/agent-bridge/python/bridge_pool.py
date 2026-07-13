@@ -186,55 +186,6 @@ class AgentPool:
             "ended_at": kwargs.get("ended_at"),
         })
 
-    def workflow_capabilities(self, profile: str | None, toolset_groups: Any) -> dict[str, Any]:
-        """Return exact tool names for each requested Workflow execution-policy toolset group."""
-        _ensure_agent_imports()
-        groups = toolset_groups if isinstance(toolset_groups, list) else [None]
-        requested_groups: list[list[str] | None] = []
-        seen: set[str] = set()
-        for raw_group in groups:
-            if raw_group is None:
-                requested_group = None
-            elif isinstance(raw_group, list):
-                requested_group = sorted({str(value).strip() for value in raw_group if str(value).strip()})
-            else:
-                raise ValueError("toolset group must be an array or null")
-            key = json.dumps(requested_group, separators=(",", ":"), sort_keys=True)
-            if key in seen:
-                continue
-            seen.add(key)
-            requested_groups.append(requested_group)
-
-        snapshots: list[dict[str, Any]] = []
-        with _profile_env(profile):
-            _refresh_worker_profile_env()
-            _refresh_approval_allowlist()
-            # Match real Agent construction: MCP discovery first registers the
-            # target profile's dynamic mcp-<server> toolsets in the registry.
-            # get_tool_definitions then applies the exact requested/default
-            # toolset filter; never union MCP names around that authorization.
-            _discover_bridge_mcp_tools()
-            from model_tools import get_tool_definitions
-            from toolsets import resolve_toolset
-
-            for requested_group in requested_groups:
-                resolved_group = _load_enabled_toolsets() if requested_group is None else requested_group
-                for toolset_name in resolved_group:
-                    try:
-                        resolved = resolve_toolset(toolset_name)
-                    except Exception as exc:
-                        raise ValueError(f"unknown toolset: {toolset_name}") from exc
-                    if not resolved:
-                        raise ValueError(f"unknown toolset: {toolset_name}")
-                tools = get_tool_definitions(enabled_toolsets=resolved_group, quiet_mode=True)
-                snapshots.append({
-                    # Preserve the request identity. null means the target profile's
-                    # default toolsets, while tool_names are resolved from that profile.
-                    "toolsets": requested_group,
-                    "tool_names": sorted(set(_tool_names_from_definitions(tools))),
-                })
-        return {"profile": profile or "default", "groups": snapshots}
-
     def get_or_create(
         self,
         session_id: str,
@@ -242,17 +193,10 @@ class AgentPool:
         model: str | None = None,
         provider: str | None = None,
         api_mode: str | None = None,
-        execution_policy: dict[str, Any] | None = None,
     ) -> AgentSession:
         requested_model = str(model or "").strip()
         requested_provider = str(provider or "").strip()
         requested_api_mode = str(api_mode or "").strip()
-        raw_allowed_toolsets = execution_policy.get("allowedToolsets") if isinstance(execution_policy, dict) else None
-        requested_toolsets = [str(value).strip() for value in raw_allowed_toolsets if str(value).strip()] if isinstance(raw_allowed_toolsets, list) else None
-        raw_allowed_tools = execution_policy.get("allowedTools") if isinstance(execution_policy, dict) else None
-        requested_tools = [str(value).strip() for value in raw_allowed_tools if str(value).strip()] if isinstance(raw_allowed_tools, list) else None
-        skip_memory = execution_policy.get("skipMemory") is True if isinstance(execution_policy, dict) else False
-        skip_context_files = execution_policy.get("skipContextFiles") is True if isinstance(execution_policy, dict) else False
         with self._lock:
             existing = self._sessions.get(session_id)
             if existing is not None:
@@ -263,23 +207,13 @@ class AgentPool:
                     or (requested_provider and existing.config.get("provider") != requested_provider)
                     or (requested_api_mode and existing.config.get("api_mode") != requested_api_mode)
                 )
-                policy_changed = (
-                    existing.config.get("allowed_toolsets") != requested_toolsets
-                    or existing.config.get("allowed_tools") != requested_tools
-                    or existing.config.get("skip_memory") != skip_memory
-                    or existing.config.get("skip_context_files") != skip_context_files
-                )
-                config_changed = profile_changed or runtime_changed or policy_changed
+                config_changed = profile_changed or runtime_changed
                 if config_changed:
                     if profile_changed and not existing.running:
                         self._destroy_session(session_id)
                     elif profile_changed:
                         existing.last_used_at = time.time()
                         return existing
-                    elif policy_changed and not existing.running:
-                        self._destroy_session(session_id)
-                    elif policy_changed:
-                        raise RuntimeError(f"session {session_id} execution policy cannot change while running")
                     elif not existing.running:
                         try:
                             self._switch_loaded_session_model(
@@ -342,13 +276,11 @@ class AgentPool:
                     verbose_logging=False,
                     reasoning_config=_load_reasoning_config(),
                     service_tier=_load_service_tier(),
-                    enabled_toolsets=requested_toolsets if requested_toolsets is not None else _load_enabled_toolsets(),
+                    enabled_toolsets=_load_enabled_toolsets(),
                     platform=_bridge_platform(),
                     session_id=session_id,
                     session_db=self._db.get_for_profile(profile),
                     ephemeral_system_prompt=prompt,
-                    skip_memory=skip_memory,
-                    skip_context_files=skip_context_files,
                     status_callback=self._status_callback(session_id),
                     thinking_callback=self._make_thinking_callback(session_id),
                     reasoning_callback=self._text_event_callback(session_id, "reasoning.delta"),
@@ -360,19 +292,6 @@ class AgentPool:
                 )
                 agent.compression_enabled = False
                 self._install_compression_hook(agent, session_id)
-                if requested_tools is not None:
-                    allowed_names = set(requested_tools)
-                    agent.tools = [
-                        tool for tool in (getattr(agent, "tools", None) or [])
-                        if str(tool.get("function", {}).get("name") or "") in allowed_names
-                    ]
-                    agent.valid_tool_names = {
-                        name for name in getattr(agent, "valid_tool_names", set()) if name in allowed_names
-                    }
-                    context_engine_names = getattr(agent, "_context_engine_tool_names", None)
-                    if isinstance(context_engine_names, set):
-                        context_engine_names.intersection_update(allowed_names)
-                    agent._skip_mcp_refresh = True
                 mcp_tool_names = self._mcp_tool_names(self._agent_tool_names(getattr(agent, "tools", None) or []))
 
                 session = AgentSession(
@@ -387,10 +306,6 @@ class AgentPool:
                         "base_url": runtime.get("base_url"),
                         "api_mode": runtime.get("api_mode"),
                         "platform": _bridge_platform(),
-                        "allowed_toolsets": requested_toolsets,
-                        "allowed_tools": requested_tools,
-                        "skip_memory": skip_memory,
-                        "skip_context_files": skip_context_files,
                         "resumed": False,
                         "resumed_message_count": 0,
                         "mcp_tool_count": len(discovered_mcp_tools),
@@ -759,9 +674,8 @@ class AgentPool:
         provider: str | None = None,
         workspace: str | None = None,
         api_mode: str | None = None,
-        execution_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider, api_mode=api_mode, execution_policy=execution_policy)
+        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider, api_mode=api_mode)
         session_cwd_bound = _bind_session_workspace_cwd(session.session_id, workspace)
         try:
             context_info = self._estimate_context_info(session.agent, messages or [], instructions)
@@ -1249,9 +1163,8 @@ class AgentPool:
         source: str | None = None,
         reasoning_effort: str | None = None,
         api_mode: str | None = None,
-        execution_policy: dict[str, Any] | None = None,
     ) -> RunRecord:
-        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider, api_mode=api_mode, execution_policy=execution_policy)
+        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider, api_mode=api_mode)
         # Install after agent construction so any runtime plugin initialization
         # has completed. Rechecking on every run also recovers from a forced
         # plugin reload that clears the manager's callback registry.

@@ -11,11 +11,11 @@ const PREVIEW_TTL_MS = 5 * 60 * 1000
 const MAX_PENDING_PREVIEWS = 1000
 const CREDENTIAL_KEYS = new Set(['token', 'accesstoken', 'access_token', 'refreshtoken', 'refresh_token', 'apikey', 'api_key', 'password', 'secret', 'clientsecret', 'client_secret', 'privatekey', 'private_key', 'authorization', 'bearer', 'cookie', 'sessionid', 'session_id', 'runid', 'run_id'])
 const NODE_KEYS = ['id', 'type', 'position']
-const NODE_DATA_KEYS = ['title', 'agent', 'provider', 'model', 'apiMode', 'reasoningEffort', 'executionPolicy', 'input', 'skills', 'approvalRequired', 'orchestration']
+const NODE_DATA_KEYS = ['title', 'agent', 'provider', 'model', 'apiMode', 'reasoningEffort', 'input', 'skills', 'approvalRequired', 'orchestration']
+const IMPORT_NODE_DATA_KEYS = [...NODE_DATA_KEYS, 'executionPolicy']
 const DEFINITION_KEYS = ['name', 'nodes', 'edges', 'viewport']
 const EDGE_KEYS = ['id', 'source', 'target', 'sourceHandle', 'targetHandle', 'type', 'animated', 'data']
 const EDGE_DATA_KEYS = ['orchestration']
-const EXECUTION_POLICY_KEYS = ['allowedToolsets', 'allowedTools', 'skipMemory', 'skipContextFiles']
 const NODE_ORCHESTRATION_KEYS = ['join']
 const EDGE_ORCHESTRATION_KEYS = ['route', 'condition', 'feedback']
 const CONDITION_KEYS = ['path', 'operator', 'value']
@@ -50,9 +50,7 @@ function exportNode(raw: any): any {
   const node = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
   const data = node.data && typeof node.data === 'object' && !Array.isArray(node.data) ? node.data : {}
   const exportedData = cloneAllowed(data, NODE_DATA_KEYS)
-  const policy = allowedObject(data.executionPolicy, EXECUTION_POLICY_KEYS)
   const orchestration = allowedObject(data.orchestration, NODE_ORCHESTRATION_KEYS)
-  if (policy) exportedData.executionPolicy = policy
   if (orchestration) exportedData.orchestration = orchestration
   return { ...cloneAllowed(node, NODE_KEYS), data: exportedData }
 }
@@ -101,11 +99,8 @@ function assertDefinitionAllowlist(definition: Record<string, any>): void {
     assertAllowedKeys(node.position, ['x', 'y'], 'node position')
     if (![node.position.x, node.position.y].every(Number.isFinite)) throw new Error('workflow import node position must contain finite x and y')
     if (node.data && typeof node.data === 'object' && !Array.isArray(node.data)) {
-      assertAllowedKeys(node.data, NODE_DATA_KEYS, 'node data')
-      if (node.data.executionPolicy != null) {
-        if (typeof node.data.executionPolicy !== 'object' || Array.isArray(node.data.executionPolicy)) throw new Error('workflow import execution policy must be an object')
-        assertAllowedKeys(node.data.executionPolicy, EXECUTION_POLICY_KEYS, 'execution policy')
-      }
+      // executionPolicy was present in prerelease Workflow exports; accept and discard it.
+      assertAllowedKeys(node.data, IMPORT_NODE_DATA_KEYS, 'node data')
       if (node.data.orchestration != null) {
         if (typeof node.data.orchestration !== 'object' || Array.isArray(node.data.orchestration)) throw new Error('workflow import node orchestration must be an object')
         assertAllowedKeys(node.data.orchestration, NODE_ORCHESTRATION_KEYS, 'node orchestration')
