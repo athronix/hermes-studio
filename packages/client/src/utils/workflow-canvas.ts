@@ -7,7 +7,7 @@ export function createConnectedAgentTransaction<N extends { id: string }, E = an
   if (!state.nodes.some(node => node.id === input.source)) throw new Error('source node does not exist')
   if (state.nodes.some(node => node.id === input.nodeId)) throw new Error('target node already exists')
   const node = { id: input.nodeId, type: 'agent', position: { ...input.position }, data: { ...input.nodeData } } as unknown as N
-  const edge = { id: `edge-${input.source}-${input.nodeId}`, source: input.source, target: input.nodeId, type: 'smoothstep' } as E
+  const edge = { id: `edge-${input.source}-${input.nodeId}`, source: input.source, sourceHandle: 'output', target: input.nodeId, targetHandle: 'input', type: 'smoothstep' } as E
   return { before: state, after: { nodes: [...state.nodes, node], edges: [...state.edges, edge] } }
 }
 

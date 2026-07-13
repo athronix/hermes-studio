@@ -74,7 +74,7 @@ const appStore = useAppStore()
 const chatStore = useChatStore()
 const profilesStore = useProfilesStore()
 const message = useMessage()
-const { screenToFlowCoordinate, getViewport, setViewport } = useVueFlow('hermes-workflow')
+const { screenToFlowCoordinate, getViewport, setViewport, setNodes, setEdges, updateNodeInternals } = useVueFlow('hermes-workflow')
 const defaultViewport: WorkflowViewport = { x: 80, y: 80, zoom: 0.75 }
 const workflowBodyRef = ref<HTMLElement | null>(null)
 const workflowCanvasRef = ref<HTMLElement | null>(null)
@@ -1630,7 +1630,7 @@ function handleConnectStart(payload: { nodeId?: string; handleType?: string }) {
   connectionStartNodeId.value = payload.handleType === 'source' ? payload.nodeId || null : null
 }
 
-function handleConnectEnd(event?: MouseEvent | TouchEvent) {
+async function handleConnectEnd(event?: MouseEvent | TouchEvent) {
   const source = connectionStartNodeId.value
   connectionStartNodeId.value = null
   if (!source || !event || selectedWorkflowRunId.value || !activeWorkflowId.value) return
@@ -1650,8 +1650,11 @@ function handleConnectEnd(event?: MouseEvent | TouchEvent) {
   transaction.after.edges[transaction.after.edges.length - 1] = {
     ...transaction.after.edges[transaction.after.edges.length - 1], animated: true, markerEnd: MarkerType.ArrowClosed,
   }
-  nodes.value = transaction.after.nodes
-  edges.value = transaction.after.edges
+  setNodes(transaction.after.nodes)
+  await nextTick()
+  updateNodeInternals([nodeId])
+  await nextTick()
+  setEdges(transaction.after.edges)
   lastCanvasTransaction.value = transaction
   nextNodeIndex.value += 1
   ensureSkillOptionsForVisibleNodes()
@@ -1660,8 +1663,8 @@ function handleConnectEnd(event?: MouseEvent | TouchEvent) {
 function undoLastCanvasTransaction() {
   const transaction = lastCanvasTransaction.value
   if (!transaction || selectedWorkflowRunId.value) return
-  nodes.value = transaction.before.nodes
-  edges.value = transaction.before.edges
+  setNodes(transaction.before.nodes)
+  setEdges(transaction.before.edges)
   nextNodeIndex.value = Math.max(1, nextNodeIndex.value - 1)
   lastCanvasTransaction.value = null
 }
