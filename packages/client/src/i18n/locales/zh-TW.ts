@@ -700,6 +700,7 @@ export default {
     speechNotSupported: '此瀏覽器不支援語音播放',
     modelSetFailed: '設定模型失敗',
     modelSet: '模型已設定',
+    modelSwitching: '正在切換模型...',
     setModelTitle: '設定工作階段模型',
     setModel: '設定模型',
     newCliChat: '新增 CLI',

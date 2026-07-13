@@ -674,6 +674,7 @@ export default {
     setWorkspace: 'Workspace を設定',
     modelSetFailed: 'モデルの設定に失敗しました',
     modelSet: 'モデルを設定しました',
+    modelSwitching: 'モデルを切り替えています...',
     setModelTitle: 'セッションモデルを設定',
     setModel: 'モデルを設定',
     newCliChat: '新規 CLI',

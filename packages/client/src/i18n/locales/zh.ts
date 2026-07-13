@@ -676,6 +676,7 @@ export default {
     setModel: '设置模型',
     setModelTitle: '设置会话模型',
     modelSet: '模型已设置',
+    modelSwitching: '正在切换模型...',
     modelSetFailed: '设置模型失败',
     other: '其他',
     runFailed: '运行失败',

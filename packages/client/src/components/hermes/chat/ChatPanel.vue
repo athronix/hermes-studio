@@ -18,6 +18,7 @@ import {
   NPopconfirm,
   NRadioButton,
   NRadioGroup,
+  NSpin,
   useMessage,
   type DropdownOption,
 } from "naive-ui";
@@ -1051,6 +1052,7 @@ const sessionModelCustomInput = ref("");
 const sessionModelCustomProvider = ref("");
 const sessionModelApiMode = ref<CodingAgentApiMode>("codex_responses");
 const pendingSessionModelSwitch = ref<{ model: string; provider: string } | null>(null);
+const sessionModelSwitching = ref(false);
 
 const sessionModelProfile = computed<string | null>(() => {
   const session = chatStore.sessions.find((s) => s.id === sessionModelSessionId.value);
@@ -1161,6 +1163,7 @@ function isSessionModelGroupCollapsed(provider: string) {
 }
 
 function toggleSessionModelGroup(provider: string) {
+  if (sessionModelSwitching.value) return;
   sessionModelCollapsedGroups.value[provider] = !sessionModelCollapsedGroups.value[provider];
 }
 
@@ -1187,24 +1190,29 @@ function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
 }
 
 async function applySessionModelSwitch(model: string, provider: string, apiMode?: CodingAgentApiMode) {
-  if (!sessionModelSessionId.value) return;
-  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
-  if (ok) {
-    sessionModelValue.value = model;
-    sessionModelProvider.value = provider;
-    if (apiMode) sessionModelApiMode.value = apiMode;
-    pendingSessionModelSwitch.value = null;
-    showSessionModelModeModal.value = false;
-    showSessionModelModal.value = false;
-    message.success(t("chat.modelSet"));
-  } else {
-    message.error(t("chat.modelSetFailed"));
+  if (!sessionModelSessionId.value || sessionModelSwitching.value) return;
+  sessionModelSwitching.value = true;
+  try {
+    const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
+    if (ok) {
+      sessionModelValue.value = model;
+      sessionModelProvider.value = provider;
+      if (apiMode) sessionModelApiMode.value = apiMode;
+      pendingSessionModelSwitch.value = null;
+      showSessionModelModeModal.value = false;
+      showSessionModelModal.value = false;
+      message.success(t("chat.modelSet"));
+    } else {
+      message.error(t("chat.modelSetFailed"));
+    }
+  } finally {
+    sessionModelSwitching.value = false;
   }
 }
 
 async function selectSessionModel(model: string, provider: string) {
   const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
-  if (meta?.disabled || !sessionModelSessionId.value) return;
+  if (meta?.disabled || !sessionModelSessionId.value || sessionModelSwitching.value) return;
   if (isSessionModelExternalCodingAgent.value) {
     pendingSessionModelSwitch.value = { model, provider };
     sessionModelApiMode.value = sessionModelSession.value?.provider === provider && sessionModelSession.value.apiMode
@@ -1223,6 +1231,7 @@ async function confirmSessionModelMode() {
 }
 
 function cancelSessionModelMode() {
+  if (sessionModelSwitching.value) return;
   pendingSessionModelSwitch.value = null;
   showSessionModelModeModal.value = false;
 }
@@ -1230,7 +1239,7 @@ function cancelSessionModelMode() {
 async function handleSessionModelCustomSubmit() {
   const model = sessionModelCustomInput.value.trim();
   const provider = sessionModelCustomProvider.value;
-  if (!model || !provider) return;
+  if (!model || !provider || sessionModelSwitching.value) return;
   await selectSessionModel(model, provider);
 }
 </script>
@@ -1496,16 +1505,21 @@ async function handleSessionModelCustomSubmit() {
       preset="card"
       :title="t('chat.setModelTitle')"
       :style="{ width: 'min(480px, calc(100vw - 32px))' }"
-      :mask-closable="true"
+      :mask-closable="!sessionModelSwitching"
+      :close-on-esc="!sessionModelSwitching"
+      :closable="!sessionModelSwitching"
     >
-      <NInput
-        v-model:value="sessionModelSearch"
-        :placeholder="t('models.searchPlaceholder')"
-        clearable
-        size="small"
-        class="session-model-search"
-      />
-      <div class="session-model-list">
+      <NSpin :show="sessionModelSwitching" class="session-model-switch-spin">
+        <template #description>{{ t('chat.modelSwitching') }}</template>
+        <NInput
+          v-model:value="sessionModelSearch"
+          :placeholder="t('models.searchPlaceholder')"
+          :disabled="sessionModelSwitching"
+          clearable
+          size="small"
+          class="session-model-search"
+        />
+        <div class="session-model-list" :aria-busy="sessionModelSwitching">
         <div v-for="group in filteredSessionModelGroups" :key="group.provider" class="session-model-group">
           <div class="session-model-group-header" @click="toggleSessionModelGroup(group.provider)">
             <svg
@@ -1533,7 +1547,9 @@ async function handleSessionModelCustomSubmit() {
               :class="{
                 active: model === sessionModelValue && group.provider === sessionModelProvider,
                 disabled: !!group.model_meta?.[model]?.disabled,
+                switching: sessionModelSwitching,
               }"
+              :aria-disabled="sessionModelSwitching || !!group.model_meta?.[model]?.disabled"
               :title="group.model_meta?.[model]?.disabled ? t('models.disabledTooltip') : ''"
               @click="selectSessionModel(model, group.provider)"
             >
@@ -1571,12 +1587,14 @@ async function handleSessionModelCustomSubmit() {
             <NSelect
               v-model:value="sessionModelCustomProvider"
               :options="sessionModelProviderOptions"
+              :disabled="sessionModelSwitching"
               size="small"
               class="session-model-custom-provider"
             />
             <NInput
               v-model:value="sessionModelCustomInput"
               :placeholder="t('models.customModelPlaceholder')"
+              :disabled="sessionModelSwitching"
               size="small"
               class="session-model-custom-input"
               @keydown.enter="handleSessionModelCustomSubmit"
@@ -1586,26 +1604,30 @@ async function handleSessionModelCustomSubmit() {
             {{ t('models.customModelHint') }}
           </div>
         </div>
-      </div>
+        </div>
+      </NSpin>
     </NModal>
 
     <NModal
       v-model:show="showSessionModelModeModal"
       preset="dialog"
       :title="t('codingAgents.protocolScope')"
-      :mask-closable="true"
+      :mask-closable="!sessionModelSwitching"
+      :close-on-esc="!sessionModelSwitching"
+      :closable="!sessionModelSwitching"
       style="width: min(420px, calc(100vw - 32px))"
     >
       <NSelect
         v-model:value="sessionModelApiMode"
         :options="newChatApiModeOptions"
+        :disabled="sessionModelSwitching"
       />
       <template #action>
-        <NButton size="small" @click="cancelSessionModelMode">
+        <NButton size="small" :disabled="sessionModelSwitching" @click="cancelSessionModelMode">
           {{ t('common.cancel') }}
         </NButton>
-        <NButton size="small" type="primary" @click="confirmSessionModelMode">
-          {{ t('common.confirm') }}
+        <NButton size="small" type="primary" :loading="sessionModelSwitching" @click="confirmSessionModelMode">
+          {{ sessionModelSwitching ? t('chat.modelSwitching') : t('common.confirm') }}
         </NButton>
       </template>
     </NModal>
@@ -2012,6 +2034,10 @@ async function handleSessionModelCustomSubmit() {
   margin-bottom: 12px;
 }
 
+.session-model-switch-spin {
+  min-height: 180px;
+}
+
 .session-model-list {
   max-height: 50vh;
   overflow-y: auto;
@@ -2092,6 +2118,10 @@ async function handleSessionModelCustomSubmit() {
       background-color: transparent;
       color: $text-secondary;
     }
+  }
+
+  &.switching {
+    cursor: wait;
   }
 }
 

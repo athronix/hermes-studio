@@ -676,6 +676,7 @@ export default {
     setModel: 'Set Model',
     setModelTitle: 'Set Session Model',
     modelSet: 'Model set',
+    modelSwitching: 'Switching model...',
     modelSetFailed: 'Failed to set model',
     other: 'Other',
     runFailed: 'Run failed',

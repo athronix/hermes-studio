@@ -580,6 +580,7 @@ export default {
     setModel: 'Установить модель',
     setModelTitle: 'Установить модель сеанса',
     modelSet: 'Модель установлена',
+    modelSwitching: 'Переключение модели...',
     modelSetFailed: 'Ошибка установки модели',
     other: 'Другое',
     runFailed: 'Ошибка выполнения',

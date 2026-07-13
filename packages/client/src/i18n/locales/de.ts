@@ -674,6 +674,7 @@ export default {
     setWorkspace: 'Workspace festlegen',
     modelSetFailed: 'Modell konnte nicht festgelegt werden',
     modelSet: 'Modell festgelegt',
+    modelSwitching: 'Modell wird gewechselt...',
     setModelTitle: 'Sitzungsmodell festlegen',
     setModel: 'Modell festlegen',
     newCliChat: 'Neue CLI',
