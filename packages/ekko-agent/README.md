@@ -99,8 +99,9 @@ In development, Ekko Agent stores its SQLite database at
 `packages/ekko-agent/sql-data/ekko-agent.db`. It uses the same single-file
 SQLite/DELETE journal layout as `packages/server/data/hermes-web-ui.db`, so the
 database can be opened directly in Navicat. Tests remain isolated in temporary
-directories, while production stores data under
-`HERMES_WEB_UI_HOME/ekko/ekko.db`.
+directories. While the production Ekko Agent entry remains hidden, the server
+starts Ekko Agent with memory disabled and does not create the `ekko` directory
+or `HERMES_WEB_UI_HOME/ekko/ekko.db`.
 
 ```ts
 import { AgentRuntime, createDefaultToolRegistry } from './src/index'

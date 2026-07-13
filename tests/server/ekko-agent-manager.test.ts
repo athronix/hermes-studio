@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { GlobalEkkoAgent } from '../../packages/server/src/services/ekko-agent/manager'
+import { createGlobalEkkoAgent, GlobalEkkoAgent } from '../../packages/server/src/services/ekko-agent/manager'
 import type { ModelClient, ModelRequest } from '../../packages/ekko-agent/src'
 
 function modelClient(content: string): ModelClient {
@@ -70,6 +70,29 @@ describe('GlobalEkkoAgent', () => {
         memoryDatabasePath: join(webUiHome, 'ekko', 'ekko.db'),
       })
       expect(existsSync(join(webUiHome, 'ekko', 'ekko.db'))).toBe(true)
+    } finally {
+      agent.close()
+      await rm(webUiHome, { recursive: true, force: true })
+    }
+  })
+
+  it('does not create a memory database when the production entry is hidden', async () => {
+    const webUiHome = await mkdtemp(join(tmpdir(), 'global-ekko-agent-production-'))
+    const agent = createGlobalEkkoAgent({ webUiHome }, { NODE_ENV: 'production' })
+    try {
+      const result = await agent.run({
+        messages: ['hello'],
+        modelClient: modelClient('ok'),
+        metadata: { session_id: 'session-1' },
+      })
+
+      expect(result.output.content).toBe('ok')
+      expect(agent.status()).toMatchObject({
+        memoryEnabled: false,
+        memoryDatabasePath: undefined,
+      })
+      expect(existsSync(join(webUiHome, 'ekko'))).toBe(false)
+      expect(existsSync(join(webUiHome, 'ekko', 'ekko.db'))).toBe(false)
     } finally {
       agent.close()
       await rm(webUiHome, { recursive: true, force: true })

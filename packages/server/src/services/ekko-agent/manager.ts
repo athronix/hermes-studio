@@ -74,7 +74,17 @@ export class GlobalEkkoAgent {
   }
 }
 
-const globalEkkoAgent = new GlobalEkkoAgent({ webUiHome: config.appHome })
+export function createGlobalEkkoAgent(
+  options: GlobalEkkoAgentOptions = {},
+  env: Record<string, string | undefined> = process.env,
+): GlobalEkkoAgent {
+  return new GlobalEkkoAgent({
+    ...options,
+    memory: env.NODE_ENV === 'production' ? false : options.memory,
+  })
+}
+
+const globalEkkoAgent = createGlobalEkkoAgent({ webUiHome: config.appHome })
 
 export function getGlobalEkkoAgent(): GlobalEkkoAgent {
   return globalEkkoAgent
