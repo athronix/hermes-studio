@@ -652,6 +652,96 @@ function createIndexes(
   }
 }
 
+function indexExists(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  indexName: string,
+): boolean {
+  return Boolean(db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`
+  ).get(indexName))
+}
+
+function syncWorkflowRunNodeSessions(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, WORKFLOW_RUN_NODE_SESSIONS_TABLE)) {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    })
+    return
+  }
+
+  const hasExecutionId = tableHasColumn(db, WORKFLOW_RUN_NODE_SESSIONS_TABLE, 'execution_id')
+  const hasBlankExecutionIds = hasExecutionId && Boolean(db.prepare(
+    `SELECT 1 FROM ${quoteIdentifier(WORKFLOW_RUN_NODE_SESSIONS_TABLE)} WHERE execution_id = '' LIMIT 1`
+  ).get())
+  const needsMigration =
+    !hasExecutionId ||
+    hasBlankExecutionIds ||
+    indexExists(db, 'uniq_workflow_run_node_sessions_run_node') ||
+    !indexExists(db, 'uniq_workflow_run_node_sessions_run_execution')
+
+  if (!needsMigration) {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
+    return
+  }
+
+  db.exec('BEGIN')
+  try {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
+    db.prepare(
+      `UPDATE ${quoteIdentifier(WORKFLOW_RUN_NODE_SESSIONS_TABLE)} ` +
+      `SET execution_id = node_id WHERE execution_id = ''`
+    ).run()
+    db.exec('DROP INDEX IF EXISTS uniq_workflow_run_node_sessions_run_node')
+    createIndexes(db, WORKFLOW_RUN_NODE_SESSIONS_INDEXES)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function syncWorkflowRunEdgeEvaluations(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)) {
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    return
+  }
+
+  const hasIncompatibleLegacySchema =
+    !tableHasColumn(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, 'source_outcome') ||
+    !tableHasColumn(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, 'route')
+  if (!hasIncompatibleLegacySchema) {
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    return
+  }
+
+  const archiveTable = `${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}__legacy_v1`
+  db.exec('BEGIN')
+  try {
+    if (tableExists(db, archiveTable)) {
+      throw new Error(`cannot archive legacy ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}: ${archiveTable} already exists`)
+    }
+    db.exec(
+      `ALTER TABLE ${quoteIdentifier(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)} ` +
+      `RENAME TO ${quoteIdentifier(archiveTable)}`
+    )
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 function migrateLegacySttProviderSettingsUserIdDefault(
   db: NonNullable<ReturnType<typeof getDb>>,
 ): void {
@@ -854,12 +944,8 @@ export function initAllHermesTables(): void {
     syncTable(WORKFLOW_RUNS_TABLE, WORKFLOW_RUNS_SCHEMA, {
       indexes: WORKFLOW_RUNS_INDEXES,
     })
-    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
-    db.exec('DROP INDEX IF EXISTS uniq_workflow_run_node_sessions_run_node')
-    for (const sql of Object.values(WORKFLOW_RUN_NODE_SESSIONS_INDEXES)) db.exec(sql)
-    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
-      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
-    })
+    syncWorkflowRunNodeSessions(db)
+    syncWorkflowRunEdgeEvaluations(db)
     syncTable(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA, {
       indexes: WORKFLOW_RUN_LOOP_EPOCHS_INDEXES,
     })
