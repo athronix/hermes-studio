@@ -551,6 +551,7 @@ export default {
         low: '低',
         medium: '中',
         high: '高',
+        max: 'Max',
         xhigh: '最高',
       },
     },
@@ -2047,8 +2048,30 @@ export default {
   },
 
   workflow: {
+    actions: { importWorkflow: 'Workflow をインポート', exportWorkflow: 'Workflow をエクスポート', imported: 'Workflow をインポートしました', exported: 'Workflow をエクスポートしました', importFailed: 'Workflow のインポートに失敗しました', exportFailed: 'Workflow のエクスポートに失敗しました' },
+    stats: { nodes: 'ノード', edges: '接続' },
+    evidence: { title: '実行証跡', empty: '実行証跡はありません', loadFailed: '保存済み実行証跡の読み込みに失敗しました', node: 'ノード', edge: '接続', loop: 'ループ' },
+    edgeEditor: {
+      title: '接続を編集', guideIntro: '接続はルートと任意の条件が両方一致したときだけ使われます。内容を判定しない場合は「ルートのみ」を選びます。',
+      route: 'ルート', routes: { success: '成功時のみ（success）', failure: '失敗時のみ（failure）', always: '常に（always）' },
+      routeHelp: '最初に元ノードの結果を判定し、条件がある場合はその条件も一致する必要があります。', routeExample: '例：通常処理は success、エラー処理は failure、後処理は always。',
+      conditionPath: 'この接続で何を確認しますか？', conditionPathPlaceholder: '高度なパス（例：output）',
+      conditionPathOptions: { routeOnly: 'ルートのみ — 条件なし', outputRecommended: '成功時の応答文（output・推奨）', output: '成功時の応答文（output）', errorRecommended: '失敗時のエラー文（error・推奨）', error: '失敗時のエラー文（error）', custom: 'カスタムパス（高度）' },
+      conditionPathHelp: { success: 'success では output を推奨します。応答内容を確認しない場合は「ルートのみ」を選びます。', failure: 'failure では error を推奨します。エラー文を確認しない場合は「ルートのみ」を選びます。', always: '成功文は output、失敗文は error。「ルートのみ」は内容を確認しません。' },
+      operator: '演算子', operators: { equals: '等しい（equals）', not_equals: '等しくない（not_equals）', contains: '含む（contains）', not_contains: '含まない（not_contains）', exists: '存在する（exists）', not_exists: '存在しない（not_exists）', greater_than: 'より大きい（greater_than）', greater_than_or_equal: '以上（greater_than_or_equal）', less_than: 'より小さい（less_than）', less_than_or_equal: '以下（less_than_or_equal）', in: 'リスト内（in）', not_in: 'リスト外（not_in）' },
+      operatorHelp: { equals: '値と型が完全に同じ場合に一致します。', not_equals: '値または型が異なる場合に一致します。', contains: '文字列に文字列、または配列に項目が含まれる場合に一致します。', not_contains: '文字列または配列に項目が含まれない場合に一致します。', exists: 'パスが存在すれば一致し、値は不要です。', not_exists: 'パスがなければ一致し、値は不要です。', greater_than: '両辺が JSON 数値で、実値が大きい場合に一致します。', greater_than_or_equal: '両辺が JSON 数値で、実値が以上の場合に一致します。', less_than: '両辺が JSON 数値で、実値が小さい場合に一致します。', less_than_or_equal: '両辺が JSON 数値で、実値が以下の場合に一致します。', in: '値は実値を含む JSON 配列にします。', not_in: '値は実値を含まない JSON 配列にします。' },
+      value: '値', invalidConditionValue: '条件値は有効な JSON である必要があります', conditionValuePlaceholder: 'JSON: "text", 42, true, ["a"]', valueType: '値の型', valueTypes: { string: '文字列', number: '数値', boolean: '真偽値', null: 'Null', array: '配列', object: 'オブジェクト' },
+      valueTypeHelp: '値の解析と検証に使う型を選びます。保存済み JSON 値から自動判定され、型自体は別途保存されません。',
+      conditionValuePlaceholders: { string: 'テキスト（例: APPROVED）', number: '数値（例: 42）', boolean: 'true または false', null: 'null', array: 'JSON 配列（例: ["a", 2]）', object: 'JSON オブジェクト（例: {\'{\'}"status":"ready"{\'}\'}）' },
+      invalidValueTypes: { string: '値は文字列である必要があります。', number: '値は有効な数値である必要があります。', boolean: '値は true または false である必要があります。', null: '値は null である必要があります。', array: '値は有効な配列である必要があります。', object: '値は有効なオブジェクトである必要があります。' },
+      valueHelp: '選択した型に一致する値を入力します。オブジェクトと配列は JSON、文字列は JSON の引用符なしで入力します。',
+      feedback: 'フィードバックループ', feedbackHelp: 'この戻り接続を上限付きループとして扱います。ルートと条件が一致する間だけ繰り返します。', maxIterations: '最大反復回数', maxIterationsHelp: 'ループ全体の実行回数は 1〜100。全体の実行予算も適用されます。', invalidIterations: '最大反復回数は 1 から 100 の整数にしてください',
+      loopId: 'ループ識別子', loopIdPlaceholder: '自動を選ぶかカスタム ID を入力', loopIdAutomatic: '自動（推奨）· {id}', loopIdHelp: '実行履歴でループを識別するだけで、実行条件は変わりません。通常は自動のままにします。', invalidLoopId: 'ループ ID の形式が正しくありません',
+    },
     node: {
       approvalRequired: '完了後承認',
+      join: '合流方法', joinAll: 'すべての入力ルート', joinAny: 'いずれかの入力ルート',
+      joinAllHelp: 'すべての入力ルートが有効な場合のみ実行し、1つでも不一致ならスキップします。', joinAnyHelp: '最初の有効な入力ルートで1回実行し、すべて不一致の場合のみスキップします。',
     },
     status: {
       pending_approval: '承認待ち',

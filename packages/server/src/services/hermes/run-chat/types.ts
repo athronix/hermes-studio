@@ -56,6 +56,7 @@ export interface QueuedRun {
   commandPassthrough?: boolean
   originSocketId?: string
   goalContinuation?: boolean
+  reasoningEffort?: string
 }
 
 export interface SessionState {

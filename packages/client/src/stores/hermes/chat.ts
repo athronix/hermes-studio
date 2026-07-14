@@ -143,7 +143,7 @@ export interface Session {
   isLocalOnly?: boolean
   /** Per-session reasoning effort override.
    * Empty string / undefined = use config.yaml default.
-   * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' */
+   * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' */
   reasoningEffort?: string
 }
 

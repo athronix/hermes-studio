@@ -28,6 +28,17 @@ const codexTarget = { model: 'test-model', annotateMcpToolNamespaces: true }
 const anthropicTarget = { provider: 'deepseek', model: 'deepseek-reasoner', baseUrl: 'https://api.deepseek.com/v1' }
 
 describe('agent runner Responses adapters', () => {
+  it('forwards maximum reasoning effort to Chat and Anthropic payloads', () => {
+    const maxTarget = { ...target, reasoningEffort: 'max' }
+
+    expect(responsesToOpenAiChat({ input: [] }, maxTarget)).toMatchObject({
+      reasoning_effort: 'max',
+    })
+    expect(responsesToAnthropicMessages({ input: [] }, maxTarget)).toMatchObject({
+      reasoning_effort: 'max',
+    })
+  })
+
   it('converts Responses input to OpenAI Chat messages and tools', () => {
     const body = {
       instructions: 'be terse',
@@ -497,6 +508,17 @@ describe('agent runner Responses stream adapters', () => {
 })
 
 describe('agent runner Anthropic adapters', () => {
+  it('forwards maximum reasoning effort to Chat and Responses payloads', () => {
+    const maxTarget = { ...anthropicTarget, reasoningEffort: 'max' }
+
+    expect(anthropicToOpenAiChat({ messages: [] }, maxTarget)).toMatchObject({
+      reasoning_effort: 'max',
+    })
+    expect(anthropicToOpenAiResponses({ messages: [] }, maxTarget)).toMatchObject({
+      reasoning: { effort: 'max' },
+    })
+  })
+
   it('converts Anthropic messages to OpenAI Chat with reasoning_content', () => {
     const body = {
       system: 'system text',

@@ -1,7 +1,8 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 
 describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
-  it('forwards reasoning_effort when provided in options', async () => {
+  it('forwards maximum reasoning_effort when provided in options', async () => {
     const { AgentBridgeClient } = await import('../../packages/server/src/services/hermes/agent-bridge/client')
     const client = new AgentBridgeClient({ endpoint: 'tcp://127.0.0.1:1', connectRetryMs: 0, timeoutMs: 1 })
     const request = vi.spyOn(client, 'request').mockResolvedValue({
@@ -12,13 +13,13 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
     })
 
     await client.chat('s-1', 'hello', undefined, undefined, 'default', {
-      reasoning_effort: 'low',
+      reasoning_effort: 'max',
     })
 
     expect(request).toHaveBeenCalledWith(expect.objectContaining({
       action: 'chat',
       session_id: 's-1',
-      reasoning_effort: 'low',
+      reasoning_effort: 'max',
     }))
   })
 
@@ -58,6 +59,31 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
     expect(call).not.toHaveProperty('reasoning_effort')
   })
 
+  it('keeps Agent Bridge on profile defaults without Workflow execution-policy plumbing', () => {
+    const sources = [
+      'packages/server/src/services/hermes/agent-bridge/client.ts',
+      'packages/server/src/services/hermes/run-chat/types.ts',
+      'packages/server/src/services/hermes/run-chat/index.ts',
+      'packages/server/src/services/hermes/run-chat/handle-bridge-run.ts',
+      'packages/server/src/services/hermes/agent-bridge/python/bridge_server.py',
+      'packages/server/src/services/hermes/agent-bridge/python/bridge_pool.py',
+      'packages/server/src/services/hermes/agent-bridge/python/hermes_bridge.py',
+    ].map(path => readFileSync(path, 'utf8'))
+    for (const source of sources) {
+      for (const removed of ['executionPolicy', 'execution_policy', 'allowedToolsets', 'allowedTools', 'skipMemory', 'skipContextFiles']) {
+        expect(source).not.toContain(removed)
+      }
+    }
+  })
+
+  it('forwards api mode as part of the exact bridge execution tuple', async () => {
+    const { AgentBridgeClient } = await import('../../packages/server/src/services/hermes/agent-bridge/client')
+    const client = new AgentBridgeClient({ endpoint: 'tcp://127.0.0.1:1', connectRetryMs: 0, timeoutMs: 1 })
+    const request = vi.spyOn(client, 'request').mockResolvedValue({ ok: true, run_id: 'r-api', session_id: 's-api', status: 'running' })
+    await client.chat('s-api', 'hello', undefined, undefined, 'default', { apiMode: 'anthropic_messages' })
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ api_mode: 'anthropic_messages' }))
+  })
+
   it('forwards workspace to chat and context estimate requests', async () => {
     const { AgentBridgeClient } = await import('../../packages/server/src/services/hermes/agent-bridge/client')
     const client = new AgentBridgeClient({ endpoint: 'tcp://127.0.0.1:1', connectRetryMs: 0, timeoutMs: 1 })
@@ -95,4 +121,18 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
       workspace: 'C:\\Users\\tester\\workspace',
     }))
   })
+  it('fails closed when the Python runtime cannot apply the requested reasoning effort', () => {
+    const source = readFileSync('packages/server/src/services/hermes/agent-bridge/python/bridge_pool.py', 'utf8')
+    expect(source).toContain('raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}")')
+    expect(source).not.toContain('Non-fatal: fall through to default reasoning_config')
+  })
+
+  it('preserves reasoning and api mode across the run queue', () => {
+    const source = readFileSync('packages/server/src/services/hermes/run-chat/index.ts', 'utf8')
+    expect(source).toContain('reasoningEffort: data.reasoning_effort')
+    expect(source).toContain('apiMode: data.apiMode')
+    expect(source).toContain('reasoning_effort: next.reasoningEffort')
+    expect(source).toContain('apiMode: next.apiMode')
+  })
+
 })

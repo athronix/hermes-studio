@@ -53,6 +53,7 @@ export interface AgentBridgeChatOptions {
   /** Local patch (reasoning-effort): per-session reasoning effort override.
    * Empty/undefined = use config.yaml default. */
   reasoning_effort?: string
+  apiMode?: string
 }
 
 export type AgentBridgeMessage =
@@ -446,6 +447,7 @@ export class AgentBridgeClient {
       ...(options.force_compress ? { force_compress: true } : {}),
       // Local patch (reasoning-effort): per-session reasoning effort override.
       ...(options.reasoning_effort ? { reasoning_effort: options.reasoning_effort } : {}),
+      ...(options.apiMode ? { api_mode: options.apiMode } : {}),
     })
   }
 
