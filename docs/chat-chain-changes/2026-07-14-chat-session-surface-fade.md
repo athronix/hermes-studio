@@ -1,6 +1,6 @@
 ---
 date: 2026-07-14
-pr: pending
+pr: 2069
 feature: Chat session surface fade
 impact: Switching sessions replays the fade across both the conversation and input without remounting either component.
 ---
