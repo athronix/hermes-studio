@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 
 describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
-  it('forwards reasoning_effort when provided in options', async () => {
+  it('forwards maximum reasoning_effort when provided in options', async () => {
     const { AgentBridgeClient } = await import('../../packages/server/src/services/hermes/agent-bridge/client')
     const client = new AgentBridgeClient({ endpoint: 'tcp://127.0.0.1:1', connectRetryMs: 0, timeoutMs: 1 })
     const request = vi.spyOn(client, 'request').mockResolvedValue({
@@ -13,13 +13,13 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
     })
 
     await client.chat('s-1', 'hello', undefined, undefined, 'default', {
-      reasoning_effort: 'low',
+      reasoning_effort: 'max',
     })
 
     expect(request).toHaveBeenCalledWith(expect.objectContaining({
       action: 'chat',
       session_id: 's-1',
-      reasoning_effort: 'low',
+      reasoning_effort: 'max',
     }))
   })
 
