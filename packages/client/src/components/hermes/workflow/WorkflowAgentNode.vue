@@ -5,6 +5,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import { NInput, NSelect, NSwitch, NTooltip, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import WorkflowModelSelector from './WorkflowModelSelector.vue'
+import WorkflowFieldHelp from './WorkflowFieldHelp.vue'
 import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './types'
 import type { CodingAgentApiMode } from '@/api/coding-agents'
 import type { ProviderApiMode } from '@/api/hermes/system'
@@ -194,8 +195,14 @@ async function uploadImages(files: File[]) {
         :placeholder="t('chat.reasoningEffort.tooltip')"
         @update:value="value => updateField('reasoningEffort', value as string)"
       />
-      <label class="node-field-row">
-        <span>{{ t('workflow.node.join') }}</span>
+      <div class="node-field-row">
+        <span class="node-field-label-row">
+          <span>{{ t('workflow.node.join') }}</span>
+          <WorkflowFieldHelp
+            :text="data.orchestration?.join === 'any' ? t('workflow.node.joinAnyHelp') : t('workflow.node.joinAllHelp')"
+            test-id="workflow-node-join-help"
+          />
+        </span>
         <NSelect
           :value="data.orchestration?.join || 'all'"
           :options="[{ label: t('workflow.node.joinAll'), value: 'all' }, { label: t('workflow.node.joinAny'), value: 'any' }]"
@@ -203,8 +210,7 @@ async function uploadImages(files: File[]) {
           :disabled="data.readonly"
           @update:value="value => updateField('orchestration', { join: value as 'all' | 'any' })"
         />
-      </label>
-      <small class="node-field-help" data-testid="workflow-node-join-help">{{ data.orchestration?.join === 'any' ? t('workflow.node.joinAnyHelp') : t('workflow.node.joinAllHelp') }}</small>
+      </div>
       <label class="node-toggle-row">
         <span>{{ t('workflow.node.approvalRequired') }}</span>
         <NSwitch
@@ -473,11 +479,11 @@ async function uploadImages(files: File[]) {
   font-size: 12px;
 }
 
-.node-field-help {
-  margin-top: -5px;
-  color: $text-muted;
-  font-size: 10px;
-  line-height: 1.35;
+.node-field-label-row {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
 }
 
 .node-toggle-row {
