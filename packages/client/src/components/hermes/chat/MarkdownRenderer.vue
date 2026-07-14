@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import 'katex/dist/katex.min.css'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NDrawer, NDrawerContent, NSpin, useMessage } from 'naive-ui'
