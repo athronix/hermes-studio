@@ -55,6 +55,8 @@ const showRealtimeVoice = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & { addFiles?: (files: File[]) => void }) | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
+const chatMainContentRef = ref<HTMLElement | null>(null);
+let sessionFadeAnimation: Animation | null = null;
 const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
@@ -249,11 +251,37 @@ onMounted(() => {
   }
 });
 
+watch(
+  () => chatStore.activeSessionId,
+  async (sessionId, previousSessionId) => {
+    if (!sessionId || !previousSessionId || sessionId === previousSessionId) return;
+
+    await nextTick();
+    const surface = chatMainContentRef.value;
+    if (!surface || typeof surface.animate !== "function") return;
+
+    sessionFadeAnimation?.cancel();
+    sessionFadeAnimation = surface.animate(
+      [
+        { opacity: 0 },
+        { opacity: 1 },
+      ],
+      {
+        duration: 1500,
+        easing: "ease",
+      },
+    );
+  },
+  { flush: "post" },
+);
+
 onUnmounted(() => {
   mobileQuery?.removeEventListener("change", handleMobileChange);
   window.removeEventListener("hermes:open-page-sidebar", openPageSidebar);
   window.removeEventListener("resize", handleToolPanelViewportResize);
   stopToolResize();
+  sessionFadeAnimation?.cancel();
+  sessionFadeAnimation = null;
 });
 watch(showToolPanel, async (visible) => {
   if (!visible || isMobile.value) return;
@@ -1964,7 +1992,7 @@ async function handleSessionModelCustomSubmit() {
           @dragleave="handleChatDragLeave"
           @drop="handleChatDrop"
         >
-          <div class="chat-main-content">
+          <div ref="chatMainContentRef" class="chat-main-content">
             <MessageList
               ref="messageListRef"
               :approval-portal-to-body="showRealtimeVoice"
