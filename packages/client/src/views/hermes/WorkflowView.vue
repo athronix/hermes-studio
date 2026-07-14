@@ -13,7 +13,14 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { useI18n } from 'vue-i18n'
 import { buildWorkflowEvidenceRows, latestWorkflowNodeSession } from '@/utils/workflow-history'
-import { parseWorkflowConditionValue, serializeWorkflowConditionValue, workflowConditionNeedsValue } from '@/utils/workflow-edge-condition'
+import {
+  inferWorkflowConditionValueType,
+  parseWorkflowConditionValue,
+  requiredWorkflowConditionValueType,
+  serializeWorkflowConditionValueForType,
+  workflowConditionNeedsValue,
+  type WorkflowConditionValueType,
+} from '@/utils/workflow-edge-condition'
 import { workflowImportConfirmationText } from '@/utils/workflow-import'
 import { createConnectedAgentTransaction, type CanvasTransaction } from '@/utils/workflow-canvas'
 import WorkflowAgentNode from '@/components/hermes/workflow/WorkflowAgentNode.vue'
@@ -149,6 +156,7 @@ const edgeEditorRoute = ref<'success' | 'failure' | 'always'>('success')
 const edgeEditorConditionPath = ref('')
 const edgeEditorConditionPathPreset = ref<'route-only' | 'output' | 'error' | 'custom'>('route-only')
 const edgeEditorConditionOperator = ref('equals')
+const edgeEditorConditionValueType = ref<WorkflowConditionValueType>('string')
 const edgeEditorConditionValue = ref('')
 const edgeEditorFeedback = ref(false)
 const edgeEditorMaxIterations = ref('3')
@@ -167,6 +175,27 @@ const workflowEdgeOperatorOptions = computed(() => workflowEdgeOperatorValues.ma
   label: t(`workflow.edgeEditor.operators.${value}`),
 })))
 const workflowEdgeOperatorHelp = computed(() => t(`workflow.edgeEditor.operatorHelp.${edgeEditorConditionOperator.value}`))
+const workflowConditionValueTypeValues: WorkflowConditionValueType[] = ['string', 'number', 'boolean', 'null', 'array', 'object']
+const workflowConditionValueTypeOptions = computed(() => workflowConditionValueTypeValues.map(value => ({
+  value,
+  label: t(`workflow.edgeEditor.valueTypes.${value}`),
+})))
+const requiredConditionValueType = computed(() => requiredWorkflowConditionValueType(edgeEditorConditionOperator.value))
+const workflowConditionValueTypeDisabled = computed(() => requiredConditionValueType.value !== null)
+const workflowConditionValuePlaceholder = computed(() => t(`workflow.edgeEditor.conditionValuePlaceholders.${edgeEditorConditionValueType.value}`))
+const workflowConditionValueError = computed(() => {
+  if (edgeEditorConditionPathPreset.value === 'route-only' || !workflowConditionNeedsValue(edgeEditorConditionOperator.value)) return ''
+  try {
+    parseWorkflowConditionValue(
+      edgeEditorConditionValue.value,
+      edgeEditorConditionOperator.value,
+      edgeEditorConditionValueType.value,
+    )
+    return ''
+  } catch {
+    return t(`workflow.edgeEditor.invalidValueTypes.${edgeEditorConditionValueType.value}`)
+  }
+})
 const workflowConditionPathOptions = computed(() => {
   const options = [{ label: t('workflow.edgeEditor.conditionPathOptions.routeOnly'), value: 'route-only' }]
   if (edgeEditorRoute.value !== 'failure') {
@@ -1843,6 +1872,17 @@ function handleEdgeEditorRouteChange(route: 'success' | 'failure' | 'always') {
   if (route === 'failure' && edgeEditorConditionPathPreset.value === 'output') setConditionPathPreset('error')
 }
 
+function handleEdgeEditorOperatorChange(operator: string) {
+  edgeEditorConditionOperator.value = operator
+  const requiredType = requiredWorkflowConditionValueType(operator)
+  if (requiredType) edgeEditorConditionValueType.value = requiredType
+}
+
+function handleEdgeEditorValueTypeChange(type: WorkflowConditionValueType) {
+  if (requiredConditionValueType.value) return
+  edgeEditorConditionValueType.value = type
+}
+
 function openEdgeEditor(edgeId: string) {
   if (selectedWorkflowRunId.value) return
   const edge = edges.value.find(item => item.id === edgeId)
@@ -1857,7 +1897,10 @@ function openEdgeEditor(edgeId: string) {
       ? edgeEditorConditionPath.value
       : 'custom'
   edgeEditorConditionOperator.value = orchestration?.condition?.operator || 'equals'
-  edgeEditorConditionValue.value = serializeWorkflowConditionValue(orchestration?.condition?.value)
+  const conditionValue = orchestration?.condition?.value
+  edgeEditorConditionValueType.value = requiredWorkflowConditionValueType(edgeEditorConditionOperator.value)
+    || inferWorkflowConditionValueType(conditionValue)
+  edgeEditorConditionValue.value = serializeWorkflowConditionValueForType(conditionValue, edgeEditorConditionValueType.value)
   edgeEditorFeedback.value = Boolean(orchestration?.feedback)
   edgeEditorMaxIterations.value = String(orchestration?.feedback?.maxIterations || 3)
   edgeEditorLoopId.value = orchestration?.feedback?.loopId || ''
@@ -1882,8 +1925,16 @@ function saveEdgeEditor() {
   }
   const orchestration: WorkflowEdgeOrchestration = { route: edgeEditorRoute.value }
   if (conditionPath) {
+    if (workflowConditionValueError.value) {
+      message.error(workflowConditionValueError.value)
+      return
+    }
     try {
-      const conditionValue = parseWorkflowConditionValue(edgeEditorConditionValue.value, edgeEditorConditionOperator.value)
+      const conditionValue = parseWorkflowConditionValue(
+        edgeEditorConditionValue.value,
+        edgeEditorConditionOperator.value,
+        edgeEditorConditionValueType.value,
+      )
       orchestration.condition = {
         path: conditionPath,
         operator: edgeEditorConditionOperator.value,
@@ -2542,15 +2593,42 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             <span class="workflow-field-label">{{ t('workflow.edgeEditor.operator') }}</span>
             <WorkflowFieldHelp :text="workflowEdgeOperatorHelp" test-id="workflow-edge-operator-help" />
           </span>
-          <NSelect v-model:value="edgeEditorConditionOperator" data-testid="workflow-edge-condition-operator" :options="workflowEdgeOperatorOptions" />
+          <NSelect
+            :value="edgeEditorConditionOperator"
+            data-testid="workflow-edge-condition-operator"
+            :options="workflowEdgeOperatorOptions"
+            @update:value="handleEdgeEditorOperatorChange"
+          />
         </div>
-        <div v-if="edgeEditorConditionPathPreset !== 'route-only' && workflowConditionNeedsValue(edgeEditorConditionOperator)" class="workflow-field">
-          <span class="workflow-field-label-row">
-            <span class="workflow-field-label">{{ t('workflow.edgeEditor.value') }}</span>
-            <WorkflowFieldHelp :text="t('workflow.edgeEditor.valueHelp')" test-id="workflow-edge-condition-value-help" />
-          </span>
-          <NInput v-model:value="edgeEditorConditionValue" data-testid="workflow-edge-condition-value" :placeholder="t('workflow.edgeEditor.conditionValuePlaceholder')" />
-        </div>
+        <template v-if="edgeEditorConditionPathPreset !== 'route-only' && workflowConditionNeedsValue(edgeEditorConditionOperator)">
+          <div class="workflow-field">
+            <span class="workflow-field-label-row">
+              <span class="workflow-field-label">{{ t('workflow.edgeEditor.valueType') }}</span>
+              <WorkflowFieldHelp :text="t('workflow.edgeEditor.valueTypeHelp')" test-id="workflow-edge-condition-value-type-help" />
+            </span>
+            <NSelect
+              :value="edgeEditorConditionValueType"
+              :options="workflowConditionValueTypeOptions"
+              :disabled="workflowConditionValueTypeDisabled"
+              data-testid="workflow-edge-condition-value-type"
+              @update:value="handleEdgeEditorValueTypeChange"
+            />
+          </div>
+          <div class="workflow-field">
+            <span class="workflow-field-label-row">
+              <span class="workflow-field-label">{{ t('workflow.edgeEditor.value') }}</span>
+              <WorkflowFieldHelp :text="t('workflow.edgeEditor.valueHelp')" test-id="workflow-edge-condition-value-help" />
+            </span>
+            <NInput
+              v-model:value="edgeEditorConditionValue"
+              data-testid="workflow-edge-condition-value"
+              :disabled="edgeEditorConditionValueType === 'null'"
+              :placeholder="workflowConditionValuePlaceholder"
+              :status="workflowConditionValueError ? 'error' : undefined"
+            />
+            <span v-if="workflowConditionValueError" class="workflow-field-error" data-testid="workflow-edge-condition-value-error">{{ workflowConditionValueError }}</span>
+          </div>
+        </template>
         <div class="workflow-feedback-field">
           <div class="workflow-feedback-heading">
             <NCheckbox v-model:checked="edgeEditorFeedback">{{ t('workflow.edgeEditor.feedback') }}</NCheckbox>
@@ -2578,7 +2656,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             :placeholder="t('workflow.edgeEditor.loopIdPlaceholder')"
           />
         </div>
-        <NSpace justify="end"><NButton @click="edgeEditorVisible = false">{{ t('common.cancel') }}</NButton><NButton type="primary" @click="saveEdgeEditor">{{ t('common.save') }}</NButton></NSpace>
+        <NSpace justify="end"><NButton @click="edgeEditorVisible = false">{{ t('common.cancel') }}</NButton><NButton type="primary" :disabled="Boolean(workflowConditionValueError)" @click="saveEdgeEditor">{{ t('common.save') }}</NButton></NSpace>
       </div>
     </NModal>
 
@@ -2910,6 +2988,12 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   width: fit-content;
   align-items: center;
   gap: 4px;
+}
+
+.workflow-field-error {
+  color: #dc2626;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .workflow-feedback-field {
