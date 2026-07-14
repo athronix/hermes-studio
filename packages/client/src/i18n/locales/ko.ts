@@ -1013,6 +1013,10 @@ export default {
   models: {
     title: '모델',
     addProvider: 'Provider 추가',
+    noProviderPromptTitle: '모델 Provider가 설정되지 않음',
+    noProviderPromptMessage: '현재 Profile "{profile}"에 모델 Provider가 설정되어 있지 않습니다. 모델 설정을 여시겠습니까?',
+    noProviderPromptLater: '나중에',
+    noProviderPromptAction: '설정으로 이동',
     refreshModelCache: '모델 캐시 새로고침',
     refreshModelCacheLoading: '모델 캐시를 새로고침하는 중...',
     refreshModelCacheSuccess: '모델 캐시를 새로고침했습니다',

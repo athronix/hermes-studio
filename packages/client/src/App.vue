@@ -15,6 +15,7 @@ const AppSidebar = defineAsyncComponent(async () => (await import('@/components/
 const DesktopTitleBar = defineAsyncComponent(async () => (await import('@/components/layout/DesktopTitleBar.vue')).default)
 const SessionSearchModal = defineAsyncComponent(async () => (await import('@/components/hermes/chat/SessionSearchModal.vue')).default)
 const DefaultCredentialPrompt = defineAsyncComponent(async () => (await import('@/components/auth/DefaultCredentialPrompt.vue')).default)
+const ProviderConfigurationPrompt = defineAsyncComponent(async () => (await import('@/components/hermes/models/ProviderConfigurationPrompt.vue')).default)
 const WebPet = defineAsyncComponent(async () => (await import('@/components/hermes/pets/WebPet.vue')).default)
 
 const { isDark, isComic } = useTheme()
@@ -99,6 +100,7 @@ useKeyboard()
           <WebPet v-if="showWebPet" />
           <SessionSearchModal v-if="!isDesktopPetRoute && sessionSearchOpen" />
           <DefaultCredentialPrompt v-if="!isDesktopPetRoute" />
+          <ProviderConfigurationPrompt v-if="!isDesktopPetRoute" />
         </NNotificationProvider>
       </NDialogProvider>
     </NMessageProvider>

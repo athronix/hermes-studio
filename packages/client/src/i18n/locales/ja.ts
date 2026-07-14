@@ -1013,6 +1013,10 @@ export default {
   models: {
     title: 'モデル',
     addProvider: 'プロバイダーを追加',
+    noProviderPromptTitle: 'モデルプロバイダーが設定されていません',
+    noProviderPromptMessage: '現在のプロファイル「{profile}」にはモデルプロバイダーが設定されていません。モデル設定を開きますか？',
+    noProviderPromptLater: '後で',
+    noProviderPromptAction: '設定を開く',
     refreshModelCache: 'モデルキャッシュを更新',
     refreshModelCacheLoading: 'モデルキャッシュを更新中...',
     refreshModelCacheSuccess: 'モデルキャッシュを更新しました',
