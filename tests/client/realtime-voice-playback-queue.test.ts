@@ -322,7 +322,7 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     expect(testState.recorder.start).toHaveBeenCalledTimes(1)
     expect(testState.browserRecognition.start).toHaveBeenCalledWith({
       language: 'zh-CN',
-      continuous: false,
+      continuous: true,
     })
 
     testState.browserRecognition.errorCode.value = 'network'
@@ -385,6 +385,33 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     wrapper.unmount()
   })
 
+  it('keeps restart-based browser capture on mobile when no backend STT is configured', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36',
+      maxTouchPoints: 5,
+    })
+    vi.stubGlobal('screen', { width: 430, height: 932 })
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+
+    expect(testState.browserRecognition.start).toHaveBeenCalledWith({
+      language: 'zh-CN',
+      continuous: false,
+    })
+
+    testState.recognitionStopResult = '移动端问题'
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('移动端问题')
+    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('shows a direct network error when the active STT setting has no backend fallback', async () => {
     const wrapper = mount(RealtimeVoiceStage)
 
@@ -393,7 +420,7 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     expect(testState.recorder.start).not.toHaveBeenCalled()
     expect(testState.browserRecognition.start).toHaveBeenCalledWith({
       language: 'zh-CN',
-      continuous: false,
+      continuous: true,
     })
     testState.browserRecognition.errorCode.value = 'network'
     testState.browserRecognition.error.value = new Error('network')
@@ -404,4 +431,79 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.networkUnavailableNoFallback')
     wrapper.unmount()
   })
+
+  it('restarts PC browser capture when no speech is detected', async () => {
+    vi.useFakeTimers()
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+
+    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(1)
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+
+    testState.browserRecognition.errorCode.value = 'no-speech'
+    testState.browserRecognition.error.value = new Error('Browser speech recognition failed: no-speech.')
+    await settle()
+
+    expect(testState.browserRecognition.clearError).toHaveBeenCalled()
+    expect(testState.transcribeSpeech).not.toHaveBeenCalled()
+    expect(testState.recorder.cancel).not.toHaveBeenCalled()
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    expect(wrapper.classes()).not.toContain('voice-stage--error')
+
+    await vi.advanceTimersByTimeAsync(420)
+    await settle()
+
+    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(2)
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    wrapper.unmount()
+  })
+
+  it('keeps microphone capture stopped while the assistant response is playing', async () => {
+    vi.useFakeTimers()
+    testState.store.isStreaming = true
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await vi.advanceTimersByTimeAsync(180)
+    await settle()
+
+    testState.recognitionStopResult = '第一个问题'
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(testState.store.sendMessage).toHaveBeenCalledWith('第一个问题')
+    expect(testState.browserRecognition.stop).toHaveBeenCalledTimes(1)
+    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(1)
+
+    testState.store.messages.push({
+      id: 'assistant-no-capture',
+      role: 'assistant',
+      content: '这是正在播放的回答。',
+      timestamp: Date.now(),
+      isStreaming: true,
+    })
+    await settle()
+    resolveRequest(0)
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--speaking')
+    testState.browserRecognition.partialTranscript.value = '这是正在播放的回答'
+    await settle()
+
+    expect(testState.store.stopStreaming).not.toHaveBeenCalled()
+    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(1)
+
+    testState.audioInstances[0].onended?.()
+    testState.store.isStreaming = false
+    await settle()
+    await vi.advanceTimersByTimeAsync(420)
+    await settle()
+
+    expect(testState.browserRecognition.start).toHaveBeenCalledTimes(2)
+    expect(wrapper.classes()).toContain('voice-stage--listening')
+    testState.store.isStreaming = true
+    wrapper.unmount()
+  })
+
 })

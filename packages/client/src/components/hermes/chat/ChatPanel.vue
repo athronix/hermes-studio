@@ -1965,7 +1965,10 @@ async function handleSessionModelCustomSubmit() {
           @drop="handleChatDrop"
         >
           <div class="chat-main-content">
-            <MessageList ref="messageListRef" />
+            <MessageList
+              ref="messageListRef"
+              :approval-portal-to-body="showRealtimeVoice"
+            />
             <ChatInput
               ref="chatInputRef"
               :model-label="activeSessionModelLabel"

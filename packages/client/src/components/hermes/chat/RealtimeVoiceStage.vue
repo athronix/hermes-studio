@@ -202,6 +202,10 @@ function isMobileDevice() {
   return hasTouch && hasCoarsePointer && screenShortEdge <= 1024
 }
 
+function browserCaptureContinuous() {
+  return !isMobileDevice()
+}
+
 function clearTimers() {
   if (silenceTimer) clearTimeout(silenceTimer)
   if (restartTimer) clearTimeout(restartTimer)
@@ -473,7 +477,7 @@ async function startCapture() {
 
     await browserRecognition.start({
       language: browserCaptureLanguage(),
-      continuous: false,
+      continuous: browserCaptureContinuous(),
     })
     mode.value = 'listening'
     void startVisualizer(micRecorder.stream.value)
@@ -488,6 +492,7 @@ async function submitTranscript(value: string) {
   const transcript = normalizeText(value)
   submittedTranscript.value = transcript
   if (!transcript) {
+    stopVisualizer()
     mode.value = 'idle'
     return
   }
@@ -524,12 +529,19 @@ async function transcribeBackendCapture(audio: Blob, setting: SttProviderSetting
 }
 
 async function handleRecognitionFailure() {
-  if ((mode.value !== 'listening' && mode.value !== 'processing') || handlingRecognitionFailure || !browserRecognition.error.value) return
+  if (!sessionActive.value || activeCaptureMode !== 'browser' || handlingRecognitionFailure || !browserRecognition.error.value) return
   handlingRecognitionFailure = true
   clearTimers()
-  mode.value = 'processing'
 
   try {
+    if (browserRecognition.errorCode.value === 'no-speech') {
+      browserRecognition.clearError()
+      if (mode.value === 'processing' && !waitingForResponse.value) mode.value = 'listening'
+      scheduleBrowserRecognitionRestart()
+      return
+    }
+
+    mode.value = 'processing'
     if (browserRecognition.errorCode.value === 'network' && activeBackendSetting) {
       const audio = await micRecorder.stop()
       stopVisualizer()
@@ -637,6 +649,33 @@ function scheduleRestart(delay = 420) {
       void startCapture()
     }
   }, delay)
+}
+
+function scheduleBrowserRecognitionRestart(delay = 420) {
+  if (!sessionActive.value || activeCaptureMode !== 'browser') return
+  if (restartTimer) clearTimeout(restartTimer)
+  restartTimer = setTimeout(() => {
+    restartTimer = null
+    if (!sessionActive.value || activeCaptureMode !== 'browser') return
+    browserRecognition.clearError()
+    void browserRecognition.start({
+      language: browserCaptureLanguage(),
+      continuous: browserCaptureContinuous(),
+    }).catch((cause) => {
+      activeCaptureMode = null
+      micRecorder.cancel()
+      stopVisualizer()
+      setError(cause)
+    })
+  }, delay)
+}
+
+function scheduleSilenceCommit() {
+  if (silenceTimer) clearTimeout(silenceTimer)
+  silenceTimer = setTimeout(() => {
+    silenceTimer = null
+    if (mode.value === 'listening') void stopCapture()
+  }, SILENCE_COMMIT_MS)
 }
 
 function waitForSpeechPlayback(generation: number) {
@@ -830,8 +869,10 @@ function finishResponseIfReady() {
   void waitForSpeechQueueIdle().finally(() => {
     if (generation !== playbackGeneration || !sessionActive.value) return
     waitingForResponse.value = false
-    if (mode.value !== 'error') mode.value = 'idle'
-    scheduleRestart()
+    if (mode.value !== 'error') {
+      mode.value = activeCaptureMode === 'browser' ? 'listening' : 'idle'
+    }
+    if (activeCaptureMode === null) scheduleRestart()
   })
 }
 
@@ -854,11 +895,7 @@ function closeStage() {
 
 watch(currentTranscript, (value) => {
   if (mode.value !== 'listening' || !value) return
-  if (silenceTimer) clearTimeout(silenceTimer)
-  silenceTimer = setTimeout(() => {
-    silenceTimer = null
-    if (mode.value === 'listening') void stopCapture()
-  }, SILENCE_COMMIT_MS)
+  scheduleSilenceCommit()
 })
 watch(() => browserRecognition.error.value, () => {
   void handleRecognitionFailure()
