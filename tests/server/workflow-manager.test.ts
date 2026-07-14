@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const workflowManagerTestDbDir = mkdtempSync(join(tmpdir(), 'hermes-workflow-manager-'))
+process.env.HERMES_WEB_UI_TEST_DB_DIR = workflowManagerTestDbDir
 
 const chatRunMock = vi.hoisted(() => ({
   runAndWait: vi.fn(),
@@ -22,7 +28,19 @@ vi.mock('../../packages/server/src/db/hermes/session-store', async (importOrigin
   }
 })
 
+afterAll(async () => {
+  const { closeDb } = await import('../../packages/server/src/db/index')
+  closeDb()
+  delete process.env.HERMES_WEB_UI_TEST_DB_DIR
+  rmSync(workflowManagerTestDbDir, { recursive: true, force: true })
+})
+
 describe('workflow manager', () => {
+  it('uses an isolated SQLite directory for this suite', async () => {
+    const { getStoragePath } = await import('../../packages/server/src/db/index')
+    expect(getStoragePath()).toBe(join(workflowManagerTestDbDir, 'hermes-web-ui.db'))
+  })
+
   it('returns a server-wide singleton instance', async () => {
     const { WorkflowManager, getWorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
 
