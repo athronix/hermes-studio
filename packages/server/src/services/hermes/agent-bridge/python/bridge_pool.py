@@ -192,11 +192,9 @@ class AgentPool:
         profile: str | None = None,
         model: str | None = None,
         provider: str | None = None,
-        api_mode: str | None = None,
     ) -> AgentSession:
         requested_model = str(model or "").strip()
         requested_provider = str(provider or "").strip()
-        requested_api_mode = str(api_mode or "").strip()
         with self._lock:
             existing = self._sessions.get(session_id)
             if existing is not None:
@@ -205,7 +203,6 @@ class AgentPool:
                 runtime_changed = bool(
                     (requested_model and existing.config.get("model") != requested_model)
                     or (requested_provider and existing.config.get("provider") != requested_provider)
-                    or (requested_api_mode and existing.config.get("api_mode") != requested_api_mode)
                 )
                 config_changed = profile_changed or runtime_changed
                 if config_changed:
@@ -257,8 +254,6 @@ class AgentPool:
                 cfg = _load_cfg()
                 resolved_model = requested_model or _resolve_model(cfg)
                 runtime = _resolve_runtime(resolved_model, requested_provider or None)
-                if requested_api_mode:
-                    runtime["api_mode"] = requested_api_mode
                 agent_cfg = cfg.get("agent") or {}
                 prompt = str(agent_cfg.get("system_prompt", "") or "").strip() or None
 
@@ -716,9 +711,8 @@ class AgentPool:
         model: str | None = None,
         provider: str | None = None,
         workspace: str | None = None,
-        api_mode: str | None = None,
     ) -> dict[str, Any]:
-        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider, api_mode=api_mode)
+        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider)
         session_cwd_bound = _bind_session_workspace_cwd(session.session_id, workspace)
         try:
             context_info = self._estimate_context_info(session.agent, messages or [], instructions)
@@ -1205,9 +1199,8 @@ class AgentPool:
         workspace: str | None = None,
         source: str | None = None,
         reasoning_effort: str | None = None,
-        api_mode: str | None = None,
     ) -> RunRecord:
-        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider, api_mode=api_mode)
+        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider)
         # Install after agent construction so any runtime plugin initialization
         # has completed. Rechecking on every run also recovers from a forced
         # plugin reload that clears the manager's callback registry.
@@ -1319,13 +1312,15 @@ class AgentPool:
                     try:
                         from hermes_constants import parse_reasoning_effort
                         override_cfg = parse_reasoning_effort(str(reasoning_effort).strip())
-                    except Exception as exc:
-                        raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}") from exc
-                    if override_cfg is None:
-                        raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}")
-                    _saved_reasoning_config = getattr(session.agent, "reasoning_config", None)
-                    session.agent.reasoning_config = override_cfg
-                    _did_override_reasoning = True
+                        # parse_reasoning_effort returns None for invalid input; only
+                        # override when we got a recognized value.
+                        if override_cfg is not None:
+                            _saved_reasoning_config = getattr(session.agent, "reasoning_config", None)
+                            session.agent.reasoning_config = override_cfg
+                            _did_override_reasoning = True
+                    except Exception:
+                        # Non-fatal: fall through to default reasoning_config
+                        pass
                 try:
                     result = session.agent.run_conversation(
                         agent_message,

@@ -1292,7 +1292,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           session_id: sessionId, source: 'workflow', session_source: 'workflow', input: assembledInput,
           profile, workspace: workspace, model: node.data.model || undefined,
           provider: node.data.provider || undefined, mode: node.data.agent === 'hermes' ? undefined : 'scoped',
-          coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId, apiMode: node.data.apiMode || undefined,
+          coding_agent_id: target.codingAgentId, agent_id: target.codingAgentId,
+          ...(node.data.agent === 'hermes' ? {} : { apiMode: node.data.apiMode || undefined }),
           one_shot_model: true,
           ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
         }, { profile, user: args.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
@@ -1770,7 +1771,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             mode: node.data.agent === 'hermes' ? undefined : 'scoped',
             coding_agent_id: target.codingAgentId,
             agent_id: target.codingAgentId,
-            apiMode: node.data.apiMode || undefined,
+            ...(node.data.agent === 'hermes' ? {} : { apiMode: node.data.apiMode || undefined }),
             one_shot_model: true,
             ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
           }, {

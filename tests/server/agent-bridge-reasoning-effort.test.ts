@@ -76,12 +76,17 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
     }
   })
 
-  it('forwards api mode as part of the exact bridge execution tuple', async () => {
-    const { AgentBridgeClient } = await import('../../packages/server/src/services/hermes/agent-bridge/client')
-    const client = new AgentBridgeClient({ endpoint: 'tcp://127.0.0.1:1', connectRetryMs: 0, timeoutMs: 1 })
-    const request = vi.spyOn(client, 'request').mockResolvedValue({ ok: true, run_id: 'r-api', session_id: 's-api', status: 'running' })
-    await client.chat('s-api', 'hello', undefined, undefined, 'default', { apiMode: 'anthropic_messages' })
-    expect(request).toHaveBeenCalledWith(expect.objectContaining({ api_mode: 'anthropic_messages' }))
+  it('does not expose a caller-controlled api mode through Agent Bridge', () => {
+    const client = readFileSync('packages/server/src/services/hermes/agent-bridge/client.ts', 'utf8')
+    const bridgeRun = readFileSync('packages/server/src/services/hermes/run-chat/handle-bridge-run.ts', 'utf8')
+    const server = readFileSync('packages/server/src/services/hermes/agent-bridge/python/bridge_server.py', 'utf8')
+    const pool = readFileSync('packages/server/src/services/hermes/agent-bridge/python/bridge_pool.py', 'utf8')
+    expect(client).not.toContain('options.apiMode')
+    expect(bridgeRun).not.toContain('data.apiMode')
+    expect(bridgeRun).not.toContain('data.api_mode')
+    expect(server).not.toContain('req.get("api_mode")')
+    expect(pool).not.toContain('requested_api_mode')
+    expect(pool).not.toContain('api_mode: str | None')
   })
 
   it('forwards workspace to chat and context estimate requests', async () => {
@@ -121,10 +126,10 @@ describe('AgentBridgeClient.chat reasoning_effort forwarding', () => {
       workspace: 'C:\\Users\\tester\\workspace',
     }))
   })
-  it('fails closed when the Python runtime cannot apply the requested reasoning effort', () => {
+  it('falls back to the profile default when the Python runtime cannot apply the requested reasoning effort', () => {
     const source = readFileSync('packages/server/src/services/hermes/agent-bridge/python/bridge_pool.py', 'utf8')
-    expect(source).toContain('raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}")')
-    expect(source).not.toContain('Non-fatal: fall through to default reasoning_config')
+    expect(source).not.toContain('raise ValueError(f"reasoning effort is unavailable: {reasoning_effort}")')
+    expect(source).toContain('Non-fatal: fall through to default reasoning_config')
   })
 
   it('preserves reasoning and api mode across the run queue', () => {
