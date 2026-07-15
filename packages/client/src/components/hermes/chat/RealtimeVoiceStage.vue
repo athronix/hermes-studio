@@ -13,6 +13,7 @@ import { useSttSettings } from '@/composables/useSttSettings'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
 import { useChatStore, type Message } from '@/stores/hermes/chat'
 import { isDesktopShell } from '@/utils/desktop-bridge'
+import { isMobileDevice } from '@/utils/device'
 import { hzToEdgePitch, speedToEdgeRate } from '@/utils/ttsHelpers'
 
 type VoiceStageMode = 'idle' | 'paused' | 'listening' | 'processing' | 'thinking' | 'speaking' | 'error'
@@ -78,6 +79,7 @@ const submittedTranscript = ref('')
 const backendStreamTranscript = ref('')
 const errorMessage = ref('')
 const waitingForResponse = ref(false)
+const responseAudioStarted = ref(false)
 const responseStartedAt = ref(0)
 const audioLevel = ref(0)
 const segmentAudioPlaying = ref(false)
@@ -152,7 +154,11 @@ const displayCaption = computed(() => {
     return activeSpeechSegment.value.subtitleText
   }
   if (
-    (mode.value === 'listening' || mode.value === 'processing' || mode.value === 'thinking')
+    (
+      mode.value === 'listening'
+      || mode.value === 'processing'
+      || (mode.value === 'thinking' && !responseAudioStarted.value)
+    )
     && currentTranscript.value
   ) {
     return currentTranscript.value
@@ -202,25 +208,6 @@ function toolDetail(message: Message) {
 
 function browserCaptureLanguage() {
   return sttSettings.openaiLanguage.value.trim() || sttSettings.customLanguage.value.trim() || ''
-}
-
-function isMobileDevice() {
-  if (typeof navigator === 'undefined') return false
-  const userAgent = navigator.userAgent || ''
-  if (/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)) return true
-
-  const hasTouch = navigator.maxTouchPoints > 1
-  const pointerQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    ? window.matchMedia('(pointer: coarse), (any-pointer: coarse)')
-    : null
-  const hasCoarsePointer = Boolean(pointerQuery?.matches)
-  const screenShortEdge = typeof window !== 'undefined' && window.screen
-    ? Math.min(window.screen.width, window.screen.height)
-    : Number.POSITIVE_INFINITY
-
-  // "Request desktop site" can replace the mobile UA entirely. Physical
-  // touch/pointer/screen traits still distinguish the phone from a PC.
-  return hasTouch && hasCoarsePointer && screenShortEdge <= 1024
 }
 
 function browserCaptureContinuous() {
@@ -387,6 +374,7 @@ function resetResponseSpeechState() {
   responseStartMessageIndex = chatStore.messages.length
   lastResponseAssistantId = null
   responseFinalizing = false
+  responseAudioStarted.value = false
   ttsSegmentIndex = 0
   processedAssistantText.clear()
   processedToolMessageIds.clear()
@@ -851,6 +839,7 @@ async function playPreparedSpeech(segment: VoiceSpeechSegment, audioBlob: Blob) 
         }
         segmentAudioPlaying.value = true
         activeSpeechSegment.value = segment
+        responseAudioStarted.value = true
         mode.value = 'speaking'
       })
       .catch(finish)
@@ -872,6 +861,7 @@ async function playSpeechSegment(segment: VoiceSpeechSegment) {
         voiceName: voiceSettings.webspeechVoice.value || undefined,
       })
       activeSpeechSegment.value = segment
+      responseAudioStarted.value = true
       mode.value = 'speaking'
       await waitForSpeechPlayback(generation)
     } else {

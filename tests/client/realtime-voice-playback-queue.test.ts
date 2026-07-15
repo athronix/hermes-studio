@@ -310,6 +310,42 @@ describe('RealtimeVoiceStage prepared playback queue', () => {
     wrapper.unmount()
   })
 
+  it('does not restore the user transcript between assistant TTS segments', async () => {
+    testState.recognitionStopResult = '这是用户刚才说的话'
+    const wrapper = mount(RealtimeVoiceStage)
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('这是用户刚才说的话')
+
+    testState.store.messages.push({
+      id: 'assistant-caption-gap',
+      role: 'assistant',
+      content: '第一句。第二句。',
+      timestamp: Date.now(),
+      isStreaming: true,
+    })
+    await settle()
+    resolveRequest(0)
+    await settle()
+
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('第一句。')
+
+    testState.audioInstances[0].onended?.()
+    await settle()
+
+    expect(wrapper.classes()).toContain('voice-stage--thinking')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).toBe('realtimeVoice.hint.thinking')
+    expect(wrapper.get('[data-testid="realtime-voice-caption"]').text()).not.toContain('这是用户刚才说的话')
+
+    await wrapper.get('[data-testid="realtime-voice-toggle"]').trigger('click')
+    await settle()
+    wrapper.unmount()
+  })
+
   it('never plays assistant messages that existed before the current voice turn', async () => {
     testState.store.isStreaming = false
     testState.store.messages.push(

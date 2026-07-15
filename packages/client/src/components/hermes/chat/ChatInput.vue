@@ -13,6 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import VoiceDialogueControls from './VoiceDialogueControls.vue'
 import { useMicRecorder } from '@/composables/useMicRecorder'
+import { usePcmStreamRecorder } from '@/composables/usePcmStreamRecorder'
 import { useGlobalSpeech } from '@/composables/useSpeech'
 import { useVoiceDialogue } from '@/composables/useVoiceDialogue'
 import { transcribeSpeech } from '@/api/hermes/stt'
@@ -21,6 +22,8 @@ import { useSttSettings } from '@/composables/useSttSettings'
 import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
 import { BRIDGE_SESSION_COMMAND_DEFINITIONS } from '@/utils/hermes/bridge-session-commands'
 import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-input-height'
+import { isDesktopShell } from '@/utils/desktop-bridge'
+import { isMobileDevice } from '@/utils/device'
 
 const chatStore = useChatStore()
 const appStore = useAppStore()
@@ -96,6 +99,13 @@ const micRecorder = useMicRecorder({
     recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
   },
 })
+const pcmRecorder = usePcmStreamRecorder({
+  voiceActivityThreshold: 0.02,
+  messages: {
+    unsupported: t('chat.voiceInput.microphoneUnsupported'),
+    recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
+  },
+})
 const sttSettings = useSttSettings()
 const browserRecognition = useBrowserSpeechRecognition({
   messages: {
@@ -104,7 +114,7 @@ const browserRecognition = useBrowserSpeechRecognition({
     failedWithReason: (reason) => t('chat.voiceInput.browserSpeechFailedWithReason', { error: reason }),
   },
 })
-const activeVoiceCaptureMode = ref<'browser' | 'backend' | null>(null)
+const activeVoiceCaptureMode = ref<'browser' | 'backend' | 'pcm' | null>(null)
 const configuredTextareaHeight = computed(() =>
   isMobileViewport.value ? null : clampChatInputHeight(settingsStore.display.chat_input_height),
 )
@@ -206,6 +216,7 @@ const shouldShowBrowserRecognitionError = computed(() =>
 const voiceDialogueError = computed(() =>
   voiceDialogue.error.value?.message
   ?? (shouldShowBrowserRecognitionError.value ? browserRecognition.error.value?.message : null)
+  ?? pcmRecorder.error.value?.message
   ?? micRecorder.state.value.error?.message
   ?? null,
 )
@@ -804,8 +815,11 @@ async function startVoiceCapture() {
   browserRecognition.clearError()
   const { captureId } = await voiceDialogue.beginCapture()
   const useBrowserProvider = sttSettings.provider.value === 'browser'
+  const usePcmCapture = !useBrowserProvider && (isDesktopShell() || isMobileDevice())
 
-  activeVoiceCaptureMode.value = useBrowserProvider ? 'browser' : 'backend'
+  activeVoiceCaptureMode.value = useBrowserProvider
+    ? 'browser'
+    : usePcmCapture ? 'pcm' : 'backend'
 
   try {
     if (useBrowserProvider) {
@@ -813,7 +827,11 @@ async function startVoiceCapture() {
       return
     }
 
-    await micRecorder.start()
+    if (usePcmCapture) {
+      await pcmRecorder.start()
+    } else {
+      await micRecorder.start()
+    }
   } catch {
     activeVoiceCaptureMode.value = null
     voiceDialogue.cancelCapture(captureId)
@@ -845,17 +863,24 @@ async function stopVoiceCapture() {
     return
   }
 
-  if (micRecorder.state.value.status === 'requesting') {
-    micRecorder.cancel()
+  const usePcmCapture = activeVoiceCaptureMode.value === 'pcm'
+  const captureStatus = usePcmCapture
+    ? pcmRecorder.status.value
+    : micRecorder.state.value.status
+  if (captureStatus === 'requesting') {
+    if (usePcmCapture) pcmRecorder.cancel()
+    else micRecorder.cancel()
     activeVoiceCaptureMode.value = null
     voiceDialogue.cancelCapture(captureId)
     return
   }
 
-  let audio: Blob
+  let audio: Blob | null
 
   try {
-    audio = await micRecorder.stop()
+    audio = usePcmCapture
+      ? await pcmRecorder.stop()
+      : await micRecorder.stop()
   } catch {
     activeVoiceCaptureMode.value = null
     voiceDialogue.cancelCapture(captureId)
@@ -864,7 +889,7 @@ async function stopVoiceCapture() {
 
   activeVoiceCaptureMode.value = null
 
-  if (audio.size <= 0) {
+  if (!audio || audio.size <= 0) {
     voiceDialogue.cancelCapture(captureId)
     return
   }
@@ -879,6 +904,8 @@ async function stopVoiceCapture() {
 function cancelVoiceCapture() {
   if (activeVoiceCaptureMode.value === 'browser') {
     browserRecognition.cancel()
+  } else if (activeVoiceCaptureMode.value === 'pcm') {
+    pcmRecorder.cancel()
   } else {
     micRecorder.cancel()
   }
