@@ -492,6 +492,7 @@ export default {
     browserTts: '浏览器',
     untitledSession: '未命名对话',
     sessionMissing: '当前对话不可用。',
+    backendStreamRequired: '手机端和桌面端实时语音需要先配置后端语音转写服务。',
     networkUnavailableNoFallback: '浏览器语音识别网络不可用，且当前没有配置可用的备用 STT。',
     liveTranscript: '实时转写',
     transcriptPlaceholder: '轻触语音核心，然后开始说话',

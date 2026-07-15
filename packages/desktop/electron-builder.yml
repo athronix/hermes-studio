@@ -61,6 +61,8 @@ mac:
   hardenedRuntime: true
   gatekeeperAssess: false
   notarize: true
+  extendInfo:
+    NSMicrophoneUsageDescription: "Hermes Studio uses the microphone for voice conversations and speech transcription."
   artifactName: "Hermes.Studio-${version}-${arch}.${ext}"
 
 win:

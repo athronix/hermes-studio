@@ -382,9 +382,12 @@ vi.mock('@/api/hermes/stt', () => ({
   transcribeSpeech: mockTranscribeSpeech,
 }))
 
-vi.mock('@/composables/useMicRecorder', () => ({
-  useMicRecorder: () => ({
-    state: mockMicRecorderState,
+vi.mock('@/composables/usePcmStreamRecorder', () => ({
+  usePcmStreamRecorder: () => ({
+    status: ref(mockMicRecorderState.value.status),
+    error: ref(null),
+    level: ref(0),
+    stream: ref(null),
     isRecording: ref(mockMicRecorderState.value.status === 'recording'),
     start: mockMicStart,
     stop: mockMicStop,
@@ -1051,6 +1054,41 @@ describe('VoiceSettings STT UI', () => {
       voice: '冰糖',
     }))
     expect(mockOpenaiPlay).not.toHaveBeenCalled()
+  })
+
+  it('records the STT card test as PCM WAV before transcription', async () => {
+    const wav = new Blob([new Uint8Array(256)], { type: 'audio/wav' })
+    mockMicStart.mockResolvedValue(undefined)
+    mockMicStop.mockResolvedValue(wav)
+    mockTranscribeSpeech.mockResolvedValue({
+      text: 'WAV transcription succeeded',
+      provider: 'openai',
+      model: 'gpt-4o-transcribe',
+      durationMs: 10,
+    })
+    mockFetchSttSettings.mockResolvedValue({
+      activeProvider: 'openai',
+      providers: [{
+        provider: 'openai',
+        settings: { model: 'gpt-4o-transcribe' },
+        secrets: { apiKey: '[stored]' },
+        updatedAt: 12,
+      }],
+    })
+
+    const wrapper = await mountComponent()
+    await flushPromises()
+
+    const testButton = wrapper.get('[data-testid="voice-card-test-stt-openai"]')
+    await testButton.trigger('click')
+    await flushPromises()
+    expect(mockMicStart).toHaveBeenCalledOnce()
+
+    await testButton.trigger('click')
+    await flushPromises()
+
+    expect(mockTranscribeSpeech).toHaveBeenCalledWith({ audio: wav, provider: 'openai' })
+    expect(wrapper.text()).toContain('WAV transcription succeeded')
   })
 
   it('shows missing-key and inline testing/error states on provider cards', async () => {

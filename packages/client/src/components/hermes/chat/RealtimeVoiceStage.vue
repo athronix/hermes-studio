@@ -7,13 +7,15 @@ import { fetchSttSettings, type SttProviderSettingsResponse } from '@/api/hermes
 import { synthesizeSpeech } from '@/api/hermes/tts'
 import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
 import { useMicRecorder } from '@/composables/useMicRecorder'
+import { usePcmStreamRecorder } from '@/composables/usePcmStreamRecorder'
 import { useGlobalSpeech } from '@/composables/useSpeech'
 import { useSttSettings } from '@/composables/useSttSettings'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
 import { useChatStore, type Message } from '@/stores/hermes/chat'
+import { isDesktopShell } from '@/utils/desktop-bridge'
 import { hzToEdgePitch, speedToEdgeRate } from '@/utils/ttsHelpers'
 
-type VoiceStageMode = 'idle' | 'listening' | 'processing' | 'thinking' | 'speaking' | 'error'
+type VoiceStageMode = 'idle' | 'paused' | 'listening' | 'processing' | 'thinking' | 'speaking' | 'error'
 type PreparedSpeech =
   | { ok: true; audio: Blob }
   | { ok: false; error: unknown }
@@ -29,7 +31,11 @@ type SpeechSynthesisJob = {
   text: string
   resolve: (result: PreparedSpeech) => void
 }
-const SILENCE_COMMIT_MS = 2_000
+const SILENCE_COMMIT_MS = 1_500
+const BACKEND_STREAM_VOICE_LEVEL = 0.035
+const BACKEND_STREAM_END_SILENCE_MS = 700
+const BACKEND_STREAM_MIN_SEGMENT_MS = 1_800
+const BACKEND_STREAM_MAX_SEGMENT_MS = 8_000
 const MAX_CONCURRENT_TTS_SYNTHESIS = 5
 
 const emit = defineEmits<{
@@ -54,13 +60,24 @@ const micRecorder = useMicRecorder({
     recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
   },
 })
+const pcmStreamRecorder = usePcmStreamRecorder({
+  minSegmentDurationMs: BACKEND_STREAM_MIN_SEGMENT_MS,
+  speechEndSilenceMs: BACKEND_STREAM_END_SILENCE_MS,
+  maxSegmentDurationMs: BACKEND_STREAM_MAX_SEGMENT_MS,
+  voiceActivityThreshold: BACKEND_STREAM_VOICE_LEVEL,
+  onChunk: queueBackendStreamChunk,
+  messages: {
+    unsupported: t('chat.voiceInput.microphoneUnsupported'),
+    recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
+  },
+})
 
 const mode = ref<VoiceStageMode>('idle')
 const sessionActive = ref(false)
 const submittedTranscript = ref('')
+const backendStreamTranscript = ref('')
 const errorMessage = ref('')
 const waitingForResponse = ref(false)
-const manualCapture = ref(false)
 const responseStartedAt = ref(0)
 const audioLevel = ref(0)
 const segmentAudioPlaying = ref(false)
@@ -86,8 +103,11 @@ let speechQueueRunning = false
 let activeSynthesisCount = 0
 let activeBackendSetting: SttProviderSettingsResponse | null = null
 let backendSettingPromise: Promise<SttProviderSettingsResponse | null> | null = null
-let activeCaptureMode: 'browser' | 'backend' | null = null
+let activeCaptureMode: 'browser' | 'backend-stream' | null = null
 let handlingRecognitionFailure = false
+let backendStreamGeneration = 0
+let backendStreamQueue: Promise<void> = Promise.resolve()
+let backendStreamFailure: unknown = null
 const speechQueueIdleWaiters = new Set<() => void>()
 const synthesisControllers = new Set<AbortController>()
 const synthesisJobs: SpeechSynthesisJob[] = []
@@ -99,6 +119,7 @@ const currentTranscript = computed(() => {
   const liveTranscript = normalizeText([
     browserRecognition.transcript.value,
     browserRecognition.partialTranscript.value,
+    backendStreamTranscript.value,
   ].filter(Boolean).join(' '))
   return liveTranscript || submittedTranscript.value
 })
@@ -122,9 +143,6 @@ const statusLabel = computed(() => t(`realtimeVoice.status.${mode.value}`, {
   agent: agentDisplayName.value,
 }))
 const statusHint = computed(() => {
-  if (mode.value === 'listening' && manualCapture.value) {
-    return t('realtimeVoice.hint.listeningManual')
-  }
   return t(`realtimeVoice.hint.${mode.value}`)
 })
 const sessionTitle = computed(() => chatStore.activeSession?.title?.trim() || t('realtimeVoice.untitledSession'))
@@ -133,7 +151,10 @@ const displayCaption = computed(() => {
   if (mode.value === 'speaking' && activeSpeechSegment.value) {
     return activeSpeechSegment.value.subtitleText
   }
-  if ((mode.value === 'listening' || mode.value === 'processing') && currentTranscript.value) {
+  if (
+    (mode.value === 'listening' || mode.value === 'processing' || mode.value === 'thinking')
+    && currentTranscript.value
+  ) {
     return currentTranscript.value
   }
   return statusHint.value
@@ -204,6 +225,10 @@ function isMobileDevice() {
 
 function browserCaptureContinuous() {
   return !isMobileDevice()
+}
+
+function shouldUseBackendStream(setting: SttProviderSettingsResponse | null) {
+  return Boolean(setting && (isDesktopShell() || isMobileDevice()))
 }
 
 function clearTimers() {
@@ -433,8 +458,70 @@ async function loadActiveBackendSetting() {
 }
 
 function setError(cause: unknown) {
+  if (isNoSpeechError(cause)) {
+    errorMessage.value = ''
+    if (mode.value !== 'listening') mode.value = 'idle'
+    return
+  }
   errorMessage.value = cause instanceof Error ? cause.message : String(cause)
   mode.value = 'error'
+}
+
+function isNoSpeechError(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return /no[_ -]?speech|no speech detected/i.test(message)
+}
+
+function resetBackendStream() {
+  backendStreamGeneration += 1
+  backendStreamQueue = Promise.resolve()
+  backendStreamFailure = null
+  backendStreamTranscript.value = ''
+}
+
+function queueBackendStreamChunk(audio: Blob) {
+  const setting = activeBackendSetting
+  const generation = backendStreamGeneration
+  if (!setting || audio.size <= 44) return backendStreamQueue
+
+  const settings = setting.settings
+  backendStreamQueue = backendStreamQueue.then(async () => {
+    if (generation !== backendStreamGeneration) return
+    try {
+      const result = await transcribeSpeech({
+        audio,
+        provider: setting.provider,
+        language: typeof settings.language === 'string' ? settings.language : undefined,
+        prompt: typeof settings.prompt === 'string' ? settings.prompt : undefined,
+      })
+      if (generation !== backendStreamGeneration) return
+      const text = normalizeText(result.text)
+      if (text) {
+        backendStreamTranscript.value = normalizeText(`${backendStreamTranscript.value} ${text}`)
+      }
+    } catch (cause) {
+      if (generation !== backendStreamGeneration || isNoSpeechError(cause)) return
+      backendStreamFailure = cause
+      throw cause
+    }
+  }).catch((cause) => {
+    if (generation !== backendStreamGeneration || isNoSpeechError(cause)) return
+    backendStreamFailure = cause
+    pcmStreamRecorder.cancel()
+    activeCaptureMode = null
+    stopVisualizer()
+    setError(cause)
+  })
+
+  return backendStreamQueue
+}
+
+async function startBackendStreamCapture() {
+  resetBackendStream()
+  activeCaptureMode = 'backend-stream'
+  await pcmStreamRecorder.start()
+  mode.value = 'listening'
+  void startVisualizer(pcmStreamRecorder.stream.value)
 }
 
 async function startCapture() {
@@ -452,18 +539,24 @@ async function startCapture() {
   browserRecognition.clearError()
   errorMessage.value = ''
   submittedTranscript.value = ''
+  backendStreamTranscript.value = ''
   activeSpeechSegment.value = null
   responseStartedAt.value = 0
   sessionActive.value = true
   activeBackendSetting = await loadActiveBackendSetting()
-  manualCapture.value = Boolean(activeBackendSetting && isMobileDevice())
-  activeCaptureMode = manualCapture.value ? 'backend' : 'browser'
+
+  if ((isDesktopShell() || isMobileDevice()) && !activeBackendSetting) {
+    activeCaptureMode = null
+    setError(t('realtimeVoice.backendStreamRequired'))
+    return
+  }
+
+  const backendStream = shouldUseBackendStream(activeBackendSetting)
+  activeCaptureMode = backendStream ? 'backend-stream' : 'browser'
 
   try {
-    if (manualCapture.value) {
-      await micRecorder.start()
-      mode.value = 'listening'
-      void startVisualizer(micRecorder.stream.value)
+    if (backendStream) {
+      await startBackendStreamCapture()
       return
     }
 
@@ -524,6 +617,14 @@ async function transcribeBackendCapture(audio: Blob, setting: SttProviderSetting
     })
     await submitTranscript(result.text)
   } catch (cause) {
+    if (isNoSpeechError(cause)) {
+      errorMessage.value = ''
+      activeCaptureMode = null
+      stopVisualizer()
+      mode.value = 'idle'
+      scheduleRestart()
+      return
+    }
     setError(cause)
   }
 }
@@ -570,20 +671,35 @@ async function handleRecognitionFailure() {
   }
 }
 
-async function stopCapture() {
+async function stopCapture(manual = false) {
   if (mode.value !== 'listening') return
   clearTimers()
   mode.value = 'processing'
 
-  if (activeCaptureMode === 'backend' && activeBackendSetting) {
+  if (activeCaptureMode === 'backend-stream' && activeBackendSetting) {
     try {
-      const audio = await micRecorder.stop()
+      const finalChunk = await pcmStreamRecorder.stop()
       stopVisualizer()
+      if (finalChunk) queueBackendStreamChunk(finalChunk)
+      await backendStreamQueue
+      if (backendStreamFailure) return
       activeCaptureMode = null
-      await transcribeBackendCapture(audio, activeBackendSetting)
+      if (!backendStreamTranscript.value) {
+        mode.value = manual ? 'paused' : 'idle'
+        if (!manual) scheduleRestart()
+        return
+      }
+      await submitTranscript(backendStreamTranscript.value)
     } catch (cause) {
+      if (isNoSpeechError(cause)) {
+        activeCaptureMode = null
+        stopVisualizer()
+        mode.value = manual ? 'paused' : 'idle'
+        if (!manual) scheduleRestart()
+        return
+      }
       activeCaptureMode = null
-      micRecorder.cancel()
+      pcmStreamRecorder.cancel()
       stopVisualizer()
       setError(cause)
     }
@@ -608,6 +724,11 @@ async function stopCapture() {
   }
   activeCaptureMode = null
   stopVisualizer()
+  if (!normalizeText(transcript)) {
+    mode.value = manual ? 'paused' : 'idle'
+    if (!manual) scheduleRestart()
+    return
+  }
   await submitTranscript(transcript)
 }
 
@@ -615,6 +736,8 @@ async function stopActiveTurn() {
   clearTimers()
   browserRecognition.cancel()
   micRecorder.cancel()
+  pcmStreamRecorder.cancel()
+  backendStreamGeneration += 1
   activeCaptureMode = null
   stopVisualizer()
   waitingForResponse.value = false
@@ -626,7 +749,7 @@ async function stopActiveTurn() {
 
 async function toggleCapture() {
   if (mode.value === 'listening') {
-    await stopCapture()
+    await stopCapture(true)
     return
   }
   if (mode.value === 'thinking' || mode.value === 'speaking') {
@@ -638,10 +761,6 @@ async function toggleCapture() {
 
 function scheduleRestart(delay = 420) {
   if (!sessionActive.value) return
-  if (manualCapture.value) {
-    mode.value = 'idle'
-    return
-  }
   if (restartTimer) clearTimeout(restartTimer)
   restartTimer = setTimeout(() => {
     restartTimer = null
@@ -674,7 +793,7 @@ function scheduleSilenceCommit() {
   if (silenceTimer) clearTimeout(silenceTimer)
   silenceTimer = setTimeout(() => {
     silenceTimer = null
-    if (mode.value === 'listening') void stopCapture()
+    if (mode.value === 'listening') void stopCapture(false)
   }, SILENCE_COMMIT_MS)
 }
 
@@ -845,8 +964,9 @@ function processResponseMessages() {
 }
 
 function finishResponseIfReady() {
+  if (!waitingForResponse.value) return
   processResponseMessages()
-  if (!waitingForResponse.value || chatStore.isStreaming || responseFinalizing) return
+  if (chatStore.isStreaming || responseFinalizing) return
   const responseMessages = chatStore.messages.slice(responseStartMessageIndex)
   const response = [...responseMessages].reverse().find(message =>
     message.role === 'assistant' && Boolean(message.content.trim()),
@@ -887,6 +1007,8 @@ function closeStage() {
   clearTimers()
   browserRecognition.cancel()
   micRecorder.cancel()
+  pcmStreamRecorder.cancel()
+  backendStreamGeneration += 1
   activeCaptureMode = null
   stopVisualizer()
   speech.stop(true)
@@ -894,7 +1016,16 @@ function closeStage() {
 }
 
 watch(currentTranscript, (value) => {
-  if (mode.value !== 'listening' || !value) return
+  if (mode.value !== 'listening' || activeCaptureMode === 'backend-stream' || !value) return
+  scheduleSilenceCommit()
+})
+watch(() => pcmStreamRecorder.level.value, (value) => {
+  if (
+    mode.value !== 'listening'
+    || activeCaptureMode !== 'backend-stream'
+    || !pcmStreamRecorder.hasSpeech.value
+    || value < BACKEND_STREAM_VOICE_LEVEL
+  ) return
   scheduleSilenceCommit()
 })
 watch(() => browserRecognition.error.value, () => {
@@ -917,8 +1048,7 @@ onMounted(() => {
     void loadActiveBackendSetting().then((setting) => {
       if (!sessionActive.value) return
       activeBackendSetting = setting
-      manualCapture.value = Boolean(setting && isMobileDevice())
-      if (!manualCapture.value) void startCapture()
+      void startCapture()
     })
   }, 180)
 })
@@ -933,6 +1063,8 @@ onBeforeUnmount(() => {
   clearTimers()
   browserRecognition.cancel()
   micRecorder.cancel()
+  pcmStreamRecorder.cancel()
+  backendStreamGeneration += 1
   activeCaptureMode = null
   stopVisualizer()
   speech.stop(true)

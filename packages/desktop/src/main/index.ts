@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, shell, ipcMain, nativeImage, Notification, screen, dialog, type MessageBoxOptions } from 'electron'
+import { app, BrowserWindow, Menu, Tray, shell, ipcMain, nativeImage, Notification, screen, dialog, session, systemPreferences, type MessageBoxOptions } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { startWebUiServer, stopWebUiServer, getToken } from './webui-server'
@@ -462,6 +462,44 @@ function createWindow() {
   updateTrayMenu()
 }
 
+function installMicrophonePermissionHandler() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const isMainRenderer = !!mainWindow
+      && !mainWindow.isDestroyed()
+      && webContents === mainWindow.webContents
+    if (permission !== 'media') {
+      callback(isMainRenderer)
+      return
+    }
+
+    const mediaTypes = ('mediaTypes' in details ? details.mediaTypes : undefined) ?? []
+    const requestsAudio = mediaTypes.length ? mediaTypes.includes('audio') : true
+
+    if (!isMainRenderer || !requestsAudio) {
+      callback(false)
+      return
+    }
+
+    if (process.platform !== 'darwin') {
+      callback(true)
+      return
+    }
+
+    const status = systemPreferences.getMediaAccessStatus('microphone')
+    if (status === 'granted') {
+      callback(true)
+      return
+    }
+    if (status === 'denied' || status === 'restricted') {
+      callback(false)
+      return
+    }
+    void systemPreferences.askForMediaAccess('microphone')
+      .then(granted => callback(granted))
+      .catch(() => callback(false))
+  })
+}
+
 function splashHtml(label = t('desktop.startingLocalServices')): string {
   const startingLabel = escapeHtml(label)
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Hermes Studio</title>
@@ -805,6 +843,7 @@ function runDesktopApp() {
     // visual clutter. macOS keeps a menu (system requirement) but Electron's
     // default is fine there.
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+    installMicrophonePermissionHandler()
     if (app.isPackaged) {
       installHermesStudioCliShim({
         nodePath: bundledNode(),

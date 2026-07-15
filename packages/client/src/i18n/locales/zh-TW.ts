@@ -492,6 +492,7 @@ export default {
     browserTts: '瀏覽器',
     untitledSession: '未命名對話',
     sessionMissing: '目前對話無法使用。',
+    backendStreamRequired: '手機端和桌面端即時語音需要先設定後端語音轉寫服務。',
     networkUnavailableNoFallback: '瀏覽器語音辨識網路無法使用，且目前沒有設定可用的備用 STT。',
     liveTranscript: '即時轉寫',
     transcriptPlaceholder: '輕觸語音核心，然後開始說話',
