@@ -250,6 +250,8 @@ const desktopRuntimeWorkflow = await readText('.github/workflows/desktop-runtime
 const webuiReleaseWorkflow = await readText('.github/workflows/webui-release.yml')
 const dockerPublishWorkflow = await readText('.github/workflows/docker-publish.yml')
 const electronBuilderConfig = await readText('packages/desktop/electron-builder.yml')
+const desktopMacEntitlements = await readText('packages/desktop/build/entitlements.mac.plist')
+const desktopMacInheritedEntitlements = await readText('packages/desktop/build/entitlements.mac.inherit.plist')
 const desktopPackageJson = await readText('packages/desktop/package.json')
 const desktopInstallHermes = await readText('packages/desktop/scripts/install-hermes.mjs')
 const desktopHermesPatches = await readText('packages/desktop/scripts/apply-hermes-patches.mjs')
@@ -290,6 +292,21 @@ if (!webuiReleaseWorkflow.includes('make_latest: false')) {
 
 if (!electronBuilderConfig.includes('icon: build/icons')) {
   fail('electron-builder.yml must configure the Linux icon set')
+}
+
+for (const entitlementFile of ['build/entitlements.mac.plist', 'build/entitlements.mac.inherit.plist']) {
+  if (!electronBuilderConfig.includes(entitlementFile)) {
+    fail(`electron-builder.yml must configure ${entitlementFile}`)
+  }
+}
+
+for (const [file, text] of [
+  ['entitlements.mac.plist', desktopMacEntitlements],
+  ['entitlements.mac.inherit.plist', desktopMacInheritedEntitlements],
+]) {
+  if (!text.includes('<key>com.apple.security.device.audio-input</key>')) {
+    fail(`${file} must allow microphone audio input`)
+  }
 }
 
 for (const target of ['target_os: darwin', 'target_os: win32', 'target_os: linux']) {
