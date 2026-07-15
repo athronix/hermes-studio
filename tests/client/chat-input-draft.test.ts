@@ -183,6 +183,16 @@ describe('ChatInput draft persistence', () => {
     expect(wrapper.find('[data-value="max"]').exists()).toBe(true)
   })
 
+  it('hides the reasoning effort selector for MoA sessions', async () => {
+    const wrapper = mountForSession('session-moa', {
+      provider: 'moa',
+      model: 'research-team',
+    })
+    await nextTick()
+
+    expect(wrapper.find('.n-popselect-stub').exists()).toBe(false)
+  })
+
   it('stores maximum reasoning effort for the active session', async () => {
     const wrapper = mountForSession('session-reasoning-max')
     const store = useChatStore()

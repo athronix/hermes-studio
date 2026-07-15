@@ -222,6 +222,36 @@ describe('models controller — model visibility', () => {
     })
   })
 
+  it('exposes enabled MoA presets as a profile-scoped virtual provider', async () => {
+    mockReadConfigYamlForProfile.mockResolvedValue({
+      model: { default: 'deepseek-chat', provider: 'deepseek' },
+      moa: {
+        default_preset: 'coding',
+        presets: {
+          research: { enabled: true },
+          coding: {},
+          archived: { enabled: false },
+        },
+      },
+    })
+
+    const ctx = makeCtx()
+    ctx.query = { profile: 'default' }
+    await ctrl.getAvailable(ctx)
+
+    expect(ctx.body.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: 'moa',
+        label: 'Mixture of Agents',
+        base_url: 'moa://local',
+        api_key: 'moa-virtual-provider',
+        api_mode: 'chat_completions',
+        models: ['coding', 'research'],
+      }),
+    ]))
+    expect(JSON.stringify(ctx.body.groups)).not.toContain('archived')
+  })
+
   it('prefers cached live provider catalogs over static built-in presets', async () => {
     mockReadConfigYamlForProfile.mockResolvedValue({ model: { default: 'deepseek-live', provider: 'deepseek' } })
     const key = modelCatalogKey('deepseek', 'https://api.deepseek.com/v1')
