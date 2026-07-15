@@ -2539,6 +2539,21 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_6_30_1: 'This release covers all 21 PRs merged after 0.6.29, spanning workflow orchestration, MoA sessions, realtime voice, durable memory, provider reliability, MCU setup, and Windows polish',
+    new_0_6_30_2: 'Workflow Orchestration v2 adds conditional success, failure, and always routes, true skips, all/any joins, bounded feedback loops, execution evidence, deadlines, and portable imports (#2073)',
+    new_0_6_30_3: 'Enabled MoA presets can now be selected when creating or switching Hermes chat sessions, with the correct preset label, default, context window, and runtime behavior (#2078)',
+    new_0_6_30_4: 'The first screen loads substantially less JavaScript by lazy-loading Markdown, Mermaid, Monaco, inactive locales, and optional overlays (#2068)',
+    new_0_6_30_5: 'Single chats now include a full-screen realtime voice mode with live transcription, queued speech playback, tool activity, and interruption controls (#2063)',
+    new_0_6_30_6: 'Realtime voice is more reliable on desktop and mobile, recovers from silence, avoids recording assistant speech, uses the active STT fallback, and keeps approvals visible (#2064, #2067)',
+    new_0_6_30_7: 'Ekko Agent gains durable scoped memory and now includes the active provider and model in runtime context, with safer production memory-database handling (#2057, #2060, #2071)',
+    new_0_6_30_8: 'Profiles without a configured provider now get a direct setup prompt that opens the provider form (#2070)',
+    new_0_6_30_9: 'Provider model catalogs are aligned with Hermes Agent, while live discovery takes priority without stale fallback caches masking updates (#2051)',
+    new_0_6_30_10: 'Custom-provider aliases remain stable across loaded chat turns, preventing unnecessary client rebuilds and lost request headers (#2054)',
+    new_0_6_30_11: 'Session model switching now shows a blocking progress state, and conversation changes replay the chat fade without remounting drafts or attachments (#2056, #2069)',
+    new_0_6_30_12: 'Journey graph exploration adds multi-select categories, distinct Skill and Memory shapes, previews, and improved keyboard and touch controls (#2055)',
+    new_0_6_30_13: 'Markdown downloads preserve file extensions, mobile transcription gets explicit start and stop controls, and scoped Codex streaming no longer duplicates final assistant messages (#2058, #2066)',
+    new_0_6_30_14: 'MCU setup and reliability improve with visible device codes, automatic microphone selection, disconnect synchronization, and bounded TLS discovery (#2049, #2059, #2062)',
+    new_0_6_30_15: 'Windows chat runs no longer flash Git console windows while capturing workspace changes in Git or ordinary directories (#2080)',
     new_0_6_29_1: 'This release covers all 14 PRs merged after 0.6.28, spanning visual consistency, MCU audio and v2 hardware, workspace diffs, model usage analytics, Docker updates, and MiMo voice cloning',
     new_0_6_29_2: 'Shared page headers, dark surfaces, and radius tokens now follow one visual system, while version previews sort valid tags by semantic version (#2014, #2015)',
     new_0_6_29_3: 'The ESP32 product page has a responsive redesign, and the website version selector now includes Hermes Agent 0.18.2 (#2020, #2042)',
