@@ -219,6 +219,7 @@ function runGit(cwd: string, args: string[], maxBuffer = 1024 * 1024): string {
     encoding: 'utf8',
     maxBuffer,
     stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
   })
 }
 
@@ -419,6 +420,7 @@ function snapshotGitHeadPath(gitRoot: string, relPath: string): SnapshotFile {
     execFileSync('git', ['cat-file', '-e', `HEAD:${relPath}`], {
       cwd: gitRoot,
       stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
     })
   } catch {
     return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
@@ -435,6 +437,7 @@ function snapshotGitHeadPath(gitRoot: string, relPath: string): SnapshotFile {
       encoding: 'buffer',
       maxBuffer: MAX_SNAPSHOT_BYTES + 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }) as Buffer
     return {
       exists: true,
@@ -479,6 +482,7 @@ function makeNoIndexPatch(before: Buffer, after: Buffer, relPath: string): strin
         encoding: 'utf8',
         maxBuffer: MAX_PATCH_BYTES_PER_FILE + 64 * 1024,
         stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
       })
       return normalizePatchHeader(patch, relPath)
     } catch (err: any) {

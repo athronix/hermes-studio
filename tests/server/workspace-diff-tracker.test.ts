@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { execFileSync } from 'child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -56,6 +56,16 @@ describe('workspace diff tracker', () => {
     state.db?.close()
     state.db = null
     rmSync(root, { recursive: true, force: true })
+  })
+
+  it('hides every Git subprocess window on Windows', () => {
+    const source = readFileSync(
+      'packages/server/src/services/hermes/run-chat/workspace-diff-tracker.ts',
+      'utf8',
+    )
+
+    expect(source.match(/execFileSync\('git'/g)).toHaveLength(4)
+    expect(source.match(/windowsHide: true/g)).toHaveLength(4)
   })
 
   it('records only files changed during the run when the repo was already dirty', async () => {
