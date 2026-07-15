@@ -1,6 +1,6 @@
 ---
 date: 2026-07-15
-pr: pending
+pr: 2086
 feature: PCM chat input and voice caption lifecycle
 impact: Mobile and Electron chat input recordings now upload PCM/WAV, and realtime voice no longer restores the user's transcript after assistant TTS begins.
 ---
