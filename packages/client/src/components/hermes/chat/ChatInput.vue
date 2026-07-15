@@ -54,6 +54,7 @@ const reasoningEffortOptions = computed(() => [
 const currentReasoningEffort = computed<string>(() =>
   chatStore.activeSession?.reasoningEffort || ''
 )
+const isMoaSession = computed(() => chatStore.activeSession?.provider === 'moa')
 const reasoningEffortLabel = computed<string>(() => {
   const v = currentReasoningEffort.value
   if (!v) return t('chat.reasoningEffort.defaultLabel')
@@ -1083,6 +1084,7 @@ function isImage(type: string): boolean {
           </NTooltip>
 
           <NPopselect
+            v-if="!isMoaSession"
             :value="currentReasoningEffort"
             :options="reasoningEffortOptions"
             trigger="click"

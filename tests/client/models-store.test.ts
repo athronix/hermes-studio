@@ -23,6 +23,24 @@ describe('Models Store', () => {
     window.localStorage.clear()
   })
 
+  it('keeps the virtual MoA provider out of credential-backed model settings', async () => {
+    const groups = [
+      { provider: 'deepseek', label: 'DeepSeek', base_url: '', api_key: '', models: ['deepseek-chat'] },
+      { provider: 'moa', label: 'Mixture of Agents', base_url: 'moa://local', api_key: 'moa-virtual-provider', models: ['research'] },
+    ]
+    mockSystemApi.fetchAvailableModelsForProfile.mockResolvedValue({
+      default: 'deepseek-chat',
+      default_provider: 'deepseek',
+      groups,
+      allProviders: groups,
+    })
+
+    const modelsStore = useModelsStore()
+    await modelsStore.fetchProviders()
+
+    expect(modelsStore.providers.map(group => group.provider)).toEqual(['deepseek'])
+  })
+
   it('keeps the sidebar model picker in sync after provider model visibility changes', async () => {
     const visibleGroups = [
       {

@@ -63,4 +63,18 @@ describe('ChatPanel session clicks', () => {
     expect(source).toContain('{{ t("common.create") }}')
     expect(source).not.toContain('{{ t("chat.newChat") }}\n            </NButton>')
   })
+
+  it('offers MoA only for Hermes session creation and switching', () => {
+    const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
+
+    expect(source).toContain('if (group.provider === "moa") return newChatAgent.value === "hermes"')
+    expect(source).toContain('newChatAgent.value === "hermes" && Boolean(newChatMoaGroup.value?.models.length)')
+    expect(source).toContain('group.provider === "moa"\n          ? !isSessionModelCodingAgent.value')
+    expect(source).toContain('name="new-chat-model-kind"')
+    expect(source).toContain('name="session-model-kind"')
+    expect(source).toContain("{{ t('chat.modelType') }}")
+    expect(source).toContain('<NRadioButton value="model">{{ t(\'chat.standardModels\') }}</NRadioButton>')
+    expect(source).toContain('<NRadioButton value="moa">{{ t(\'chat.moaPresets\') }}</NRadioButton>')
+    expect(source).toContain('await applySessionModelSwitch(preset, "moa")')
+  })
 })

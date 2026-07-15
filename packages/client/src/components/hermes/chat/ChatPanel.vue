@@ -352,6 +352,7 @@ const activeSessionTitle = computed(
 const activeSessionModelLabel = computed(() => {
   const session = chatStore.activeSession;
   if (!session?.model) return t("models.selectModel");
+  if (session.provider === "moa") return `MoA · ${session.model}`;
   return appStore.displayModelName(session.model, session.provider);
 });
 
@@ -367,6 +368,7 @@ const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
 const newChatProvider = ref<string>("");
 const newChatModel = ref<string>("");
+const newChatModelKind = ref<"model" | "moa">("model");
 const newChatBaseUrl = ref<string>("");
 const newChatApiKey = ref<string>("");
 const newChatApiMode = ref<CodingAgentApiMode>("codex_responses");
@@ -496,6 +498,7 @@ function getModelGroupsForProfile(profile: string) {
 }
 
 function isNewChatProviderAllowed(group: AvailableModelGroup) {
+  if (group.provider === "moa") return newChatAgent.value === "hermes";
   const mode = newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value;
   if (!(newChatAgent.value !== "hermes" && mode === "scoped")) return true;
   return canScopedCodingAgentUseProvider(newChatAgent.value as ChatCodingAgentId, group.provider);
@@ -547,8 +550,19 @@ const newChatProfileOptions = computed(() =>
 );
 
 const newChatModelGroups = computed(() => {
-  return getSelectableModelGroupsForProfile(newChatProfile.value);
+  const groups = getSelectableModelGroupsForProfile(newChatProfile.value);
+  return newChatModelKind.value === "moa"
+    ? groups.filter((group) => group.provider === "moa")
+    : groups.filter((group) => group.provider !== "moa");
 });
+
+const newChatMoaGroup = computed(() =>
+  getSelectableModelGroupsForProfile(newChatProfile.value).find((group) => group.provider === "moa"),
+);
+
+const newChatCanUseMoa = computed(() =>
+  newChatAgent.value === "hermes" && Boolean(newChatMoaGroup.value?.models.length),
+);
 
 const newChatProviderOptions = computed(() =>
   newChatModelGroups.value.map((group) => ({
@@ -618,8 +632,37 @@ function syncNewChatApiMode() {
 
 function syncNewChatModelSelection() {
   const defaults = getDefaultModelForProfile(newChatProfile.value);
+  newChatModelKind.value = defaults.provider === "moa" && newChatAgent.value === "hermes"
+    ? "moa"
+    : "model";
   newChatProvider.value = defaults.provider;
   newChatModel.value = defaults.model;
+  newChatBaseUrl.value = "";
+  newChatApiKey.value = "";
+  syncNewChatApiMode();
+}
+
+function handleNewChatModelKindChange(value: "model" | "moa") {
+  if (value === "moa") {
+    const group = newChatMoaGroup.value;
+    if (!group?.models.length) return;
+    newChatModelKind.value = "moa";
+    newChatProvider.value = "moa";
+    newChatModel.value = group.models[0];
+  } else {
+    newChatModelKind.value = "model";
+    const groups = getSelectableModelGroupsForProfile(newChatProfile.value)
+      .filter((group) => group.provider !== "moa");
+    const profileModels = appStore.profileModelGroups.find(
+      (entry) => entry.profile === newChatProfile.value,
+    );
+    const defaultGroup = groups.find((group) => group.provider === profileModels?.default_provider);
+    const group = defaultGroup || groups.find((item) => item.models.length > 0);
+    newChatProvider.value = group?.provider || "";
+    newChatModel.value = group?.models.includes(profileModels?.default || "")
+      ? profileModels?.default || ""
+      : group?.models[0] || "";
+  }
   newChatBaseUrl.value = "";
   newChatApiKey.value = "";
   syncNewChatApiMode();
@@ -1085,6 +1128,7 @@ const showSessionModelModal = ref(false);
 const showSessionModelModeModal = ref(false);
 const sessionModelSessionId = ref<string | null>(null);
 const sessionModelSearch = ref("");
+const sessionModelKind = ref<"model" | "moa">("model");
 const sessionModelCollapsedGroups = ref<Record<string, boolean>>({});
 const sessionModelValue = ref("");
 const sessionModelProvider = ref("");
@@ -1123,14 +1167,32 @@ const isSessionModelExternalCodingAgent = computed(() =>
   (sessionModelCodingAgentId.value === "claude-code" || sessionModelCodingAgentId.value === "codex"),
 );
 
-const sessionModelBaseGroups = computed(() =>
+const isSessionModelCodingAgent = computed(() =>
+  sessionModelSession.value?.source === "coding_agent" || Boolean(sessionModelSession.value?.codingAgentId),
+);
+
+const sessionModelAllGroups = computed(() =>
   sessionModelProfile.value
     ? getModelGroupsForProfile(sessionModelProfile.value).filter((group) => (
-        !isSessionModelScopedCodingAgent.value ||
-        !sessionModelCodingAgentId.value ||
-        canScopedCodingAgentUseProvider(sessionModelCodingAgentId.value, group.provider)
+        group.provider === "moa"
+          ? !isSessionModelCodingAgent.value
+          : (!isSessionModelScopedCodingAgent.value ||
+            !sessionModelCodingAgentId.value ||
+            canScopedCodingAgentUseProvider(sessionModelCodingAgentId.value, group.provider))
       ))
     : [],
+);
+
+const sessionModelBaseGroups = computed(() =>
+  sessionModelAllGroups.value.filter((group) => group.provider !== "moa"),
+);
+
+const sessionMoaGroup = computed(() =>
+  sessionModelAllGroups.value.find((group) => group.provider === "moa"),
+);
+
+const sessionCanUseMoa = computed(() =>
+  !isSessionModelCodingAgent.value && Boolean(sessionMoaGroup.value?.models.length),
 );
 
 const sessionModelProviderOptions = computed(() =>
@@ -1163,6 +1225,12 @@ const filteredSessionModelGroups = computed(() => {
     .filter((group) => group.models.length > 0 || group.label.toLowerCase().includes(query));
 });
 
+const filteredSessionMoaModels = computed(() => {
+  const models = sessionMoaGroup.value?.models || [];
+  const query = sessionModelSearch.value.trim().toLowerCase();
+  return query ? models.filter((model) => model.toLowerCase().includes(query)) : models;
+});
+
 async function openSessionModelModal(sessionId: string) {
   if (appStore.modelGroups.length === 0 && appStore.profileModelGroups.length === 0) {
     await appStore.loadModels();
@@ -1182,13 +1250,25 @@ async function openSessionModelModal(sessionId: string) {
       ? session?.model || ""
       : fallbackGroup?.models[0] || "",
   };
-  sessionModelValue.value = providerGroup ? session?.model || defaults.model || "" : defaults.model || "";
-  sessionModelProvider.value = providerGroup ? session?.provider || "" : defaults.provider || "";
-  sessionModelCustomProvider.value = sessionModelProvider.value;
+  const usesMoa = session?.provider === "moa" && sessionCanUseMoa.value;
+  sessionModelKind.value = usesMoa ? "moa" : "model";
+  sessionModelValue.value = usesMoa
+    ? session?.model || ""
+    : providerGroup ? session?.model || defaults.model || "" : defaults.model || "";
+  sessionModelProvider.value = usesMoa
+    ? "moa"
+    : providerGroup ? session?.provider || "" : defaults.provider || "";
+  sessionModelCustomProvider.value = usesMoa ? defaults.provider : sessionModelProvider.value;
   sessionModelSearch.value = "";
   sessionModelCustomInput.value = "";
   sessionModelCollapsedGroups.value = {};
   showSessionModelModal.value = true;
+}
+
+function handleSessionModelKindChange(value: "model" | "moa") {
+  if (sessionModelSwitching.value || (value === "moa" && !sessionCanUseMoa.value)) return;
+  sessionModelKind.value = value;
+  sessionModelSearch.value = "";
 }
 
 function handleHeaderModelClick() {
@@ -1264,6 +1344,11 @@ async function selectSessionModel(model: string, provider: string) {
     return;
   }
   await applySessionModelSwitch(model, provider);
+}
+
+async function selectSessionMoaPreset(preset: string) {
+  if (!preset || sessionModelSwitching.value) return;
+  await applySessionModelSwitch(preset, "moa");
 }
 
 async function confirmSessionModelMode() {
@@ -1553,6 +1638,17 @@ async function handleSessionModelCustomSubmit() {
     >
       <NSpin :show="sessionModelSwitching" class="session-model-switch-spin">
         <template #description>{{ t('chat.modelSwitching') }}</template>
+        <div v-if="sessionCanUseMoa" class="session-model-kind-field">
+          <span class="session-model-kind-label">{{ t('chat.modelType') }}</span>
+          <NRadioGroup
+            :value="sessionModelKind"
+            name="session-model-kind"
+            @update:value="handleSessionModelKindChange"
+          >
+            <NRadioButton value="model">{{ t('chat.standardModels') }}</NRadioButton>
+            <NRadioButton value="moa">{{ t('chat.moaPresets') }}</NRadioButton>
+          </NRadioGroup>
+        </div>
         <NInput
           v-model:value="sessionModelSearch"
           :placeholder="t('models.searchPlaceholder')"
@@ -1561,7 +1657,7 @@ async function handleSessionModelCustomSubmit() {
           size="small"
           class="session-model-search"
         />
-        <div class="session-model-list" :aria-busy="sessionModelSwitching">
+        <div v-if="sessionModelKind === 'model'" class="session-model-list" :aria-busy="sessionModelSwitching">
         <div v-for="group in filteredSessionModelGroups" :key="group.provider" class="session-model-group">
           <div class="session-model-group-header" @click="toggleSessionModelGroup(group.provider)">
             <svg
@@ -1647,6 +1743,42 @@ async function handleSessionModelCustomSubmit() {
           </div>
         </div>
         </div>
+        <div v-else class="session-model-list" :aria-busy="sessionModelSwitching">
+          <div class="session-model-group-items session-moa-items">
+            <div
+              v-for="preset in filteredSessionMoaModels"
+              :key="preset"
+              class="session-model-item"
+              :class="{
+                active: preset === sessionModelValue && sessionModelProvider === 'moa',
+                switching: sessionModelSwitching,
+              }"
+              :aria-disabled="sessionModelSwitching"
+              @click="selectSessionMoaPreset(preset)"
+            >
+              <span class="session-model-item-label">
+                <span class="session-model-item-name">{{ preset }}</span>
+              </span>
+              <svg
+                v-if="preset === sessionModelValue && sessionModelProvider === 'moa'"
+                class="session-model-check"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          </div>
+          <div v-if="filteredSessionMoaModels.length === 0" class="session-model-empty">
+            {{ t('chat.noMoaPresets') }}
+          </div>
+        </div>
       </NSpin>
     </NModal>
 
@@ -1712,7 +1844,18 @@ async function handleSessionModelCustomSubmit() {
               @update:value="handleNewChatProfileChange"
             />
           </label>
-          <label v-if="newChatUsesProviderModel" class="new-chat-field">
+          <label v-if="newChatUsesProviderModel && newChatCanUseMoa" class="new-chat-field">
+            <span class="new-chat-label">{{ t('chat.modelType') }}</span>
+            <NRadioGroup
+              :value="newChatModelKind"
+              name="new-chat-model-kind"
+              @update:value="handleNewChatModelKindChange"
+            >
+              <NRadioButton value="model">{{ t('chat.standardModels') }}</NRadioButton>
+              <NRadioButton value="moa">{{ t('chat.moaPresets') }}</NRadioButton>
+            </NRadioGroup>
+          </label>
+          <label v-if="newChatUsesProviderModel && newChatModelKind === 'model'" class="new-chat-field">
             <span class="new-chat-label">{{ t("models.provider") }}</span>
             <NSelect
               :value="newChatProvider"
@@ -1722,7 +1865,9 @@ async function handleSessionModelCustomSubmit() {
             />
           </label>
           <label v-if="newChatUsesProviderModel" class="new-chat-field">
-            <span class="new-chat-label">{{ t("models.models") }}</span>
+            <span class="new-chat-label">
+              {{ newChatModelKind === 'moa' ? t('chat.moaPresets') : t('models.models') }}
+            </span>
             <NSelect
               v-model:value="newChatModel"
               :options="newChatModelOptions"
@@ -2086,6 +2231,19 @@ async function handleSessionModelCustomSubmit() {
   margin-bottom: 12px;
 }
 
+.session-model-kind-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.session-model-kind-label {
+  font-size: 12px;
+  color: $text-muted;
+  font-weight: 500;
+}
+
 .session-model-switch-spin {
   min-height: 180px;
 }
@@ -2139,6 +2297,10 @@ async function handleSessionModelCustomSubmit() {
 
 .session-model-group-items {
   padding-left: 8px;
+}
+
+.session-moa-items {
+  padding-left: 0;
 }
 
 .session-model-item {

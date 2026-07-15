@@ -40,7 +40,10 @@ export const useModelsStore = defineStore('models', () => {
     try {
       const profile = useProfilesStore().activeProfileName || 'default'
       const res = await systemApi.fetchAvailableModelsForProfile(profile)
-      providers.value = res.groups
+      // MoA is a virtual Hermes runtime provider used by chat model pickers,
+      // not a credential-backed provider that belongs in model settings or
+      // auxiliary-model configuration.
+      providers.value = res.groups.filter(group => group.provider !== 'moa')
       allProviders.value = res.allProviders
       defaultModel.value = res.default
       defaultProvider.value = res.default_provider || ''

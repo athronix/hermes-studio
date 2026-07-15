@@ -256,6 +256,10 @@ async function persist(next: MoaConfig) {
   try {
     const saved = await saveMoaConfig(next)
     moa.value = cloneMoaConfig(saved.moa)
+    await Promise.all([
+      modelsStore.fetchProviders(),
+      appStore.reloadModels({ preserveSelection: true }),
+    ])
     message.success(t('models.combinationSaved'))
   } catch (e: any) {
     message.error(e.message || t('models.combinationSaveFailed'))
