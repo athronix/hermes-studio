@@ -90,7 +90,8 @@ vi.mock('naive-ui', () => ({
   NDropdown: { name: 'NDropdown', props: ['options'], emits: ['select'], template: '<div><slot /></div>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
   NInputNumber: { template: '<input />' },
-  NPopselect: { template: '<div><slot /></div>' },
+  NPopover: { template: '<div><slot name="trigger" /><slot /></div>' },
+  NSlider: { template: '<div></div>' },
   useMessage: () => ({ error: vi.fn(), success: vi.fn() }),
 }))
 
