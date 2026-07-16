@@ -610,12 +610,8 @@ function isImage(type: string): boolean {
 .chat-input-area {
     padding: 8px 20px 14px;
     border-top: 0;
-    background-color: $bg-card;
+    background-color: $bg-main-surface;
     flex-shrink: 0;
-
-    .dark & {
-        background-color: #333333;
-    }
 }
 
 .input-top-bar {

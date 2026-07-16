@@ -887,7 +887,10 @@ function handleBatchDeleteConfirm() {
       @clickoutside="handleClickOutside"
     />
 
-    <div class="chat-main">
+    <div
+      class="chat-main"
+      :class="{ 'chat-main--sidebar-collapsed': !showSessions }"
+    >
       <header class="chat-header">
         <div class="header-left">
           <NButton class="history-sidebar-toggle" quaternary size="small" @click="showSessions = !showSessions" circle>
@@ -926,6 +929,7 @@ function handleBatchDeleteConfirm() {
       <div class="history-content-wrapper">
         <div class="history-main-content">
           <HistoryMessageList
+            :key="historySession?.id || 'history-empty'"
             ref="historyMessageListRef"
             :session="historySession"
             :load-older="loadOlderHistoryMessages"
@@ -948,6 +952,8 @@ function handleBatchDeleteConfirm() {
   display: flex;
   height: 100%;
   position: relative;
+  overflow: hidden;
+  background: $bg-card;
 }
 
 .history-content-wrapper {
@@ -967,7 +973,13 @@ function handleBatchDeleteConfirm() {
 
 .session-list {
   width: $sidebar-width;
-  border-right: 1px solid $border-color;
+  min-height: 0;
+  align-self: stretch;
+  margin: 10px;
+  background: $bg-sidebar-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -976,23 +988,26 @@ function handleBatchDeleteConfirm() {
 
   &.collapsed {
     width: 0;
-    border-right: none;
+    margin-left: 0;
+    margin-right: 0;
+    border: none;
+    box-shadow: none;
     opacity: 0;
     pointer-events: none;
   }
 
   @media (max-width: $breakpoint-mobile) {
     position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    height: auto;
+    margin: 0;
     z-index: 120;
-    background: $bg-card;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
     width: $sidebar-width;
 
     &.collapsed {
-      transform: translateX(-100%);
+      transform: translateX(calc(-100% - 10px));
       opacity: 0;
     }
   }
@@ -1126,6 +1141,15 @@ function handleBatchDeleteConfirm() {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+  margin: 10px 10px 10px 0;
+  background: $bg-main-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+
+  &--sidebar-collapsed {
+    margin-left: 10px;
+  }
 }
 
 .chat-header {
@@ -1182,6 +1206,13 @@ function handleBatchDeleteConfirm() {
 }
 
 @media (max-width: $breakpoint-mobile) {
+  .chat-main {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
   .chat-header {
     padding: 16px 12px 16px 52px;
   }

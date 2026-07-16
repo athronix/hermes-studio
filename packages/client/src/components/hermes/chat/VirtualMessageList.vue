@@ -534,11 +534,7 @@ defineExpose({
   scrollbar-width: thin;
   padding: var(--virtual-list-padding);
   box-sizing: border-box;
-  background-color: $bg-card;
-
-  .dark & {
-    background-color: #333333;
-  }
+  background-color: $bg-main-surface;
 }
 
 .virtual-row {

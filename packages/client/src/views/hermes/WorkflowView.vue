@@ -2316,7 +2316,10 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
       <PageSidebarFooter v-if="showWorkflowSidebar" />
     </aside>
 
-    <main class="workflow-main">
+    <main
+      class="workflow-main"
+      :class="{ 'workflow-main--sidebar-collapsed': !showWorkflowSidebar }"
+    >
       <header class="page-header">
         <div class="header-left">
           <NButton
@@ -2901,6 +2904,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   min-width: 0;
   position: relative;
   overflow: hidden;
+  background-color: $bg-card;
 }
 
 .workflow-main {
@@ -2909,11 +2913,27 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   flex: 1;
   display: flex;
   flex-direction: column;
+  margin: 10px 10px 10px 0;
+  overflow: hidden;
+  background: $bg-main-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+
+  &--sidebar-collapsed {
+    margin-left: 10px;
+  }
 }
 
 .workflow-sidebar {
   width: $sidebar-width;
-  border-right: 1px solid $border-color;
+  min-height: 0;
+  align-self: stretch;
+  margin: 10px;
+  background: $bg-sidebar-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -2924,7 +2944,10 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
 
   &.collapsed {
     width: 0;
-    border-right: none;
+    margin-left: 0;
+    margin-right: 0;
+    border: none;
+    box-shadow: none;
     opacity: 0;
     pointer-events: none;
   }
@@ -3683,18 +3706,25 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
 }
 
 @media (max-width: $breakpoint-mobile) {
+  .workflow-main {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
   .workflow-sidebar {
     position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    height: auto;
+    margin: 0;
     z-index: 120;
-    background: $bg-card;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
     width: $sidebar-width;
 
     &.collapsed {
-      transform: translateX(-100%);
+      transform: translateX(calc(-100% - 10px));
       opacity: 0;
     }
   }

@@ -92,7 +92,7 @@ useKeyboard()
               </button>
               <div v-if="!isLoginPage && showAppSidebar && appStore.sidebarOpen" class="mobile-backdrop" @click="appStore.closeSidebar" />
               <AppSidebar v-if="!isLoginPage && showAppSidebar" />
-              <main class="app-main">
+              <main class="app-main" :class="{ 'app-main--card': showAppSidebar }">
                 <router-view />
               </main>
             </div>
@@ -127,6 +127,7 @@ useKeyboard()
   width: 100%;
   max-width: 100%;
   overflow: hidden;
+  background-color: $bg-card;
 
   &.no-sidebar {
     display: block;
@@ -145,6 +146,34 @@ useKeyboard()
 
   .no-sidebar & {
     height: 100%;
+  }
+
+  &--card {
+    margin: 10px 10px 10px 0;
+    background-color: $bg-main-surface;
+    border: 1px solid $border-color;
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  }
+}
+
+@media (min-width: 769px) {
+  .app-main--card {
+    overflow: hidden;
+
+    :deep(> *) {
+      height: 100% !important;
+      max-height: 100%;
+    }
+  }
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .app-main--card {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
   }
 }
 

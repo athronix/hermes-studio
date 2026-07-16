@@ -86,7 +86,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   border-bottom: 1px solid $border-color;
-  background: $bg-sidebar;
+  background: $bg-main-surface;
   color: $text-primary;
   user-select: none;
   -webkit-app-region: drag;

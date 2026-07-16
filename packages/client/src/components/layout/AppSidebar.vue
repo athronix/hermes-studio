@@ -453,12 +453,18 @@ function handleUpdateClick() {
 .sidebar {
   position: relative;
   width: $sidebar-width;
-  height: calc(100 * var(--vh));
-  background-color: $bg-sidebar;
-  border-right: 1px solid $border-color;
+  height: auto;
+  min-height: 0;
+  align-self: stretch;
+  margin: 10px;
+  background-color: $bg-sidebar-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
   padding: 8px 12px 20px;
+  overflow: hidden;
   flex-shrink: 0;
   transition: width $transition-normal;
 }
@@ -898,10 +904,13 @@ function handleUpdateClick() {
 @media (max-width: $breakpoint-mobile) {
   .sidebar {
     position: fixed;
-    left: 0;
-    top: 0;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    margin: 0;
+    height: auto;
     z-index: 1000;
-    transform: translateX(-100%);
+    transform: translateX(calc(-100% - 10px));
     transition: transform $transition-normal;
     padding-top: env(safe-area-inset-top, 0px);
 

@@ -12,6 +12,8 @@
   --bg-card: #ffffff;
   --bg-card-hover: #fafafa;
   --bg-input: #ffffff;
+  --bg-sidebar-surface: var(--bg-card);
+  --bg-main-surface: var(--bg-card);
 
   // Borders
   --border-color: #e0e0e0;
@@ -64,6 +66,8 @@
   --bg-card: #2a2a2a;
   --bg-card-hover: #333333;
   --bg-input: #2a2a2a;
+  --bg-sidebar-surface: var(--bg-primary);
+  --bg-main-surface: var(--bg-primary);
 
   // Borders
   --border-color: #3a3a3a;
@@ -85,8 +89,8 @@
   --warning: #ffb74d;
 
   // Message bubbles
-  --msg-user-bg: #252525;
-  --msg-assistant-bg: #252525;
+  --msg-user-bg: #292929;
+  --msg-assistant-bg: #292929;
   --msg-system-border: #555555;
 
   // Code
@@ -138,6 +142,8 @@ $bg-sidebar: var(--bg-sidebar);
 $bg-card: var(--bg-card);
 $bg-card-hover: var(--bg-card-hover);
 $bg-input: var(--bg-input);
+$bg-sidebar-surface: var(--bg-sidebar-surface);
+$bg-main-surface: var(--bg-main-surface);
 
 // Borders
 $border-color: var(--border-color);

@@ -308,7 +308,10 @@ async function handleDispatch() {
     </div>
 
     <!-- Board -->
-    <NSpin :show="kanbanStore.loading && kanbanStore.tasks.length === 0">
+    <NSpin
+      class="kanban-board-spin"
+      :show="kanbanStore.loading && kanbanStore.tasks.length === 0"
+    >
       <div class="kanban-board">
         <NCollapse v-model:expanded-names="expandedStatusNames">
           <NCollapseItem
@@ -465,6 +468,23 @@ async function handleDispatch() {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+.kanban-board-spin {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+
+  :deep(.n-spin-container),
+  :deep(.n-spin-content) {
+    height: 100%;
+    min-height: 0;
+  }
+
+  :deep(.n-spin-content) {
+    display: flex;
+    flex-direction: column;
+  }
 }
 
 .column-header {

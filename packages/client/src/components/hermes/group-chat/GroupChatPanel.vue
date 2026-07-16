@@ -526,6 +526,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
         <!-- Main chat area -->
         <div
             class="chat-main"
+            :class="{ 'chat-main--sidebar-collapsed': !showSidebar }"
             @dragover="handleChatDragOver"
             @dragenter="handleChatDragEnter"
             @dragleave="handleChatDragLeave"
@@ -861,6 +862,7 @@ export default defineComponent({ components: { CreateRoomForm } })
     position: relative;
     min-width: 0;
     max-width: 100%;
+    background-color: $bg-card;
 }
 
 .sidebar-backdrop {
@@ -1103,10 +1105,17 @@ export default defineComponent({ components: { CreateRoomForm } })
 
 .room-sidebar {
     width: $sidebar-width;
+    min-height: 0;
+    align-self: stretch;
+    margin: 10px;
+    background: $bg-sidebar-surface;
+    border: 1px solid $border-color;
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
     flex-shrink: 0;
-    border-right: 1px solid $border-color;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 .sidebar-header {
@@ -1328,8 +1337,17 @@ export default defineComponent({ components: { CreateRoomForm } })
     display: flex;
     flex-direction: column;
     min-width: 0;
-    background-color: transparent;
+    margin: 10px 10px 10px 0;
+    overflow: hidden;
+    background-color: $bg-main-surface;
+    border: 1px solid $border-color;
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
     position: relative;
+
+    &--sidebar-collapsed {
+        margin-left: 10px;
+    }
 }
 
 .group-chat-content-wrapper {
@@ -1348,7 +1366,7 @@ export default defineComponent({ components: { CreateRoomForm } })
     min-width: 0;
     display: flex;
     flex-direction: column;
-    background-color: $bg-card;
+    background-color: $bg-main-surface;
     animation: group-chat-surface-fade-in 1.5s ease both;
 }
 
@@ -1719,14 +1737,21 @@ export default defineComponent({ components: { CreateRoomForm } })
 // ─── Mobile ──────────────────────────────────────────────
 
 @media (max-width: $breakpoint-mobile) {
+    .chat-main {
+        margin: 0;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+    }
+
     .room-sidebar {
         position: absolute;
-        left: 0;
-        top: 0;
-        bottom: 0;
+        left: 10px;
+        top: 10px;
+        bottom: 10px;
+        height: auto;
+        margin: 0;
         z-index: 100;
-        background-color: $bg-card;
-        box-shadow: 4px 0 16px rgba(0, 0, 0, 0.1);
     }
 
     .chat-header {

@@ -245,6 +245,17 @@ defineExpose({
   min-width: 0;
   position: relative;
   display: flex;
+  animation: history-message-surface-fade-in 1.5s ease both;
+}
+
+@keyframes history-message-surface-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .empty-state {
