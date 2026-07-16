@@ -16,6 +16,7 @@ type TranslationKey =
   | 'update.currentVersion'
   | 'update.availableTitle'
   | 'update.availableMessage'
+  | 'update.availableDetail'
   | 'update.downloading'
   | 'update.readyTitle'
   | 'update.readyMessage'
@@ -71,6 +72,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': 'Current version: {version}',
     'update.availableTitle': 'Update available',
     'update.availableMessage': 'Hermes Studio {version} is available.',
+    'update.availableDetail': 'Choose whether to download this update.',
     'update.downloading': 'The update is downloading in the background.',
     'update.readyTitle': 'Update ready',
     'update.readyMessage': 'Hermes Studio {version} is ready to install.',
@@ -123,6 +125,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': '当前版本：{version}',
     'update.availableTitle': '发现新版本',
     'update.availableMessage': 'Hermes Studio {version} 可用。',
+    'update.availableDetail': '请选择是否下载此更新。',
     'update.downloading': '更新正在后台下载。',
     'update.readyTitle': '更新已就绪',
     'update.readyMessage': 'Hermes Studio {version} 已准备好安装。',
@@ -175,6 +178,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': '目前版本：{version}',
     'update.availableTitle': '發現新版本',
     'update.availableMessage': 'Hermes Studio {version} 可用。',
+    'update.availableDetail': '請選擇是否下載此更新。',
     'update.downloading': '更新正在背景下載。',
     'update.readyTitle': '更新已就緒',
     'update.readyMessage': 'Hermes Studio {version} 已準備好安裝。',
@@ -227,6 +231,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': '現在のバージョン: {version}',
     'update.availableTitle': 'アップデートがあります',
     'update.availableMessage': 'Hermes Studio {version} が利用できます。',
+    'update.availableDetail': 'このアップデートをダウンロードするか選択してください。',
     'update.downloading': 'アップデートをバックグラウンドでダウンロードしています。',
     'update.readyTitle': 'アップデートの準備ができました',
     'update.readyMessage': 'Hermes Studio {version} をインストールできます。',
@@ -279,6 +284,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': '현재 버전: {version}',
     'update.availableTitle': '업데이트 사용 가능',
     'update.availableMessage': 'Hermes Studio {version}을 사용할 수 있습니다.',
+    'update.availableDetail': '이 업데이트를 다운로드할지 선택하세요.',
     'update.downloading': '업데이트를 백그라운드에서 다운로드하고 있습니다.',
     'update.readyTitle': '업데이트 준비 완료',
     'update.readyMessage': 'Hermes Studio {version}을 설치할 준비가 되었습니다.',
@@ -331,6 +337,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': 'Version actuelle : {version}',
     'update.availableTitle': 'Mise a jour disponible',
     'update.availableMessage': 'Hermes Studio {version} est disponible.',
+    'update.availableDetail': 'Choisissez si vous souhaitez telecharger cette mise a jour.',
     'update.downloading': 'La mise a jour se telecharge en arriere-plan.',
     'update.readyTitle': 'Mise a jour prete',
     'update.readyMessage': 'Hermes Studio {version} est pret a etre installe.',
@@ -383,6 +390,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': 'Version actual: {version}',
     'update.availableTitle': 'Actualizacion disponible',
     'update.availableMessage': 'Hermes Studio {version} esta disponible.',
+    'update.availableDetail': 'Elige si deseas descargar esta actualizacion.',
     'update.downloading': 'La actualizacion se esta descargando en segundo plano.',
     'update.readyTitle': 'Actualizacion lista',
     'update.readyMessage': 'Hermes Studio {version} esta listo para instalarse.',
@@ -435,6 +443,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': 'Aktuelle Version: {version}',
     'update.availableTitle': 'Update verfugbar',
     'update.availableMessage': 'Hermes Studio {version} ist verfugbar.',
+    'update.availableDetail': 'Wahlen Sie, ob Sie dieses Update herunterladen mochten.',
     'update.downloading': 'Das Update wird im Hintergrund heruntergeladen.',
     'update.readyTitle': 'Update bereit',
     'update.readyMessage': 'Hermes Studio {version} ist zur Installation bereit.',
@@ -487,6 +496,7 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.currentVersion': 'Versao atual: {version}',
     'update.availableTitle': 'Atualizacao disponivel',
     'update.availableMessage': 'Hermes Studio {version} esta disponivel.',
+    'update.availableDetail': 'Escolha se deseja baixar esta atualizacao.',
     'update.downloading': 'A atualizacao esta sendo baixada em segundo plano.',
     'update.readyTitle': 'Atualizacao pronta',
     'update.readyMessage': 'Hermes Studio {version} esta pronto para instalar.',
