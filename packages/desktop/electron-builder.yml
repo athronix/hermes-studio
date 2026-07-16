@@ -31,7 +31,8 @@ extraResources:
     filter:
       - "icon.png"
       - "icon.ico"
-      - "trayTemplate.png"
+      - "trayMac.png"
+      - "trayMac@2x.png"
       - "trayWindows.png"
       - "runtime-release.json"
   - from: "../.."

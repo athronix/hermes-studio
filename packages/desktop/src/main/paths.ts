@@ -365,9 +365,9 @@ export function desktopWindowsTrayIcon(): string {
   return resolve(desktopAppPath(), 'build', 'trayWindows.png')
 }
 
-export function desktopTrayTemplateIcon(): string {
-  if (isPackaged()) return resolve(process.resourcesPath, 'build', 'trayTemplate.png')
-  return resolve(desktopAppPath(), 'build', 'trayTemplate.png')
+export function desktopMacTrayIcon(): string {
+  if (isPackaged()) return resolve(process.resourcesPath, 'build', 'trayMac.png')
+  return resolve(desktopAppPath(), 'build', 'trayMac.png')
 }
 
 export function webUiHome(): string {

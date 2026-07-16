@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, Tray, shell, ipcMain, nativeImage, Notificati
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { startWebUiServer, stopWebUiServer, getToken } from './webui-server'
-import { bundledNode, desktopIcon, desktopRuntimeVersion, desktopTrayTemplateIcon, desktopWindowsTrayIcon, hermesBinExists, hermesBin, webuiDir } from './paths'
+import { bundledNode, desktopIcon, desktopMacTrayIcon, desktopRuntimeVersion, desktopWindowsTrayIcon, hermesBinExists, hermesBin, webuiDir } from './paths'
 import { checkForDesktopUpdates, initAutoUpdater } from './updater'
 import { t } from './desktop-i18n'
 import { resetDesktopDefaultLogin } from './desktop-login-reset'
@@ -377,18 +377,18 @@ function updateTrayMenu() {
 function createTray() {
   if (tray) return
   const source = process.platform === 'darwin'
-    ? desktopTrayTemplateIcon()
+    ? desktopMacTrayIcon()
     : process.platform === 'win32'
       ? desktopWindowsTrayIcon()
       : desktopIcon()
-  const icon = nativeImage.createFromPath(source).resize({
-    width: process.platform === 'darwin' ? 18 : process.platform === 'win32' ? 24 : 16,
-    height: process.platform === 'darwin' ? 18 : process.platform === 'win32' ? 24 : 16,
-    quality: 'best',
-  })
-  if (process.platform === 'darwin') {
-    icon.setTemplateImage(true)
-  }
+  const sourceIcon = nativeImage.createFromPath(source)
+  const icon = process.platform === 'darwin'
+    ? sourceIcon
+    : sourceIcon.resize({
+        width: process.platform === 'win32' ? 24 : 16,
+        height: process.platform === 'win32' ? 24 : 16,
+        quality: 'best',
+      })
   tray = new Tray(icon)
   tray.setToolTip('Hermes Studio')
   tray.on('click', () => {
