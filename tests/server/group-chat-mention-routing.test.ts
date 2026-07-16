@@ -80,6 +80,20 @@ describe('group chat mention routing', () => {
     expect(resolveMentionTargets(specialAgents, '@C++: inspect', 'human-1').map(a => a.name)).toEqual(['C++'])
   })
 
+  it('ignores mentions inside a quoted message while preserving them as context', () => {
+    const content = [
+      '<quoted_message sender="Alice">',
+      '@Bob please review this',
+      '</quoted_message>',
+      '',
+      '@Regex.Bot what do you think?',
+    ].join('\n')
+
+    expect(resolveMentionTargets(agents, content, 'socket-alice').map(agent => agent.name)).toEqual(['Regex.Bot'])
+    expect(stripMentionRoutingTokens(content, 'Regex.Bot')).toContain('@Bob please review this')
+    expect(stripMentionRoutingTokens(content, 'Regex.Bot')).not.toContain('@Regex.Bot')
+  })
+
   it('dedupes mixed @all and explicit mentions', () => {
     expect(resolveMentionTargets(agents, '@all @Bob compare plans', 'socket-alice').map(a => a.name)).toEqual(['Bob', 'Regex.Bot'])
   })

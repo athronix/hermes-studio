@@ -622,6 +622,8 @@ export default {
     copyBubble: 'Копировать сообщение',
     copiedBubble: 'Скопировано',
     copyFailed: 'Ошибка копирования',
+    referenceMessage: 'Цитировать сообщение',
+    cancelReference: 'Отменить цитирование',
     playSpeech: 'Воспроизвести речь',
     pauseSpeech: 'Пауза',
     resumeSpeech: 'Продолжить',

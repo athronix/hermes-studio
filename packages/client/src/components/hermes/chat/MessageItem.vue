@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import type { Message, ContentBlock } from "@/stores/hermes/chat";
+import {
+  formatReferencedContentForDisplay,
+  parseMessageReference,
+  type Message,
+  type ContentBlock,
+} from "@/stores/hermes/chat";
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { NButton, NDrawer, NDrawerContent, NSpin, useMessage } from "naive-ui";
@@ -145,6 +150,14 @@ const displayText = computed(() => {
     .filter(Boolean)
     .join('\n');
 });
+const parsedMessageReference = computed(() =>
+  props.message.role === 'user' ? parseMessageReference(displayText.value) : null,
+)
+const referencedContentMarkdown = computed(() =>
+  parsedMessageReference.value
+    ? formatReferencedContentForDisplay(parsedMessageReference.value.content)
+    : '',
+)
 
 // Extract files from ContentBlock[]
 const contentFiles = computed<DisplayContentFile[] | null>(() => {
@@ -203,6 +216,11 @@ const assistantProfileAvatar = computed(() => profilesStore.profiles.find(profil
 // Copy entire bubble content
 const copyableContent = computed(() => {
   if (props.message.role === 'tool') return null
+  if (parsedMessageReference.value) {
+    return [referencedContentMarkdown.value, parsedMessageReference.value.reply]
+      .filter(Boolean)
+      .join('\n\n')
+  }
   const content = props.message.content || ''
   if (!content.trim()) return null
   return content
@@ -224,9 +242,30 @@ async function copyBubbleContent() {
   toast.error(t('chat.copyFailed'))
 }
 
+function referenceBubbleContent() {
+  const content = quotableContent.value
+  const sessionId = chatStore.activeSessionId
+  if (!content || !sessionId) return
+  chatStore.setMessageReference(sessionId, {
+    id: props.message.id,
+    role: props.message.role as 'user' | 'assistant',
+    content,
+    sender: props.message.role,
+  })
+}
+
 const parsedThinking = computed(() =>
   parseThinking(props.message.content || "", { streaming: !!props.message.isStreaming }),
 );
+
+const quotableContent = computed(() => {
+  if (props.message.role !== 'user' && props.message.role !== 'assistant') return null
+  if (props.message.isStreaming || isAgentError.value) return null
+  const content = props.message.role === 'assistant'
+    ? parsedThinking.value.body.trim()
+    : (parsedMessageReference.value?.reply || parsedMessageReference.value?.content || displayText.value).trim()
+  return content || null
+})
 
 // 优先使用来自 reasoning 字段/事件的思考文本；否则回退到从 content 解析的 <think> 标签。
 // 若两者共存，则拼接展示（罕见，但保持信息不丢）。
@@ -1149,10 +1188,12 @@ onBeforeUnmount(() => {
                     </template>
                   </div>
                 </div>
-                <MarkdownRenderer v-if="displayText" :content="displayText" />
               </template>
-              <!-- Plain text format -->
-              <MarkdownRenderer v-else-if="message.content" :content="message.content" />
+              <template v-if="parsedMessageReference">
+                <MarkdownRenderer :content="referencedContentMarkdown" />
+                <MarkdownRenderer v-if="parsedMessageReference.reply" :content="parsedMessageReference.reply" />
+              </template>
+              <MarkdownRenderer v-else-if="displayText" :content="displayText" />
             </template>
 
             <!-- Render assistant message content -->
@@ -1214,6 +1255,17 @@ onBeforeUnmount(() => {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+            <button
+              v-if="quotableContent"
+              class="reference-bubble-btn"
+              @click="referenceBubbleContent"
+              :title="t('chat.referenceMessage')"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 17l-5-5 5-5" />
+                <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
               </svg>
             </button>
             <button
@@ -1688,6 +1740,7 @@ onBeforeUnmount(() => {
 }
 
 .copy-bubble-btn,
+.reference-bubble-btn,
 .speech-bubble-btn,
 .fork-bubble-btn {
   display: flex;

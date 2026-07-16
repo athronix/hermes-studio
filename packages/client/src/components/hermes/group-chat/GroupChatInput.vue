@@ -23,6 +23,10 @@ const attachments = ref<Attachment[]>([])
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
+const activeMessageReference = computed(() => store.activeMessageReference)
+const messageReferencePreview = computed(() =>
+    activeMessageReference.value?.content.replace(/\s+/g, ' ').trim() || '',
+)
 const autoPlaySpeech = ref(false)
 const inputSettingsOptions = computed<DropdownOption[]>(() => [
     {
@@ -85,6 +89,19 @@ watch(() => settingsStore.display.chat_input_height, () => {
     manualTextareaResize.value = false
     applyConfiguredTextareaHeight()
 })
+
+watch(
+    () => activeMessageReference.value?.id,
+    (id) => {
+        if (id) nextTick(() => textareaRef.value?.focus())
+    },
+)
+
+function clearMessageReference() {
+    const roomId = store.currentRoomId
+    if (roomId) store.clearMessageReference(roomId)
+    textareaRef.value?.focus()
+}
 
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null)
@@ -467,6 +484,21 @@ function isImage(type: string): boolean {
                 </button>
             </div>
         </div>
+        <div v-if="activeMessageReference" class="message-reference-preview">
+            <span class="message-reference-text">{{ messageReferencePreview }}</span>
+            <button
+                type="button"
+                class="message-reference-remove"
+                :aria-label="t('chat.cancelReference')"
+                :title="t('chat.cancelReference')"
+                @click.stop="clearMessageReference"
+            >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+            </button>
+        </div>
         <div
             class="input-wrapper"
             :class="{ 'drag-over': isDragging }"
@@ -757,6 +789,49 @@ function isImage(type: string): boolean {
 @keyframes typing-bounce {
     0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
     30% { transform: translateY(-3px); opacity: 1; }
+}
+
+.message-reference-preview {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    margin: 0 8px 8px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: rgba(var(--accent-primary-rgb), 0.07);
+    cursor: default;
+}
+
+.message-reference-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: $text-secondary;
+    font-size: 12px;
+    line-height: 24px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.message-reference-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: $text-muted;
+    cursor: pointer;
+
+    &:hover {
+        color: $text-primary;
+        background: rgba(var(--text-primary-rgb), 0.08);
+    }
 }
 
 .input-wrapper {

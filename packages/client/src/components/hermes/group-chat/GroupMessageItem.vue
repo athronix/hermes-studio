@@ -18,6 +18,8 @@ import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { formatChatTimestamp } from '@/utils/chat-timestamp'
 import type { ChatMessage, RoomAgent, MemberInfo } from '@/api/hermes/group-chat'
+import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { formatReferencedContentForDisplay, parseMessageReference } from '@/stores/hermes/chat'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('../chat/MarkdownRenderer.vue')).default)
 
@@ -38,6 +40,7 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const toast = useMessage()
+const groupChatStore = useGroupChatStore()
 const profilesStore = useProfilesStore()
 const speech = useGlobalSpeech()
 const voiceSettings = useVoiceSettings()
@@ -167,10 +170,32 @@ const displayBody = computed(() => {
         .map((block: any) => block.text)
         .join('\n')
 })
+const parsedMessageReference = computed(() =>
+    props.message.role !== 'assistant' && props.message.role !== 'tool'
+        ? parseMessageReference(displayBody.value)
+        : null,
+)
+const referencedContentMarkdown = computed(() =>
+    parsedMessageReference.value
+        ? formatReferencedContentForDisplay(parsedMessageReference.value.content)
+        : '',
+)
 const copyableContent = computed(() => {
     if (isToolMessage.value) return null
+    if (parsedMessageReference.value) {
+        return [referencedContentMarkdown.value, parsedMessageReference.value.reply]
+            .filter(Boolean)
+            .join('\n\n')
+    }
     const content = displayBody.value || ''
     return content.trim() ? content : null
+})
+const quotableContent = computed(() => {
+    if (isToolMessage.value || props.message.isStreaming || isAgentError.value) return null
+    const content = props.message.role === 'assistant'
+        ? assistantBody.value
+        : parsedMessageReference.value?.reply || parsedMessageReference.value?.content || displayBody.value
+    return content.trim() || null
 })
 
 const toolExpanded = ref(false)
@@ -465,6 +490,19 @@ async function copyBubbleContent() {
     else toast.error(t('chat.copyFailed'))
 }
 
+function referenceBubbleContent() {
+    const content = quotableContent.value
+    const roomId = groupChatStore.currentRoomId
+    if (!content || !roomId) return
+    const role = props.message.role === 'assistant' || isAgent.value ? 'assistant' : 'user'
+    groupChatStore.setMessageReference(roomId, {
+        id: props.message.id,
+        role,
+        content,
+        sender: props.message.senderName || props.message.senderId,
+    })
+}
+
 function isImage(type: string): boolean {
     return type.startsWith('image/')
 }
@@ -649,7 +687,11 @@ onBeforeUnmount(() => {
                         <MarkdownRenderer :content="thinkingFullText" />
                     </div>
                 </div>
-                <MarkdownRenderer v-if="displayBody" :content="displayBody" :mention-names="mentionNames" />
+                <template v-if="parsedMessageReference">
+                    <MarkdownRenderer :content="referencedContentMarkdown" :mention-names="mentionNames" />
+                    <MarkdownRenderer v-if="parsedMessageReference.reply" :content="parsedMessageReference.reply" :mention-names="mentionNames" />
+                </template>
+                <MarkdownRenderer v-else-if="displayBody" :content="displayBody" :mention-names="mentionNames" />
                 <span v-if="message.isStreaming && !displayBody" class="streaming-dots">
                     <span></span><span></span><span></span>
                 </span>
@@ -674,6 +716,17 @@ onBeforeUnmount(() => {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                </button>
+                <button
+                    v-if="quotableContent"
+                    class="reference-bubble-btn"
+                    :title="t('chat.referenceMessage')"
+                    @click="referenceBubbleContent"
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 17l-5-5 5-5" />
+                        <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
                     </svg>
                 </button>
                 <span class="message-time">{{ timeStr }}</span>
@@ -727,7 +780,7 @@ onBeforeUnmount(() => {
     }
 
     &.self .msg-content {
-        background-color: rgba(var(--accent-primary-rgb), 0.1);
+        background-color: rgba(var(--accent-primary-rgb), 0.06);
     }
 }
 
@@ -1016,6 +1069,7 @@ onBeforeUnmount(() => {
 }
 
 .copy-bubble-btn,
+.reference-bubble-btn,
 .speech-bubble-btn {
     display: flex;
     align-items: center;

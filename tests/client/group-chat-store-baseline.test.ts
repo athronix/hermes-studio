@@ -263,6 +263,32 @@ describe('group chat store baseline lifecycle', () => {
     expect(store.error).toBeNull()
   })
 
+  it('sends a group reference with explicit agent markup and clears the draft reference', async () => {
+    const store = await loadStore()
+    await store.connect()
+    await store.joinRoom('room-1')
+    store.setMessageReference('room-1', {
+      id: 'quoted-1',
+      role: 'assistant',
+      content: '@Agent previous answer',
+      sender: 'Agent',
+    })
+
+    await store.sendMessage('@Agent continue')
+
+    expect(groupChatApiMock.socket.emit).toHaveBeenCalledWith('message', expect.objectContaining({
+      roomId: 'room-1',
+      content: [
+        '<quoted_message sender="Agent">',
+        '@Agent previous answer',
+        '</quoted_message>',
+        '',
+        '@Agent continue',
+      ].join('\n'),
+    }), expect.any(Function))
+    expect(store.activeMessageReference).toBeNull()
+  })
+
   it('clears local room context from API response and room_cleared event', async () => {
     const store = await loadStore()
     groupChatApiMock.getRoomDetail.mockResolvedValue({

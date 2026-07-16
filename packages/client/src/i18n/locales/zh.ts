@@ -744,6 +744,8 @@ export default {
     copyBubble: '复制消息',
     copiedBubble: '已复制',
     copyFailed: '复制失败',
+    referenceMessage: '引用消息',
+    cancelReference: '取消引用',
     playSpeech: '播放语音',
     pauseSpeech: '暂停',
     resumeSpeech: '继续',

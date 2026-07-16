@@ -4,7 +4,7 @@ import { getActiveProfileName, getApiKey, getStoredUsername } from '@/api/client
 import { fetchCurrentUser } from '@/api/auth'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { responseErrorMessage } from '@/utils/http-error'
-import type { Attachment, ContentBlock } from './chat'
+import { formatMessageWithReference, type Attachment, type ContentBlock, type MessageReference } from './chat'
 import {
     connectGroupChat,
     disconnectGroupChat,
@@ -137,6 +137,11 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const currentRoomId = ref<string | null>(null)
     const rooms = ref<RoomInfo[]>([])
     const messages = ref<ChatMessage[]>([])
+    const messageReferences = ref<Map<string, MessageReference>>(new Map())
+    const activeMessageReference = computed(() => {
+        const roomId = currentRoomId.value
+        return roomId ? messageReferences.value.get(roomId) || null : null
+    })
     const members = ref<MemberInfo[]>([])
     const agents = ref<RoomAgent[]>([])
     const roomName = ref('')
@@ -170,6 +175,19 @@ const currentUserAvatar = ref('')
 
     function setAutoPlaySpeech(enabled: boolean) {
         autoPlaySpeechEnabled.value = enabled
+    }
+
+    function setMessageReference(roomId: string, reference: MessageReference) {
+        const next = new Map(messageReferences.value)
+        next.set(roomId, reference)
+        messageReferences.value = next
+    }
+
+    function clearMessageReference(roomId: string) {
+        if (!messageReferences.value.has(roomId)) return
+        const next = new Map(messageReferences.value)
+        next.delete(roomId)
+        messageReferences.value = next
     }
 
     function playMessageSpeech(messageId: string, content: string) {
@@ -663,18 +681,24 @@ const currentUserAvatar = ref('')
     async function sendMessage(content: string, attachments?: Attachment[]) {
         const socket = getSocket()
         if (!socket || !currentRoomId.value) return
+        const roomId = currentRoomId.value
         emitStopTyping()
         const messageId = uid()
-        let finalContent: string | ContentBlock[] = content.trim()
+        const messageReference = messageReferences.value.get(roomId) || null
+        const submittedContent = messageReference
+            ? formatMessageWithReference(messageReference, content)
+            : content.trim()
+        clearMessageReference(roomId)
+        let finalContent: string | ContentBlock[] = submittedContent
         if (attachments?.length) {
             const uploaded = await uploadGroupFiles(attachments)
-            finalContent = buildGroupContentBlocks(content, attachments, uploaded)
+            finalContent = buildGroupContentBlocks(submittedContent, attachments, uploaded)
             const urlMap = new Map(uploaded.map(f => {
                 return [f.name, getDownloadUrl(normalizeLocalFilePath(f.path), f.name)]
             }))
             messages.value.push({
                 id: messageId,
-                roomId: currentRoomId.value,
+                roomId,
                 senderId: userId.value,
                 senderName: userName.value || 'You',
                 content: JSON.stringify(finalContent),
@@ -687,7 +711,7 @@ const currentUserAvatar = ref('')
         }
 
         return new Promise<void>((resolve, reject) => {
-            socket!.emit('message', { roomId: currentRoomId.value, id: messageId, content: finalContent }, (res: { id?: string; error?: string }) => {
+            socket!.emit('message', { roomId, id: messageId, content: finalContent }, (res: { id?: string; error?: string }) => {
                 if (res.error) {
                     messages.value = messages.value.filter(m => m.id !== messageId)
                     reject(new Error(res.error))
@@ -744,6 +768,7 @@ const currentUserAvatar = ref('')
         try {
             await deleteRoomApi(roomId)
             rooms.value = rooms.value.filter(r => r.id !== roomId)
+            clearMessageReference(roomId)
             if (currentRoomId.value === roomId) {
                 currentRoomId.value = null
                 messages.value = []
@@ -771,9 +796,11 @@ const currentUserAvatar = ref('')
 
     async function clearCurrentRoomContext() {
         if (!currentRoomId.value) return
+        const roomId = currentRoomId.value
         try {
-            const res = await clearRoomContext(currentRoomId.value)
+            const res = await clearRoomContext(roomId)
             messages.value = []
+            clearMessageReference(roomId)
             resetMessagePaging()
             typingUsers.value.clear()
             contextStatuses.value.clear()
@@ -893,6 +920,7 @@ const currentUserAvatar = ref('')
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
+        activeMessageReference,
         totalMessages,
         loadedMessageCount,
         hasMoreBefore,
@@ -911,6 +939,8 @@ const currentUserAvatar = ref('')
         disconnect,
         setUserInfo,
         setAutoPlaySpeech,
+        setMessageReference,
+        clearMessageReference,
         joinRoom,
         loadOlderMessages,
         sendMessage,

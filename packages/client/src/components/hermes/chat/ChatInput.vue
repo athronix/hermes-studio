@@ -116,6 +116,10 @@ const attachments = ref<Attachment[]>([])
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
+const activeMessageReference = computed(() => chatStore.activeMessageReference)
+const messageReferencePreview = computed(() =>
+  activeMessageReference.value?.content.replace(/\s+/g, ' ').trim() || '',
+)
 const isMobileViewport = ref(typeof window !== 'undefined' ? isMobileChatInputViewport(window.innerWidth) : false)
 const manualTextareaResize = ref(false)
 const speech = useGlobalSpeech()
@@ -215,6 +219,20 @@ function insertVoiceTranscriptIntoInput(text: string) {
     autoSizeTextarea(textarea)
   })
 }
+
+function clearMessageReference() {
+  const sessionId = chatStore.activeSessionId
+  if (sessionId) chatStore.clearMessageReference(sessionId)
+  textareaRef.value?.focus()
+}
+
+watch(
+  () => activeMessageReference.value?.id,
+  (id) => {
+    if (!id) return
+    nextTick(() => textareaRef.value?.focus())
+  },
+)
 
 const voiceDialogue = useVoiceDialogue({
   transcribe: async (audio) => {
@@ -1060,6 +1078,22 @@ function isImage(type: string): boolean {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
+    </div>
+
+    <div v-if="activeMessageReference" class="message-reference-preview">
+      <span class="message-reference-text">{{ messageReferencePreview }}</span>
+      <button
+        type="button"
+        class="message-reference-remove"
+        :aria-label="t('chat.cancelReference')"
+        :title="t('chat.cancelReference')"
+        @click.stop="clearMessageReference"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
     </div>
 
     <div
@@ -2002,6 +2036,49 @@ function isImage(type: string): boolean {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+}
+
+.message-reference-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0 8px 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(var(--accent-primary-rgb), 0.07);
+  cursor: default;
+}
+
+.message-reference-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reference-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+
+  &:hover {
+    color: $text-primary;
+    background: rgba(var(--text-primary-rgb), 0.08);
   }
 }
 

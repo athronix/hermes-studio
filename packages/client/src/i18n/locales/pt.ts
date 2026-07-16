@@ -652,6 +652,8 @@ export default {
     copyBubble: 'Copiar mensagem',
     copiedBubble: 'Mensagem copiada',
     copyFailed: 'Falha ao copiar',
+    referenceMessage: 'Citar mensagem',
+    cancelReference: 'Cancelar citação',
     playSpeech: 'Reproduzir voz',
     pauseSpeech: 'Pausar',
     resumeSpeech: 'Retomar',

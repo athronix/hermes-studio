@@ -20,7 +20,7 @@ import { useI18n } from "vue-i18n";
 import { NButton, NInput } from "naive-ui";
 import VirtualMessageList from "./VirtualMessageList.vue";
 import MessageItem from "./MessageItem.vue";
-import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore, type Message } from "@/stores/hermes/chat";
+import { LIVE_CHAT_MAX_LOADED_MESSAGES, parseMessageReference, useChatStore, type Message } from "@/stores/hermes/chat";
 import thinkingImage from "@/assets/thinking.gif";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 
@@ -260,7 +260,9 @@ function removeQueuedMessage(messageId: string) {
 }
 
 function queuedPreview(content: string): string {
-  const normalized = content.replace(/\s+/g, " ").trim();
+  const reference = parseMessageReference(content);
+  const visibleContent = reference?.reply || reference?.content || content;
+  const normalized = visibleContent.replace(/\s+/g, " ").trim();
   return normalized.length > 48 ? `${normalized.slice(0, 48)}...` : normalized;
 }
 

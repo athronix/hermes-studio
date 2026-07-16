@@ -24,6 +24,7 @@ vi.mock('@/api/hermes/download', () => ({
 
 import GroupMessageItem from '@/components/hermes/group-chat/GroupMessageItem.vue'
 import type { ChatMessage } from '@/api/hermes/group-chat'
+import { useGroupChatStore } from '@/stores/hermes/group-chat'
 
 function mountToolMessage(message: Partial<ChatMessage>) {
   return mount(GroupMessageItem, {
@@ -72,6 +73,36 @@ describe('GroupMessageItem tool details', () => {
         pause: vi.fn(),
         resume: vi.fn(),
       },
+    })
+  })
+
+  it('selects a group message as the active room reference', async () => {
+    const store = useGroupChatStore()
+    store.currentRoomId = 'room-1'
+    const wrapper = mount(GroupMessageItem, {
+      props: {
+        message: {
+          id: 'group-assistant',
+          roomId: 'room-1',
+          senderId: 'agent-1',
+          senderName: 'Worker',
+          role: 'assistant',
+          content: 'Use this group answer',
+          timestamp: Date.now(),
+        },
+        agents: [{ id: 'agent-row', roomId: 'room-1', agentId: 'agent-1', profile: 'worker', name: 'Worker', description: '', invited: 1 }],
+        members: [],
+        currentUserId: 'user-1',
+      },
+      global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
+    })
+
+    await wrapper.get('.reference-bubble-btn').trigger('click')
+
+    expect(store.activeMessageReference).toMatchObject({
+      id: 'group-assistant',
+      content: 'Use this group answer',
+      sender: 'Worker',
     })
   })
 

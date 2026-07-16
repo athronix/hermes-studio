@@ -33,7 +33,7 @@ vi.mock('naive-ui', () => ({
 }))
 
 import MessageItem from '@/components/hermes/chat/MessageItem.vue'
-import type { Message } from '@/stores/hermes/chat'
+import { useChatStore, type Message } from '@/stores/hermes/chat'
 
 describe('MessageItem tool details', () => {
   beforeEach(() => {
@@ -60,6 +60,50 @@ describe('MessageItem tool details', () => {
         resume: vi.fn(),
       },
     })
+  })
+
+  it('selects a completed user or assistant message as the next-turn reference', async () => {
+    const chatStore = useChatStore()
+    chatStore.activeSessionId = 'session-1'
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: {
+          id: 'assistant-reference',
+          role: 'assistant',
+          content: 'Use this answer as context',
+          timestamp: Date.now(),
+        } satisfies Message,
+      },
+      global: { stubs: { MarkdownRenderer: true } },
+    })
+
+    await wrapper.get('.reference-bubble-btn').trigger('click')
+
+    expect(chatStore.activeMessageReference).toMatchObject({
+      id: 'assistant-reference',
+      role: 'assistant',
+      content: 'Use this answer as context',
+    })
+  })
+
+  it('keeps legacy assistant thinking text out of the message reference', async () => {
+    const chatStore = useChatStore()
+    chatStore.activeSessionId = 'session-1'
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: {
+          id: 'assistant-with-thinking',
+          role: 'assistant',
+          content: '<think>private reasoning</think>Visible answer',
+          timestamp: Date.now(),
+        } satisfies Message,
+      },
+      global: { stubs: { MarkdownRenderer: true } },
+    })
+
+    await wrapper.get('.reference-bubble-btn').trigger('click')
+
+    expect(chatStore.activeMessageReference?.content).toBe('Visible answer')
   })
 
   it('renders highlighted code blocks for tool arguments and tool results', async () => {

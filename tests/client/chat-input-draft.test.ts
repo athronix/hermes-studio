@@ -118,6 +118,27 @@ describe('ChatInput draft persistence', () => {
     expect((remountedA.get('textarea').element as HTMLTextAreaElement).value).toBe('draft for session a')
   })
 
+  it('shows and cancels the active session message reference', async () => {
+    const wrapper = mountForSession('session-reference')
+    const chatStore = useChatStore()
+
+    chatStore.setMessageReference('session-reference', {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'A referenced assistant response',
+    })
+    await nextTick()
+
+    expect(wrapper.get('.message-reference-preview').text()).toContain('A referenced assistant response')
+    expect(wrapper.get('.message-reference-preview').element.parentElement?.classList.contains('input-wrapper')).toBe(false)
+    expect(chatStore.activeMessageReference?.id).toBe('assistant-1')
+
+    await wrapper.get('.message-reference-remove').trigger('click')
+
+    expect(wrapper.find('.message-reference-preview').exists()).toBe(false)
+    expect(chatStore.activeMessageReference).toBeNull()
+  })
+
   it('applies the configured desktop input height from display settings', async () => {
     const wrapper = mountForSession('session-a', {}, { chat_input_height: 180 })
     await flushPromises()

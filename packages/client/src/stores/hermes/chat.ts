@@ -85,6 +85,51 @@ export interface Message {
   runMarker?: string | null
 }
 
+export interface MessageReference {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  sender?: string
+}
+
+export interface ParsedMessageReference {
+  content: string
+  reply: string
+}
+
+export function parseMessageReference(content: string): ParsedMessageReference | null {
+  if (!content.startsWith('<quoted_message')) return null
+  const openEnd = content.indexOf('>\n')
+  if (openEnd === -1) return null
+  const closeMarker = '\n</quoted_message>'
+  const closeStart = content.indexOf(closeMarker, openEnd + 2)
+  if (closeStart === -1) return null
+
+  return {
+    content: content.slice(openEnd + 2, closeStart).trim(),
+    reply: content.slice(closeStart + closeMarker.length).trim(),
+  }
+}
+
+export function formatReferencedContentForDisplay(content: string): string {
+  return content
+    .trim()
+    .split(/\r?\n/)
+    .map(line => line ? `> ${line}` : '>')
+    .join('\n')
+}
+
+export function formatMessageWithReference(reference: MessageReference, content: string): string {
+  const sender = reference.sender?.trim()
+  const openTag = sender
+    ? `<quoted_message sender=${JSON.stringify(sender)}>`
+    : '<quoted_message>'
+  const quotedContent = reference.content.trim()
+  const reply = content.trim()
+  const referenceBlock = `${openTag}\n${quotedContent}\n</quoted_message>`
+  return reply ? `${referenceBlock}\n\n${reply}` : referenceBlock
+}
+
 export interface PendingApproval {
   sessionId: string
   approvalId: string
@@ -710,6 +755,12 @@ export const useChatStore = defineStore('chat', () => {
   const queuedUserMessages = ref<Map<string, Message[]>>(new Map())
   /** sessionId → queue ids that server reported as dequeued before the peer message arrived */
   const dequeuedQueueIds = ref<Map<string, Set<string>>>(new Map())
+  /** sessionId → message selected as the reference for the next user turn */
+  const messageReferences = ref<Map<string, MessageReference>>(new Map())
+  const activeMessageReference = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? messageReferences.value.get(sid) || null : null
+  })
   const pendingApprovals = ref<Map<string, PendingApproval>>(new Map())
   const activePendingApproval = computed(() => {
     const sid = activeSessionId.value
@@ -826,6 +877,19 @@ export const useChatStore = defineStore('chat', () => {
     const next = new Set(completedUnreadSessions.value)
     next.delete(sessionId)
     completedUnreadSessions.value = next
+  }
+
+  function setMessageReference(sessionId: string, reference: MessageReference) {
+    const next = new Map(messageReferences.value)
+    next.set(sessionId, reference)
+    messageReferences.value = next
+  }
+
+  function clearMessageReference(sessionId: string) {
+    if (!messageReferences.value.has(sessionId)) return
+    const next = new Map(messageReferences.value)
+    next.delete(sessionId)
+    messageReferences.value = next
   }
 
   function markSessionCompletedUnread(sessionId: string, hasQueue = false) {
@@ -1515,6 +1579,7 @@ export const useChatStore = defineStore('chat', () => {
     const ok = await deleteSessionApi(sessionId, target?.profile)
     if (!ok) return false
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    clearMessageReference(sessionId)
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
         await switchSession(sessions.value[0].id)
@@ -1531,6 +1596,7 @@ export const useChatStore = defineStore('chat', () => {
     const ok = await archiveSessionApi(sessionId)
     if (!ok) return false
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    clearMessageReference(sessionId)
     if (completedUnreadSessions.value.has(sessionId)) {
       const next = new Set(completedUnreadSessions.value)
       next.delete(sessionId)
@@ -1793,6 +1859,7 @@ export const useChatStore = defineStore('chat', () => {
       if (target) target.messages = []
       queuedUserMessages.value.delete(sid)
       queueLengths.value.delete(sid)
+      clearMessageReference(sid)
       if ((evt as any).clearHistory) {
         const message = String((evt as any).message || '')
         if (message) {
@@ -1826,6 +1893,7 @@ export const useChatStore = defineStore('chat', () => {
       serverWorking.value.delete(sid)
       queueLengths.value.delete(sid)
       queuedUserMessages.value.delete(sid)
+      clearMessageReference(sid)
       setAbortState(null)
       const msgs = getSessionMsgs(sid)
       msgs.forEach(m => {
@@ -2303,6 +2371,10 @@ export const useChatStore = defineStore('chat', () => {
     const isBridgeMoaCommand = isBridgeSlashCommand && /^\/moa(?:\s|$)/i.test(trimmedContent)
     const isBridgeGoalCommand = isBridgeSlashCommand && /^\/goal(?:\s|$)/i.test(trimmedContent)
     const isBridgeForkCommand = isBridgeSlashCommand && /^\/fork(?:\s|$)/i.test(trimmedContent)
+    const messageReference = isBridgeSlashCommand ? null : messageReferences.value.get(sid) || null
+    const submittedContent = messageReference
+      ? formatMessageWithReference(messageReference, trimmedContent)
+      : trimmedContent
     const shouldOptimisticallyShowRunStatus = !isCodingAgentSession && !isBridgeForkCommand
     const wasLiveBeforeSend = isSessionLive(sid)
     if (isBridgeForkCommand) {
@@ -2322,7 +2394,7 @@ export const useChatStore = defineStore('chat', () => {
     const userMsg: Message = {
       id: uid(),
       role: isBridgeSlashCommand ? 'command' : 'user',
-      content: trimmedContent,
+      content: submittedContent,
       timestamp: Date.now(),
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
       queued: shouldQueue,
@@ -2336,6 +2408,7 @@ export const useChatStore = defineStore('chat', () => {
       updateSessionTitle(sid)
       if (shouldOptimisticallyShowRunStatus) serverWorking.value.add(sid)
     }
+    clearMessageReference(sid)
 
     let runSubmitted = false
     try {
@@ -2368,10 +2441,10 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         // Build content blocks with uploaded file paths
-        input = await buildContentBlocks(content, attachments, uploaded)
+        input = await buildContentBlocks(submittedContent, attachments, uploaded)
       } else {
         // No attachments: use plain text format
-        input = trimmedContent
+        input = submittedContent
       }
 
       const appStore = useAppStore()
@@ -4015,10 +4088,13 @@ export const useChatStore = defineStore('chat', () => {
     isAborting,
     queueLengths,
     queuedUserMessages,
+    activeMessageReference,
     pendingApprovals,
     activePendingApproval,
     activePendingClarify,
     removeQueuedMessage,
+    setMessageReference,
+    clearMessageReference,
     isLoadingSessions,
     sessionsLoaded,
     isLoadingMessages,

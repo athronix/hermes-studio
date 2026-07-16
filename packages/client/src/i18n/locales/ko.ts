@@ -652,6 +652,8 @@ export default {
     copyBubble: '메시지 복사',
     copiedBubble: '복사됨',
     copyFailed: '복사 실패',
+    referenceMessage: '메시지 인용',
+    cancelReference: '인용 취소',
     playSpeech: '음성 재생',
     pauseSpeech: '일시정지',
     resumeSpeech: '재개',

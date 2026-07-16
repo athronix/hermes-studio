@@ -744,6 +744,8 @@ export default {
     copyBubble: 'Copy message',
     copiedBubble: 'Message copied',
     copyFailed: 'Copy failed',
+    referenceMessage: 'Reference message',
+    cancelReference: 'Cancel reference',
     playSpeech: 'Play voice',
     pauseSpeech: 'Pause',
     resumeSpeech: 'Resume',

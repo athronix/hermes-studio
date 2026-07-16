@@ -652,6 +652,8 @@ export default {
     copyBubble: 'メッセージをコピー',
     copiedBubble: 'コピーしました',
     copyFailed: 'コピーに失敗しました',
+    referenceMessage: 'メッセージを引用',
+    cancelReference: '引用を解除',
     playSpeech: '音声を読み上げ',
     pauseSpeech: '一時停止',
     resumeSpeech: '再開',

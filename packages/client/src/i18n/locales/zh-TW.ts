@@ -733,6 +733,8 @@ export default {
     copyBubble: '複製訊息',
     copiedBubble: '已複製',
     copyFailed: '複製失敗',
+    referenceMessage: '引用訊息',
+    cancelReference: '取消引用',
     playSpeech: '播放語音',
     pauseSpeech: '暫停',
     resumeSpeech: '繼續',

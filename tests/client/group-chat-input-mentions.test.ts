@@ -54,6 +54,31 @@ describe('GroupChatInput mentions', () => {
     expect(wrapper.find('.mention-dropdown').text()).toContain('@Worker')
   })
 
+  it('shows the active room reference outside the input and can cancel it', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {}
+    const store = useGroupChatStore()
+    store.currentRoomId = 'room-1'
+    store.setMessageReference('room-1', {
+      id: 'message-1',
+      role: 'assistant',
+      content: 'A referenced group response',
+      sender: 'Worker',
+    })
+
+    const wrapper = mount(GroupChatInput, {
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    expect(wrapper.get('.message-reference-preview').text()).toContain('A referenced group response')
+    expect(wrapper.get('.message-reference-preview').element.parentElement?.classList.contains('input-wrapper')).toBe(false)
+
+    await wrapper.get('.message-reference-remove').trigger('click')
+    expect(store.activeMessageReference).toBeNull()
+  })
+
   it('applies the configured desktop input height', async () => {
     const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
     const settingsStore = useSettingsStore()
