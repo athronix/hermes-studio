@@ -1,6 +1,6 @@
 ---
 date: 2026-07-16
-pr: pending
+pr: 2097
 feature: Reasoning effort slider
 impact: Chat reasoning effort is selected from a discrete slider while preserving the existing per-session values, persistence, and run behavior.
 ---
