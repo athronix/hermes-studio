@@ -263,6 +263,13 @@ const rerunningWorkflowNodeId = ref<string | null>(null)
 const showWorkflowRunsPanel = ref(true)
 const selectedWorkflowRunId = ref<string | null>(null)
 const workflowEvidenceExpanded = ref(false)
+const selectedWorkflowEvidenceRow = ref<WorkflowEvidenceRow | null>(null)
+const workflowEvidenceDetailVisible = computed({
+  get: () => selectedWorkflowEvidenceRow.value !== null,
+  set: (visible: boolean) => {
+    if (!visible) selectedWorkflowEvidenceRow.value = null
+  },
+})
 const manuallyDeselectedWorkflowRunIds = ref<Set<string>>(new Set())
 const autoSelectRunningWorkflowIds = ref<Set<string>>(new Set())
 const workflowChatPanelVisible = ref(false)
@@ -522,6 +529,7 @@ const selectedWorkflowEvidenceRows = computed(() => selectedWorkflowRun.value ? 
 
 watch(selectedWorkflowRunId, () => {
   workflowEvidenceExpanded.value = false
+  selectedWorkflowEvidenceRow.value = null
 })
 
 const workflowChatPanelPendingApproval = computed(() => {
@@ -922,6 +930,10 @@ function workflowEvidenceTitle(row: WorkflowEvidenceRow): string {
   }
   if (row.kind === 'loop') return t('workflow.evidence.loopPass', { count: (row.iteration ?? 0) + 1 })
   return row.nodeTitle || row.technicalId
+}
+
+function openWorkflowEvidenceDetail(row: WorkflowEvidenceRow): void {
+  selectedWorkflowEvidenceRow.value = row
 }
 
 function workflowEvidenceStatusLabel(row: WorkflowEvidenceRow): string {
@@ -2655,36 +2667,23 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             <p class="workflow-evidence-intro">{{ t('workflow.evidence.intro') }}</p>
             <div v-if="selectedWorkflowEvidenceRows.length === 0" class="workflow-runs-empty">{{ t('workflow.evidence.empty') }}</div>
             <div v-else class="workflow-evidence-list">
-              <article v-for="row in selectedWorkflowEvidenceRows" :key="`${row.kind}:${row.sequence}:${row.technicalId}`" class="workflow-evidence-row">
+              <article
+                v-for="row in selectedWorkflowEvidenceRows"
+                :key="`${row.kind}:${row.sequence}:${row.technicalId}`"
+                class="workflow-evidence-row"
+                role="button"
+                tabindex="0"
+                :aria-label="workflowEvidenceTitle(row)"
+                @click="openWorkflowEvidenceDetail(row)"
+                @keydown.enter="openWorkflowEvidenceDetail(row)"
+                @keydown.space.prevent="openWorkflowEvidenceDetail(row)"
+              >
                 <div class="workflow-evidence-topline">
                   <span class="workflow-evidence-kind">{{ t(`workflow.evidence.${row.kind}`) }}</span>
                   <span class="workflow-evidence-status">{{ workflowEvidenceStatusLabel(row) }}</span>
                 </div>
                 <strong>{{ workflowEvidenceTitle(row) }}</strong>
                 <span class="workflow-evidence-description">{{ workflowEvidenceDescription(row) }}</span>
-                <details class="workflow-evidence-technical">
-                  <summary>{{ t('workflow.evidence.technical') }}</summary>
-                  <dl>
-                    <dt>{{ t('workflow.evidence.recordId') }}</dt><dd><code>{{ row.technicalId }}</code></dd>
-                    <dt>{{ t('workflow.evidence.sequence') }}</dt><dd>#{{ row.sequence }}</dd>
-                    <dt>{{ t('workflow.evidence.rawStatus') }}</dt><dd>{{ workflowEvidenceRawStatus(row) }}</dd>
-                    <template v-if="row.route">
-                      <dt>{{ t('workflow.evidence.rawRoute') }}</dt><dd>{{ workflowEvidenceRawRoute(row) }}</dd>
-                    </template>
-                    <template v-if="row.reason || row.exitReason">
-                      <dt>{{ t('workflow.evidence.rawReason') }}</dt><dd>{{ workflowEvidenceRawReason(row) }}</dd>
-                    </template>
-                    <template v-if="row.expectedValue">
-                      <dt>{{ t('workflow.evidence.expectedValue') }}</dt><dd><code>{{ row.expectedValue }}</code></dd>
-                    </template>
-                    <template v-if="row.actualValue">
-                      <dt>{{ t('workflow.evidence.actualValue') }}</dt><dd><code>{{ row.actualValue }}</code></dd>
-                    </template>
-                    <template v-if="row.iterationPath !== '—'">
-                      <dt>{{ t('workflow.evidence.iterationPath') }}</dt><dd><code>{{ row.iterationPath }}</code></dd>
-                    </template>
-                  </dl>
-                </details>
               </article>
             </div>
           </template>
@@ -2702,6 +2701,43 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
       </aside>
     </div>
     </main>
+
+    <NModal
+      v-model:show="workflowEvidenceDetailVisible"
+      preset="card"
+      :title="selectedWorkflowEvidenceRow ? workflowEvidenceTitle(selectedWorkflowEvidenceRow) : ''"
+      :style="{ width: 'min(680px, calc(100vw - 32px))' }"
+      data-testid="workflow-evidence-detail-modal"
+    >
+      <div v-if="selectedWorkflowEvidenceRow" class="workflow-evidence-detail">
+        <div class="workflow-evidence-topline">
+          <span class="workflow-evidence-kind">{{ t(`workflow.evidence.${selectedWorkflowEvidenceRow.kind}`) }}</span>
+          <span class="workflow-evidence-status">{{ workflowEvidenceStatusLabel(selectedWorkflowEvidenceRow) }}</span>
+        </div>
+        <p class="workflow-evidence-detail-description">{{ workflowEvidenceDescription(selectedWorkflowEvidenceRow) }}</p>
+        <h3>{{ t('workflow.evidence.technical') }}</h3>
+        <dl>
+          <dt>{{ t('workflow.evidence.recordId') }}</dt><dd><code>{{ selectedWorkflowEvidenceRow.technicalId }}</code></dd>
+          <dt>{{ t('workflow.evidence.sequence') }}</dt><dd>#{{ selectedWorkflowEvidenceRow.sequence }}</dd>
+          <dt>{{ t('workflow.evidence.rawStatus') }}</dt><dd>{{ workflowEvidenceRawStatus(selectedWorkflowEvidenceRow) }}</dd>
+          <template v-if="selectedWorkflowEvidenceRow.route">
+            <dt>{{ t('workflow.evidence.rawRoute') }}</dt><dd>{{ workflowEvidenceRawRoute(selectedWorkflowEvidenceRow) }}</dd>
+          </template>
+          <template v-if="selectedWorkflowEvidenceRow.reason || selectedWorkflowEvidenceRow.exitReason">
+            <dt>{{ t('workflow.evidence.rawReason') }}</dt><dd>{{ workflowEvidenceRawReason(selectedWorkflowEvidenceRow) }}</dd>
+          </template>
+          <template v-if="selectedWorkflowEvidenceRow.expectedValue">
+            <dt>{{ t('workflow.evidence.expectedValue') }}</dt><dd><code>{{ selectedWorkflowEvidenceRow.expectedValue }}</code></dd>
+          </template>
+          <template v-if="selectedWorkflowEvidenceRow.actualValue">
+            <dt>{{ t('workflow.evidence.actualValue') }}</dt><dd><code>{{ selectedWorkflowEvidenceRow.actualValue }}</code></dd>
+          </template>
+          <template v-if="selectedWorkflowEvidenceRow.iterationPath !== '—'">
+            <dt>{{ t('workflow.evidence.iterationPath') }}</dt><dd><code>{{ selectedWorkflowEvidenceRow.iterationPath }}</code></dd>
+          </template>
+        </dl>
+      </div>
+    </NModal>
 
     <NModal :show="workflowImportConfirmVisible" preset="card" :mask-closable="false" @esc="dismissPendingWorkflowImport" @close="dismissPendingWorkflowImport" :title="t('workflow.actions.importWorkflow')" style="width: min(520px, 92vw)">
       <div v-if="workflowImportPreview" class="workflow-create-form">
@@ -3119,18 +3155,21 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
 .workflow-evidence-title > span { margin-left: 4px; color: var(--text-muted); font-weight: 400; }
 .workflow-evidence-intro { flex: 0 0 auto; margin: 0; padding: 0 12px 8px; color: var(--text-muted); font-size: 11px; line-height: 16px; }
 .workflow-evidence-list { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 6px; }
-.workflow-evidence-row { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; padding: 7px 8px; border-radius: 6px; background: rgba(var(--accent-primary-rgb), 0.05); font-size: 11px; color: var(--text-muted); }
+.workflow-evidence-row { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; padding: 7px 8px; border: 1px solid transparent; border-radius: 6px; background: rgba(var(--accent-primary-rgb), 0.05); font-size: 11px; color: var(--text-muted); cursor: pointer; transition: border-color 0.15s ease, background-color 0.15s ease; }
+.workflow-evidence-row:hover { border-color: rgba(var(--accent-primary-rgb), 0.28); background: rgba(var(--accent-primary-rgb), 0.09); }
+.workflow-evidence-row:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
 .workflow-evidence-row strong, .workflow-evidence-description { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-evidence-row strong { color: var(--text-primary); font-size: 12px; }
 .workflow-evidence-topline { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .workflow-evidence-kind { font-weight: 600; }
 .workflow-evidence-status { color: var(--text-secondary); }
-.workflow-evidence-technical { margin-top: 2px; }
-.workflow-evidence-technical summary { width: fit-content; color: var(--text-muted); cursor: pointer; }
-.workflow-evidence-technical dl { margin: 6px 0 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 6px; }
-.workflow-evidence-technical dt { color: var(--text-muted); }
-.workflow-evidence-technical dd { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
-.workflow-evidence-technical code { color: var(--accent-primary); }
+.workflow-evidence-detail { max-height: min(70vh, 680px); overflow-y: auto; color: var(--text-secondary); }
+.workflow-evidence-detail-description { margin: 12px 0 18px; color: var(--text-primary); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-evidence-detail h3 { margin: 0 0 10px; color: var(--text-primary); font-size: 13px; }
+.workflow-evidence-detail dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; }
+.workflow-evidence-detail dt { color: var(--text-muted); }
+.workflow-evidence-detail dd { min-width: 0; margin: 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-evidence-detail code { color: var(--accent-primary); white-space: inherit; overflow-wrap: inherit; }
 
 .workflow-create-form {
   display: flex;
