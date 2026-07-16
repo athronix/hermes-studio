@@ -1,6 +1,6 @@
 ---
 date: 2026-07-16
-pr: pending
+pr: 2098
 feature: Single-chat and group-chat message references
 impact: Users can reference a completed message in their next turn without changing either message database schema or legacy history loading.
 ---
