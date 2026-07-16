@@ -24,4 +24,12 @@ describe('client style system', () => {
     expect(theme).toContain("borderRadius: '8px'")
     expect(theme).toContain("borderRadiusSmall: '6px'")
   })
+
+  it('keeps direct-chat and group-chat composer backgrounds aligned in dark mode', () => {
+    const chatInput = readClientFile('components/hermes/chat/ChatInput.vue')
+    const groupChatInput = readClientFile('components/hermes/group-chat/GroupChatInput.vue')
+
+    expect(chatInput.match(/background-color: #333333;/g)).toHaveLength(2)
+    expect(groupChatInput.match(/background-color: #333333;/g)).toHaveLength(2)
+  })
 })

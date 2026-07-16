@@ -580,6 +580,10 @@ function isImage(type: string): boolean {
     border-top: 0;
     background-color: $bg-card;
     flex-shrink: 0;
+
+    .dark & {
+        background-color: #333333;
+    }
 }
 
 .input-top-bar {
@@ -781,7 +785,7 @@ function isImage(type: string): boolean {
     }
 
     .dark & {
-        background-color: $bg-card;
+        background-color: #333333;
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
     }
 }
