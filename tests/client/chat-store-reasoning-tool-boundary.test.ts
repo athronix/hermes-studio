@@ -549,6 +549,35 @@ describe('chat store reasoning/tool boundaries', () => {
     expect(session.apiMode).toBe('chat_completions')
   })
 
+  it('keeps a local-only session workspace when switching models before the first message', async () => {
+    const store = useChatStore()
+    const session = makeSession()
+    session.isLocalOnly = true
+    session.workspace = 'D:\\projects\\hermes'
+    session.provider = 'deepseek'
+    session.model = 'deepseek-chat'
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    const ok = await store.switchSessionModel('deepseek-reasoner', 'deepseek', 'session-1')
+
+    expect(ok).toBe(true)
+    expect(sessionsApi.setSessionModel).not.toHaveBeenCalled()
+    expect(session.model).toBe('deepseek-reasoner')
+    expect(session.provider).toBe('deepseek')
+    expect(session.workspace).toBe('D:\\projects\\hermes')
+    expect(session.isLocalOnly).toBe(true)
+
+    await store.sendMessage('inspect this workspace')
+
+    expect(chatApi.startRunViaSocket.mock.calls[0][0]).toEqual(expect.objectContaining({
+      session_id: 'session-1',
+      model: 'deepseek-reasoner',
+      provider: 'deepseek',
+      workspace: 'D:\\projects\\hermes',
+    }))
+  })
 
   it('preserves a scoped coding-agent API mode when reselecting the same provider', async () => {
     const store = useChatStore()

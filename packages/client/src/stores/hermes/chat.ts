@@ -1490,8 +1490,11 @@ export const useChatStore = defineStore('chat', () => {
       ? (shouldPreserveRuntimeApiMode(target) ? target?.apiMode : undefined) ||
         (shouldPreserveRuntimeApiMode(activeTarget) ? activeTarget?.apiMode : undefined)
       : undefined)
-    const ok = await setSessionModel(targetId, modelId, provider || '', preservedApiMode)
-    if (!ok) return false
+    const isLocalOnly = target?.isLocalOnly === true || activeTarget?.isLocalOnly === true
+    if (!isLocalOnly) {
+      const ok = await setSessionModel(targetId, modelId, provider || '', preservedApiMode)
+      if (!ok) return false
+    }
     if (target) {
       target.model = modelId
       target.provider = provider || ''
