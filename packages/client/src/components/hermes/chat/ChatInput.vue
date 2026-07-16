@@ -7,7 +7,7 @@ import { useSettingsStore } from '@/stores/hermes/settings'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
-import { NButton, NTooltip, NModal, NInputNumber, NPopselect, NDropdown, useMessage, type DropdownOption } from 'naive-ui'
+import { NButton, NTooltip, NModal, NInputNumber, NPopover, NSlider, NDropdown, useMessage, type DropdownOption } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
@@ -57,6 +57,24 @@ const reasoningEffortOptions = computed(() => [
 const currentReasoningEffort = computed<string>(() =>
   chatStore.activeSession?.reasoningEffort || ''
 )
+const reasoningEffortSliderValue = computed(() => {
+  const index = reasoningEffortOptions.value.findIndex(option => option.value === currentReasoningEffort.value)
+  return index >= 0 ? index : 0
+})
+const reasoningEffortAccentColors = [
+  '#94a3b8',
+  '#2ac8e9',
+  '#2bd9b4',
+  '#4ed786',
+  '#b9d93a',
+  '#f9c33c',
+  '#f77734',
+  '#ef4444',
+] as const
+const reasoningEffortAccentStyle = computed(() => ({
+  '--reasoning-effort-accent-color': reasoningEffortAccentColors[reasoningEffortSliderValue.value]
+    || reasoningEffortAccentColors[0],
+}))
 const isMoaSession = computed(() => chatStore.activeSession?.provider === 'moa')
 const reasoningEffortLabel = computed<string>(() => {
   const v = currentReasoningEffort.value
@@ -68,6 +86,14 @@ function onReasoningEffortChange(value: string | null | undefined) {
   const sid = chatStore.activeSessionId
   if (!sid) return
   chatStore.setSessionReasoningEffort(sid, value || '')
+}
+function reasoningEffortSliderLabel(value: number) {
+  return reasoningEffortOptions.value[Math.round(value)]?.label || reasoningEffortLabel.value
+}
+function onReasoningEffortSliderChange(value: number | [number, number]) {
+  const numericValue = Array.isArray(value) ? value[0] : value
+  const option = reasoningEffortOptions.value[Math.round(numericValue)]
+  if (option) onReasoningEffortChange(option.value)
 }
 
 function handleModelButtonClick() {
@@ -1110,35 +1136,57 @@ function isImage(type: string): boolean {
             {{ t('chat.attachFiles') }}
           </NTooltip>
 
-          <NPopselect
+          <NPopover
             v-if="!isMoaSession"
-            :value="currentReasoningEffort"
-            :options="reasoningEffortOptions"
             trigger="click"
-            @update:value="onReasoningEffortChange"
+            placement="top-start"
           >
-            <NTooltip trigger="hover" :disabled="isMobileViewport">
-              <template #trigger>
-                <NButton
-                  quaternary
-                  size="tiny"
-                  class="reasoning-effort-button"
-                  :class="{ active: !!currentReasoningEffort }"
-                  :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
-                >
-                  <template #icon>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
-                      <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
-                    </svg>
-                  </template>
-                  <span class="reasoning-effort-label">{{ reasoningEffortLabel }}</span>
-                  <svg class="toolbar-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
-                </NButton>
-              </template>
-              {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
-            </NTooltip>
-          </NPopselect>
+            <template #trigger>
+              <NTooltip trigger="hover" :disabled="isMobileViewport">
+                <template #trigger>
+                  <NButton
+                    quaternary
+                    size="tiny"
+                    class="reasoning-effort-button"
+                    :class="{ active: !!currentReasoningEffort }"
+                    :style="reasoningEffortAccentStyle"
+                    :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
+                  >
+                    <template #icon>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
+                        <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
+                      </svg>
+                    </template>
+                    <span class="reasoning-effort-label">{{ reasoningEffortLabel }}</span>
+                    <svg class="toolbar-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+                  </NButton>
+                </template>
+                {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
+              </NTooltip>
+            </template>
+
+            <div class="reasoning-effort-slider-popover" :style="reasoningEffortAccentStyle">
+              <div class="reasoning-effort-slider-heading">
+                <span>{{ t('chat.reasoningEffort.tooltip') }}</span>
+                <strong>{{ reasoningEffortLabel }}</strong>
+              </div>
+              <NSlider
+                class="reasoning-effort-slider"
+                :class="{ 'reasoning-effort-slider--max': currentReasoningEffort === 'max' }"
+                :value="reasoningEffortSliderValue"
+                :min="0"
+                :max="reasoningEffortOptions.length - 1"
+                :step="1"
+                :format-tooltip="reasoningEffortSliderLabel"
+                @update:value="onReasoningEffortSliderChange"
+              />
+              <div class="reasoning-effort-slider-range" aria-hidden="true">
+                <span>{{ reasoningEffortOptions[0].label }}</span>
+                <span>{{ reasoningEffortOptions[reasoningEffortOptions.length - 1].label }}</span>
+              </div>
+            </div>
+          </NPopover>
 
           <NDropdown
             trigger="click"
@@ -1488,7 +1536,7 @@ function isImage(type: string): boolean {
   padding: 0 4px 0 6px;
 
   &.active {
-    color: #4caf50;
+    color: var(--reasoning-effort-accent-color);
   }
 
   :deep(.n-button__content) {
@@ -1504,6 +1552,139 @@ function isImage(type: string): boolean {
   text-overflow: ellipsis;
   vertical-align: top;
   white-space: nowrap;
+}
+
+.reasoning-effort-slider-popover {
+  width: min(320px, calc(100vw - 64px));
+  padding: 4px 2px 2px;
+}
+
+.reasoning-effort-slider-heading,
+.reasoning-effort-slider-range {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.reasoning-effort-slider-heading {
+  margin-bottom: 10px;
+  color: $text-secondary;
+  font-size: 12px;
+
+  strong {
+    color: var(--reasoning-effort-accent-color);
+    font-weight: 600;
+  }
+}
+
+.reasoning-effort-slider {
+  --n-handle-size: 24px !important;
+  --n-rail-height: 10px !important;
+  --reasoning-effort-gradient-width: min(314px, calc(100vw - 70px));
+  margin: 0 3px;
+
+  :deep(.n-slider-rail) {
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  :deep(.n-slider-rail__fill) {
+    background: linear-gradient(
+      90deg,
+      #38bdf8 0%,
+      #22d3ee 20%,
+      #34d399 40%,
+      #facc15 62%,
+      #fb923c 82%,
+      #ef4444 100%
+    );
+    background-position: left center;
+    background-repeat: no-repeat;
+    background-size: var(--reasoning-effort-gradient-width) 100%;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.24);
+  }
+
+  :deep(.n-slider-handle) {
+    border: 2px solid rgba(255, 255, 255, 0.92);
+    background: #f8fafc;
+    box-shadow: 0 2px 8px rgba(24, 18, 44, 0.38);
+  }
+}
+
+.reasoning-effort-slider--max {
+  :deep(.n-slider-handle) {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    border-radius: 50%;
+    border-color: rgba(255, 255, 255, 0.96);
+    background:
+      radial-gradient(circle at 24% 24%, #38bdf8 0 14%, transparent 34%),
+      radial-gradient(circle at 78% 22%, #facc15 0 15%, transparent 36%),
+      radial-gradient(circle at 78% 78%, #ef4444 0 16%, transparent 38%),
+      radial-gradient(circle at 22% 76%, #34d399 0 15%, transparent 36%),
+      conic-gradient(from 30deg, #22d3ee, #34d399, #facc15, #fb923c, #ef4444, #a855f7, #38bdf8, #22d3ee);
+    background-size: 150% 150%, 145% 145%, 155% 155%, 145% 145%, 180% 180%;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.38),
+      0 0 12px rgba(239, 68, 68, 0.46),
+      0 3px 9px rgba(24, 18, 44, 0.44);
+    animation: reasoning-effort-max-liquid 3.6s ease-in-out infinite;
+  }
+
+  :deep(.n-slider-handle::after) {
+    content: '';
+    position: absolute;
+    inset: 2px 5px 11px 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.5);
+    filter: blur(1px);
+    animation: reasoning-effort-max-highlight 2.8s ease-in-out infinite;
+  }
+}
+
+@keyframes reasoning-effort-max-liquid {
+  0%, 100% {
+    background-position: 0% 20%, 100% 0%, 100% 100%, 0% 100%, 50% 50%;
+    background-size: 150% 150%, 145% 145%, 155% 155%, 145% 145%, 180% 180%;
+  }
+
+  33% {
+    background-position: 65% 0%, 55% 70%, 30% 100%, 0% 35%, 100% 35%;
+    background-size: 175% 135%, 135% 175%, 165% 140%, 140% 165%, 210% 170%;
+  }
+
+  66% {
+    background-position: 100% 70%, 20% 100%, 0% 35%, 75% 0%, 0% 70%;
+    background-size: 135% 175%, 170% 140%, 140% 170%, 170% 135%, 170% 210%;
+  }
+}
+
+@keyframes reasoning-effort-max-highlight {
+  0%, 100% {
+    opacity: 0.72;
+    transform: translate(-1px, -1px) rotate(0deg);
+  }
+
+  50% {
+    opacity: 0.42;
+    transform: translate(3px, 2px) rotate(180deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-effort-slider--max {
+    :deep(.n-slider-handle),
+    :deep(.n-slider-handle::after) {
+      animation: none;
+    }
+  }
+}
+
+.reasoning-effort-slider-range {
+  margin-top: 4px;
+  color: $text-muted;
+  font-size: 10px;
 }
 
 .toolbar-chevron {
@@ -1620,6 +1801,14 @@ function isImage(type: string): boolean {
   .reasoning-effort-label,
   .auto-play-speech-switch {
     display: none;
+  }
+
+  .reasoning-effort-slider-popover {
+    width: min(220px, calc(100vw - 96px));
+  }
+
+  .reasoning-effort-slider {
+    --reasoning-effort-gradient-width: min(214px, calc(100vw - 102px));
   }
 
   .input-model-button {
