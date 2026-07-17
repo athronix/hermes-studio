@@ -54,4 +54,12 @@ describe('client style system', () => {
     expect(pageSidebarNav).toContain('background: $bg-card-hover;')
     expect(pageSidebarNav).toContain('inset 0 0 0 1px $border-color')
   })
+
+  it('keeps the coding agents page aligned with the app main surface', () => {
+    const codingAgentsView = readClientFile('views/hermes/CodingAgentsView.vue')
+
+    expect(codingAgentsView).toMatch(
+      /\.coding-agents-content\s*\{[^}]*background: \$bg-main-surface;/s,
+    )
+  })
 })
