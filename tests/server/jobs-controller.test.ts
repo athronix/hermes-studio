@@ -6,11 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const testState = vi.hoisted(() => ({
   profileDir: '',
   execFile: vi.fn(),
+  resolvedProfiles: [] as string[],
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileName: () => 'default',
-  getProfileDir: () => testState.profileDir || '/fake/home/.hermes',
+  getProfileDir: (profile: string) => {
+    testState.resolvedProfiles.push(profile)
+    return testState.profileDir || '/fake/home/.hermes'
+  },
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-path', () => ({
@@ -24,7 +28,7 @@ vi.mock('child_process', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
-import { create, pause, remove, resume, run as runJob, update } from '../../packages/server/src/controllers/hermes/jobs'
+import { create, deliveryTargets, pause, remove, resume, run as runJob, update } from '../../packages/server/src/controllers/hermes/jobs'
 
 function createMockCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
@@ -68,6 +72,7 @@ describe('Hermes jobs controller', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    testState.resolvedProfiles = []
     tempDir = mkdtempSync(join(tmpdir(), 'hermes-web-ui-jobs-test-'))
     testState.profileDir = tempDir
     testState.execFile.mockImplementation((_bin, _args, _opts, cb) => {
@@ -238,6 +243,56 @@ describe('Hermes jobs controller', () => {
     const persisted = JSON.parse(readFileSync(join(tempDir, 'cron', 'jobs.json'), 'utf-8'))
     expect(persisted.jobs[0].provider).toBe('anthropic')
     expect(persisted.jobs[0].model).toBe('claude-sonnet-4')
+  })
+
+  it('returns explicit delivery targets from the selected profile channel directory', () => {
+    writeFileSync(join(tempDir, 'channel_directory.json'), JSON.stringify({
+      updated_at: '2026-07-17T09:15:00+08:00',
+      platforms: {
+        weixin: [
+          { id: 'wx-user@im.wechat', name: '微信私聊', type: 'dm', thread_id: null },
+          { id: 'wx-user@im.wechat', name: '重复项', type: 'dm', thread_id: null },
+        ],
+        feishu: [
+          { id: 'oc_example', name: '研发群', type: 'group' },
+          { id: '', name: 'invalid' },
+        ],
+      },
+    }))
+    const ctx = createMockCtx({ state: { profile: { name: 'research' } } })
+
+    deliveryTargets(ctx)
+
+    expect(testState.resolvedProfiles).toContain('research')
+    expect(ctx.body).toEqual({
+      updated_at: '2026-07-17T09:15:00+08:00',
+      targets: [
+        {
+          platform: 'feishu',
+          id: 'oc_example',
+          name: '研发群',
+          type: 'group',
+          thread_id: null,
+          value: 'feishu:oc_example',
+        },
+        {
+          platform: 'weixin',
+          id: 'wx-user@im.wechat',
+          name: '微信私聊',
+          type: 'dm',
+          thread_id: null,
+          value: 'weixin:wx-user@im.wechat',
+        },
+      ],
+    })
+  })
+
+  it('returns an empty delivery target list when the profile directory is unavailable', () => {
+    const ctx = createMockCtx()
+
+    deliveryTargets(ctx)
+
+    expect(ctx.body).toEqual({ updated_at: null, targets: [] })
   })
 
 })

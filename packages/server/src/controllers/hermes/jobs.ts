@@ -10,6 +10,15 @@ const TIMEOUT_MS = 60_000
 
 type JobRecord = Record<string, any>
 
+interface DeliveryTargetRecord {
+  platform: string
+  id: string
+  name: string
+  type: string | null
+  thread_id: string | null
+  value: string
+}
+
 function resolveProfile(ctx: Context): string {
   const requestedProfile = ctx.state?.profile?.name
   return requestedProfile || getActiveProfileName()
@@ -21,6 +30,58 @@ function resolveProfileDir(profile: string): string {
 
 function getJobsPath(profile: string): string {
   return join(resolveProfileDir(profile), 'cron', 'jobs.json')
+}
+
+function getChannelDirectoryPath(profile: string): string {
+  return join(resolveProfileDir(profile), 'channel_directory.json')
+}
+
+function readDeliveryTargets(profile: string): { updated_at: string | null; targets: DeliveryTargetRecord[] } {
+  const directoryPath = getChannelDirectoryPath(profile)
+  if (!existsSync(directoryPath)) return { updated_at: null, targets: [] }
+
+  try {
+    const parsed = JSON.parse(readFileSync(directoryPath, 'utf-8'))
+    const platforms = parsed?.platforms
+    if (!platforms || typeof platforms !== 'object' || Array.isArray(platforms)) {
+      return { updated_at: null, targets: [] }
+    }
+
+    const targets: DeliveryTargetRecord[] = []
+    const seen = new Set<string>()
+    for (const [rawPlatform, rawChannels] of Object.entries(platforms)) {
+      const platform = String(rawPlatform || '').trim().toLowerCase()
+      if (!platform || !Array.isArray(rawChannels)) continue
+
+      for (const rawChannel of rawChannels) {
+        if (!rawChannel || typeof rawChannel !== 'object') continue
+        const channel = rawChannel as Record<string, unknown>
+        const id = String(channel.id ?? channel.chat_id ?? '').trim()
+        if (!id) continue
+
+        const value = `${platform}:${id}`
+        if (seen.has(value)) continue
+        seen.add(value)
+
+        const name = String(channel.name ?? id).trim() || id
+        const type = channel.type == null ? null : String(channel.type).trim() || null
+        const threadId = channel.thread_id == null ? null : String(channel.thread_id).trim() || null
+        targets.push({ platform, id, name, type, thread_id: threadId, value })
+      }
+    }
+
+    targets.sort((a, b) => {
+      const platformOrder = a.platform.localeCompare(b.platform)
+      return platformOrder || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
+    })
+
+    const updatedAt = typeof parsed.updated_at === 'string' && parsed.updated_at.trim()
+      ? parsed.updated_at
+      : null
+    return { updated_at: updatedAt, targets }
+  } catch {
+    return { updated_at: null, targets: [] }
+  }
 }
 
 function normalizeJob(job: JobRecord): JobRecord {
@@ -238,6 +299,10 @@ export async function list(ctx: Context) {
   const jobs = readJobs(profile, includeDisabled)
   const config = await readConfigYamlForProfile(profile)
   ctx.body = { jobs: resolveJobDefaults(jobs, config) }
+}
+
+export function deliveryTargets(ctx: Context) {
+  ctx.body = readDeliveryTargets(resolveProfile(ctx))
 }
 
 export async function get(ctx: Context) {

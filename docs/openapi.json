@@ -4824,6 +4824,32 @@
         }
       }
     },
+    "/api/hermes/jobs/delivery-targets": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get delivery-targets",
+        "description": "GET /api/hermes/jobs/delivery-targets",
+        "operationId": "deliveryTargets",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
     "/api/hermes/jobs/{id}": {
       "get": {
         "tags": [

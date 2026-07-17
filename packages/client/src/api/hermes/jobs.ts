@@ -97,6 +97,20 @@ export interface JobFormValues {
   provider: string
 }
 
+export interface JobDeliveryTarget {
+  platform: string
+  id: string
+  name: string
+  type: string | null
+  thread_id: string | null
+  value: string
+}
+
+export interface JobDeliveryTargetsResponse {
+  updated_at: string | null
+  targets: JobDeliveryTarget[]
+}
+
 function unwrap(res: { job: Job }): Job {
   return res.job
 }
@@ -162,6 +176,10 @@ export function buildJobUpdateRequest(original: Job, form: JobFormValues): Updat
 export async function listJobs(): Promise<Job[]> {
   const res = await request<{ jobs: Job[] }>('/api/hermes/jobs?include_disabled=true')
   return res.jobs
+}
+
+export async function listJobDeliveryTargets(): Promise<JobDeliveryTargetsResponse> {
+  return request<JobDeliveryTargetsResponse>('/api/hermes/jobs/delivery-targets')
 }
 
 export async function getJob(jobId: string): Promise<Job> {
