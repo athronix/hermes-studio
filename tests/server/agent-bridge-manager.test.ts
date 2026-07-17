@@ -43,6 +43,38 @@ describe('agent bridge manager command resolution', () => {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true })
   })
 
+  it('prefers the Hermes Studio bundled runtime env over a user-installed Hermes command', async () => {
+    const bundledRoot = join(tempDir, 'studio-runtime')
+    const bundledPython = join(bundledRoot, 'bin', 'python3')
+    const installedBin = join(tempDir, 'user-install', 'bin')
+    const installedPython = join(installedBin, 'python3')
+    const installedHermes = join(installedBin, 'hermes')
+    const studioHome = join(tempDir, 'studio-home')
+    mkdirSync(join(bundledRoot, 'bin'), { recursive: true })
+    mkdirSync(installedBin, { recursive: true })
+    mkdirSync(studioHome, { recursive: true })
+    writeFileSync(join(bundledRoot, 'run_agent.py'), '')
+    writeFileSync(bundledPython, '#!/bin/sh\n')
+    writeFileSync(installedPython, '#!/bin/sh\n')
+    writeFileSync(installedHermes, `#!${installedPython}\n`)
+    chmodSync(bundledPython, 0o755)
+    chmodSync(installedPython, 0o755)
+    chmodSync(installedHermes, 0o755)
+    process.env.HERMES_AGENT_ROOT = bundledRoot
+    process.env.HERMES_AGENT_BRIDGE_PYTHON = bundledPython
+    process.env.HERMES_BIN = installedHermes
+    process.env.HERMES_HOME = studioHome
+
+    const { resolveAgentBridgeCommand } = await import('../../packages/server/src/services/hermes/agent-bridge/manager')
+
+    expect(resolveAgentBridgeCommand()).toEqual({
+      command: bundledPython,
+      argsPrefix: [],
+      agentRoot: bundledRoot,
+      hermesHome: studioHome,
+    })
+  })
+
   it('uses the installed hermes command Python when no source root exists', async () => {
     const binDir = join(tempDir, 'bin')
     const homeDir = join(tempDir, 'home')

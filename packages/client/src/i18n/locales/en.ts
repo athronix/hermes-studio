@@ -626,6 +626,7 @@ export default {
     hermesHistory: 'Hermes History',
     historyScopeHint: 'Read-only Hermes history sessions for the current profile, grouped by source.',
     noSessions: 'No sessions',
+    loadMoreSessions: 'Load more sessions',
     searchTitle: 'Search Sessions',
     searchSubtitle: 'Search by title or message content',
     searchScope: 'Search scope: Web UI local session database only. Read-only Hermes history sessions are not included.',

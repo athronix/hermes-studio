@@ -8,6 +8,7 @@ const getConversationDetailFromDbMock = vi.fn()
 const listConversationSummariesMock = vi.fn()
 const getConversationDetailMock = vi.fn()
 const listSessionSummariesMock = vi.fn()
+const listSessionSummaryGroupsMock = vi.fn()
 const getSessionDetailFromDbMock = vi.fn()
 const getSessionDetailFromDbWithProfileMock = vi.fn()
 const getExactSessionDetailFromDbWithProfileMock = vi.fn()
@@ -65,6 +66,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   listSessionSummaries: listSessionSummariesMock,
+  listSessionSummaryGroups: listSessionSummaryGroupsMock,
   searchSessionSummaries: vi.fn(),
   getSessionDetailFromDb: getSessionDetailFromDbMock,
   getSessionDetailFromDbWithProfile: getSessionDetailFromDbWithProfileMock,
@@ -153,6 +155,7 @@ describe('session conversations controller', () => {
     listConversationSummariesMock.mockReset()
     getConversationDetailMock.mockReset()
     listSessionSummariesMock.mockReset()
+    listSessionSummaryGroupsMock.mockReset()
     getSessionDetailFromDbMock.mockReset()
     getSessionDetailFromDbWithProfileMock.mockReset()
     getExactSessionDetailFromDbWithProfileMock.mockReset()
@@ -839,6 +842,88 @@ describe('session conversations controller', () => {
     ])
   })
 
+  it('returns the first page of every Hermes history source group', async () => {
+    localListSessionsMock.mockReturnValue([])
+    listSessionSummaryGroupsMock.mockResolvedValue({
+      groups: [
+        {
+          source: 'cli',
+          sessions: [
+            { id: 'cli-1', source: 'cli', started_at: 3, last_active: 3 },
+            { id: 'cli-2', source: 'cli', started_at: 2, last_active: 2 },
+          ],
+          total: 3,
+          hasMore: true,
+        },
+        {
+          source: 'weixin',
+          sessions: [{ id: 'wx-1', source: 'weixin', started_at: 1, last_active: 1 }],
+          total: 1,
+          hasMore: false,
+        },
+        {
+          source: 'api_server',
+          sessions: [{ id: 'api-1', source: 'api_server', started_at: 4, last_active: 4 }],
+          total: 1,
+          hasMore: false,
+        },
+      ],
+      included: [{ id: 'cli-pinned', source: 'cli', started_at: 1, last_active: 1 }],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: 'travel', limit: '2', include: ['cli-pinned'] },
+      state: {},
+      body: null,
+    }
+
+    await mod.listHermesSessionGroups(ctx)
+
+    expect(listSessionSummaryGroupsMock).toHaveBeenCalledWith(2, 'travel', ['cli-pinned'])
+    expect(ctx.body).toEqual({
+      groups: [
+        expect.objectContaining({ source: 'cli', hasMore: true, sessions: [expect.objectContaining({ id: 'cli-1' }), expect.objectContaining({ id: 'cli-2' })] }),
+        expect.objectContaining({ source: 'weixin', hasMore: false, sessions: [expect.objectContaining({ id: 'wx-1' })] }),
+        expect.objectContaining({ source: 'api_server', hasMore: false, sessions: [expect.objectContaining({ id: 'api-1' })] }),
+      ],
+      included: [expect.objectContaining({ id: 'cli-pinned', profile: 'travel' })],
+    })
+  })
+
+  it('paginates one Hermes history source without mixing other local sources', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'cli-local', source: 'cli', started_at: 4, last_active: 4 },
+    ])
+    listSessionSummariesMock.mockResolvedValue([
+      { id: 'cli-1', source: 'cli', started_at: 5, last_active: 5 },
+      { id: 'cli-2', source: 'cli', started_at: 3, last_active: 3 },
+      { id: 'cli-3', source: 'cli', started_at: 2, last_active: 2 },
+      { id: 'cli-4', source: 'cli', started_at: 1, last_active: 1 },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: 'travel', source: 'cli', offset: '1', limit: '2' },
+      state: {},
+      body: null,
+    }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', 'cli', 4)
+    expect(listSessionSummariesMock).toHaveBeenCalledWith('cli', 4, 'travel')
+    expect(ctx.body).toMatchObject({
+      sessions: [
+        expect.objectContaining({ id: 'cli-local' }),
+        expect.objectContaining({ id: 'cli-2' }),
+      ],
+      hasMore: true,
+      offset: 1,
+      limit: 2,
+    })
+  })
+
   it('keeps archived coding-agent sessions visible in Hermes history', async () => {
     localListSessionsMock.mockReturnValue([{
       id: 'codex-archived',
@@ -1124,7 +1209,7 @@ describe('session conversations controller', () => {
     })
   })
 
-  it('does not return api_server sessions from the Hermes history detail endpoint', async () => {
+  it('returns api_server sessions from the local store in Hermes history', async () => {
     localGetSessionDetailMock.mockReturnValue({
       id: 'api-1',
       source: 'api_server',
@@ -1139,9 +1224,14 @@ describe('session conversations controller', () => {
     await mod.getHermesSession(ctx)
 
     expect(localGetSessionDetailMock).toHaveBeenCalledWith('api-1')
-    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('api-1')
-    expect(ctx.status).toBe(404)
-    expect(ctx.body).toEqual({ error: 'Session not found' })
+    expect(getSessionDetailFromDbMock).not.toHaveBeenCalled()
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect(ctx.body.session).toMatchObject({
+      id: 'api-1',
+      source: 'api_server',
+      title: 'API Server',
+      messages: [{ content: 'local api' }],
+    })
   })
 
   it('merges local usage with only state.db sessions missing from the local ledger', async () => {

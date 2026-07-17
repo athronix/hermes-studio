@@ -75,6 +75,24 @@ export interface SessionSearchResult extends SessionSummary {
   rank: number
 }
 
+export interface HermesSessionGroupPage {
+  source: string
+  sessions: SessionSummary[]
+  hasMore: boolean
+}
+
+export interface HermesSessionGroupsResult {
+  groups: HermesSessionGroupPage[]
+  included: SessionSummary[]
+}
+
+export interface HermesSessionPage {
+  sessions: SessionSummary[]
+  hasMore: boolean
+  offset: number
+  limit: number
+}
+
 export interface HermesMessage {
   id: number
   session_id: string
@@ -229,7 +247,7 @@ export async function copySessionWorkspaceFile(sessionId: string, srcPath: strin
 }
 
 /**
- * Fetch Hermes sessions only (exclude api_server source)
+ * Fetch Hermes History sessions, including API Server source.
  */
 export async function fetchHermesSessions(source?: string, limit?: number, profile?: string | null): Promise<SessionSummary[]> {
   const params = new URLSearchParams()
@@ -239,6 +257,32 @@ export async function fetchHermesSessions(source?: string, limit?: number, profi
   const query = params.toString()
   const res = await request<{ sessions: SessionSummary[] }>(`/api/hermes/sessions/hermes${query ? `?${query}` : ''}`)
   return res.sessions
+}
+
+export async function fetchHermesSessionGroups(
+  limit: number,
+  profile?: string | null,
+  includedSessionIds: string[] = [],
+): Promise<HermesSessionGroupsResult> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (profile) params.set('profile', profile)
+  for (const sessionId of includedSessionIds) params.append('include', sessionId)
+  return request<HermesSessionGroupsResult>(`/api/hermes/sessions/hermes/groups?${params}`)
+}
+
+export async function fetchHermesSessionPage(
+  source: string,
+  offset: number,
+  limit: number,
+  profile?: string | null,
+): Promise<HermesSessionPage> {
+  const params = new URLSearchParams({
+    source,
+    offset: String(offset),
+    limit: String(limit),
+  })
+  if (profile) params.set('profile', profile)
+  return request<HermesSessionPage>(`/api/hermes/sessions/hermes?${params}`)
 }
 
 export async function searchSessions(q: string, source?: string, limit?: number, profile?: string): Promise<SessionSearchResult[]> {
@@ -296,7 +340,7 @@ export async function fetchSessionMessagesPage(
 }
 
 /**
- * Fetch Hermes session detail only (exclude api_server source)
+ * Fetch Hermes History session detail, including API Server source.
  */
 export async function fetchHermesSession(id: string, profile?: string | null): Promise<SessionDetail | null> {
   try {

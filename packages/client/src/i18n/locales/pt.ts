@@ -571,6 +571,7 @@ export default {
     hermesHistory: 'Histórico Hermes',
     historyScopeHint: 'Sessões do histórico Hermes do perfil atual, somente leitura, agrupadas por origem.',
     noSessions: 'Sem sessoes',
+    loadMoreSessions: 'Carregar mais sessões',
     newChat: 'Novo chat',
     agent: 'Agent',
     approvalKicker: 'Permissão do terminal',

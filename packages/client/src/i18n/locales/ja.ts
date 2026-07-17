@@ -571,6 +571,7 @@ export default {
     hermesHistory: 'Hermes 履歴',
     historyScopeHint: '現在の profile の Hermes 履歴セッションをソース別に読み取り専用で表示します。',
     noSessions: 'セッションがありません',
+    loadMoreSessions: 'さらにセッションを読み込む',
     newChat: '新しいチャット',
     agent: 'Agent',
     approvalKicker: 'ターミナル権限',

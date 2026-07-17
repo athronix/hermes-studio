@@ -624,6 +624,7 @@ export default {
     hermesHistory: 'Hermes 歷史',
     historyScopeHint: '這裡按來源以唯讀方式查看目前 profile 的 Hermes 歷史工作階段。',
     noSessions: '目前無工作階段',
+    loadMoreSessions: '載入更多工作階段',
     searchTitle: '搜尋工作階段',
     searchSubtitle: '依標題或訊息內容搜尋',
     searchScope: '搜尋範圍：僅 Web UI 本地工作階段資料庫；不包含唯讀 Hermes 歷史工作階段。',
