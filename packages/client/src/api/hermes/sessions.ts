@@ -1,5 +1,6 @@
 import { request, getApiKey, getBaseUrlValue } from '../client'
 import type { ProviderApiMode } from './system'
+import { fetchAuthenticatedBlob, saveBlob } from './binary-content'
 
 export interface SessionSummary {
   id: string
@@ -192,6 +193,41 @@ export async function readSessionWorkspaceFile(
   return request<{ content: string; path: string; size: number }>(
     `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/read?${params}`,
   )
+}
+
+export async function fetchSessionWorkspaceFileBlob(
+  sessionId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const params = new URLSearchParams({ path })
+  return fetchAuthenticatedBlob(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/content?${params}`,
+    { signal },
+  )
+}
+
+export async function fetchSessionWorkspaceFileText(
+  sessionId: string,
+  path: string,
+): Promise<{ content: string; size: number }> {
+  const params = new URLSearchParams({ path, text: '1' })
+  const blob = await fetchAuthenticatedBlob(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/content?${params}`,
+  )
+  return { content: await blob.text(), size: blob.size }
+}
+
+export async function downloadSessionWorkspaceFile(
+  sessionId: string,
+  path: string,
+  fileName: string,
+): Promise<void> {
+  const params = new URLSearchParams({ path, download: '1' })
+  const blob = await fetchAuthenticatedBlob(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/content?${params}`,
+  )
+  saveBlob(blob, fileName)
 }
 
 export async function listSessionWorkspaceFiles(

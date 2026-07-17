@@ -32,6 +32,7 @@ const listWorkspaceRunChangesMock = vi.fn(async (ctx: any) => { ctx.body = { cha
 const getWorkspaceRunChangeFileMock = vi.fn(async (ctx: any) => { ctx.body = { file: null } })
 const listWorkspaceFilesMock = vi.fn(async (ctx: any) => { ctx.body = { entries: [], path: '' } })
 const readWorkspaceFileMock = vi.fn(async (ctx: any) => { ctx.body = { content: '' } })
+const readWorkspaceFileContentMock = vi.fn(async (ctx: any) => { ctx.body = Buffer.from('content') })
 const writeWorkspaceFileMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const mkdirWorkspaceFileMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const deleteWorkspaceFileMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
@@ -71,6 +72,7 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   getWorkspaceRunChangeFile: getWorkspaceRunChangeFileMock,
   listWorkspaceFiles: listWorkspaceFilesMock,
   readWorkspaceFile: readWorkspaceFileMock,
+  readWorkspaceFileContent: readWorkspaceFileContentMock,
   writeWorkspaceFile: writeWorkspaceFileMock,
   mkdirWorkspaceFile: mkdirWorkspaceFileMock,
   deleteWorkspaceFile: deleteWorkspaceFileMock,
@@ -106,6 +108,7 @@ describe('session routes', () => {
     getWorkspaceRunChangeFileMock.mockClear()
     listWorkspaceFilesMock.mockClear()
     readWorkspaceFileMock.mockClear()
+    readWorkspaceFileContentMock.mockClear()
     writeWorkspaceFileMock.mockClear()
     mkdirWorkspaceFileMock.mockClear()
     deleteWorkspaceFileMock.mockClear()
@@ -137,6 +140,7 @@ describe('session routes', () => {
       '/api/hermes/sessions/:id/workspace-run-changes/:changeId/files/:fileId',
       '/api/hermes/sessions/:id/workspace-files/list',
       '/api/hermes/sessions/:id/workspace-file/read',
+      '/api/hermes/sessions/:id/workspace-file/content',
       '/api/hermes/sessions/:id/workspace-file/write',
       '/api/hermes/sessions/:id/workspace-file/mkdir',
       '/api/hermes/sessions/:id/workspace-file/delete',
@@ -223,6 +227,7 @@ describe('session routes', () => {
     const { sessionRoutes } = await import('../../packages/server/src/routes/hermes/sessions')
     const listLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/workspace-files/list')
     const readLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/workspace-file/read')
+    const contentLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/workspace-file/content')
     const writeLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/workspace-file/write')
     const mkdirLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/workspace-file/mkdir')
     const deleteLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/workspace-file/delete')
@@ -232,6 +237,7 @@ describe('session routes', () => {
     const ctx: any = { query: {}, request: { body: {} }, body: null, params: { id: 'session-1' } }
     await listLayer.stack[0](ctx)
     await readLayer.stack[0](ctx)
+    await contentLayer.stack[0](ctx)
     await writeLayer.stack[0](ctx)
     await mkdirLayer.stack[0](ctx)
     await deleteLayer.stack[0](ctx)
@@ -240,6 +246,7 @@ describe('session routes', () => {
 
     expect(listWorkspaceFilesMock).toHaveBeenCalledWith(ctx)
     expect(readWorkspaceFileMock).toHaveBeenCalledWith(ctx)
+    expect(readWorkspaceFileContentMock).toHaveBeenCalledWith(ctx)
     expect(writeWorkspaceFileMock).toHaveBeenCalledWith(ctx)
     expect(mkdirWorkspaceFileMock).toHaveBeenCalledWith(ctx)
     expect(deleteWorkspaceFileMock).toHaveBeenCalledWith(ctx)

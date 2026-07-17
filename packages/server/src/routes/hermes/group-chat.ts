@@ -2,13 +2,21 @@ import Router from '@koa/router'
 import type { GroupChatServer } from '../../services/hermes/group-chat'
 import { isReservedMentionName } from '../../services/hermes/group-chat/mention-routing'
 import { assertAllowedWorkspaceFolder } from '../../services/hermes/workspace-path'
+import {
+    canManageGroupChatRoom as canManageRoom,
+    canReadGroupChatRoom as canReadRoom,
+    groupChatUserProfiles as userProfiles,
+} from '../../services/hermes/group-chat/access'
+import { setGroupChatRuntimeServer } from '../../services/hermes/group-chat/runtime'
+import * as ctrl from '../../controllers/hermes/group-chat-workspace'
 
 export const groupChatRoutes = new Router()
 
 let chatServer: GroupChatServer | null = null
 
-export function setGroupChatServer(server: GroupChatServer) {
+export function setGroupChatServer(server: GroupChatServer | null) {
     chatServer = server
+    setGroupChatRuntimeServer(server)
 }
 
 export function getGroupChatServer(): GroupChatServer | null {
@@ -45,32 +53,6 @@ function agentConnectFailureBody(profile: string, err: any) {
         profile,
         reason: sanitizeAgentConnectReason(err?.message),
     }
-}
-
-function userProfiles(user: any): string[] {
-    return Array.isArray(user?.profiles) ? user.profiles.map(String).filter(Boolean) : []
-}
-
-function isRoomOwner(room: any, user: any): boolean {
-    return typeof user?.id === 'number' && Number(room?.ownerAuthUserId || 0) === user.id
-}
-
-function hasProfileRoomAccess(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): boolean {
-    const profiles = userProfiles(user)
-    if (!profiles.length || typeof storage.getRoomsForProfiles !== 'function') return false
-    return storage.getRoomsForProfiles(profiles).some(room => room.id === roomId)
-}
-
-function canManageRoom(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): boolean {
-    if (!user || user.role === 'super_admin') return true
-    const room = typeof storage.getRoom === 'function' ? storage.getRoom(roomId) : null
-    if (room && isRoomOwner(room, user)) return true
-    return hasProfileRoomAccess(storage, roomId, user)
-}
-
-function canReadRoom(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): boolean {
-    if (canManageRoom(storage, roomId, user)) return true
-    return typeof user?.id === 'number' && typeof storage.getMemberByAuthUserId === 'function' && !!storage.getMemberByAuthUserId(roomId, user.id)
 }
 
 function serializeRoom(room: any, includeManageFields: boolean) {
@@ -302,6 +284,15 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
     const members = storage.getRoomMembers(ctx.params.roomId)
     ctx.body = { room: serializeRoom(room, canManage), messages, agents, members, total, offset, limit, hasMore: offset + messages.length < total }
 })
+
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/workspace-files/list', ctrl.listWorkspaceFiles)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/workspace-file/read', ctrl.readWorkspaceFile)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/workspace-file/content', ctrl.readWorkspaceFileContent)
+groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/workspace-file/write', ctrl.writeWorkspaceFile)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/workspace-file/mkdir', ctrl.mkdirWorkspaceFile)
+groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId/workspace-file/delete', ctrl.deleteWorkspaceFile)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/workspace-file/rename', ctrl.renameWorkspaceFile)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/workspace-file/copy', ctrl.copyWorkspaceFile)
 
 // List rooms
 groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {

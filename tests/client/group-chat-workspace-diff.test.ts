@@ -148,17 +148,24 @@ describe('group chat workspace diff client rendering', () => {
       global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
     })
 
-    expect(wrapper.find('.workspace-diff-card').exists()).toBe(true)
-    expect(wrapper.text()).toContain('chat.workspaceChanges')
-    expect(wrapper.find('.workspace-diff-files').exists()).toBe(false)
-    expect(wrapper.find('.workspace-diff-head').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.tool-change-card').exists()).toBe(true)
+    expect(wrapper.find('.tool-change-files').exists()).toBe(false)
+    expect(wrapper.find('.tool-change-card-header').attributes('aria-expanded')).toBe('false')
 
-    await wrapper.find('.workspace-diff-head').trigger('click')
+    await wrapper.find('.tool-change-card-header').trigger('click')
 
-    expect(wrapper.find('.workspace-diff-head').attributes('aria-expanded')).toBe('true')
-    expect(wrapper.text()).toContain('src/a.ts')
+    expect(wrapper.find('.tool-change-card-header').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.tool-change-file-row').text()).toContain('a.ts')
     expect(wrapper.find('.tool-line').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('"kind"')
+
+    await wrapper.find('.tool-change-file-row').trigger('click')
+    const { useToolPanelStore } = await import('@/stores/hermes/tool-panel')
+    expect(useToolPanelStore().workspaceDiff).toMatchObject({
+      patch: expect.stringContaining('+new'),
+      editable: false,
+      file: expect.objectContaining({ path: 'src/a.ts' }),
+    })
   })
 
   it('keeps workspace diff audit cards visible when generic tool traces are hidden', async () => {
@@ -208,5 +215,42 @@ describe('group chat workspace diff client rendering', () => {
 
     const messages = wrapper.getComponent({ name: 'VirtualMessageList' }).props('messages') as ChatMessage[]
     expect(messages.map(message => message.id)).toEqual(['diff-1'])
+  })
+
+  it('hands previewable group attachments to the shared file panel instead of downloading', async () => {
+    const previewRequests: Array<{ path: string; fileName: string }> = []
+    const handlePreview = (event: Event) => {
+      const customEvent = event as CustomEvent<{ path: string; fileName: string }>
+      previewRequests.push(customEvent.detail)
+      customEvent.preventDefault()
+    }
+    window.addEventListener('hermes:preview-workspace-file', handlePreview)
+    const wrapper = mount(GroupMessageItem, {
+      props: {
+        message: {
+          id: 'file-1',
+          roomId: 'room-1',
+          senderId: 'agent-1',
+          senderName: 'Worker',
+          content: JSON.stringify([{ type: 'file', name: 'sales-data.xlsx', path: '/tmp/repo/sales-data.xlsx' }]),
+          timestamp: 1,
+          role: 'assistant',
+        },
+        agents: [{ id: 'a1', roomId: 'room-1', agentId: 'agent-1', profile: 'default', name: 'Worker', description: '', invited: 0 }],
+        members: [],
+        currentUserId: 'user-1',
+      },
+      global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
+    })
+
+    try {
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+      wrapper.get('.msg-attachment-file').element.dispatchEvent(click)
+      expect(click.defaultPrevented).toBe(true)
+      expect(previewRequests).toEqual([{ path: '/tmp/repo/sales-data.xlsx', fileName: 'sales-data.xlsx' }])
+    } finally {
+      wrapper.unmount()
+      window.removeEventListener('hermes:preview-workspace-file', handlePreview)
+    }
   })
 })

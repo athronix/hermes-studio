@@ -8,7 +8,7 @@ function isDesktopShell(): boolean {
     (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true
 }
 
-async function ensureDesktopAuthReady(): Promise<void> {
+export async function ensureDesktopAuthReady(): Promise<void> {
   if (typeof window === 'undefined' || getApiKey()) return
   const bridge = (window as typeof window & {
     hermesDesktop?: { isDesktop?: boolean; ensureAuth?: () => Promise<boolean> }

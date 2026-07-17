@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { defineAsyncComponent, ref, onMounted, watch } from 'vue'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
@@ -8,17 +8,18 @@ import FileBreadcrumb from '@/components/hermes/files/FileBreadcrumb.vue'
 import FileToolbar from '@/components/hermes/files/FileToolbar.vue'
 import FileList from '@/components/hermes/files/FileList.vue'
 import FileContextMenu from '@/components/hermes/files/FileContextMenu.vue'
-import FileEditor from '@/components/hermes/files/FileEditor.vue'
-import FilePreview from '@/components/hermes/files/FilePreview.vue'
 import FileUploadModal from '@/components/hermes/files/FileUploadModal.vue'
 import FileRenameModal from '@/components/hermes/files/FileRenameModal.vue'
 import type { FileEntry } from '@/api/hermes/files'
+
+const FileEditor = defineAsyncComponent(async () => (await import('@/components/hermes/files/FileEditor.vue')).default)
 
 const filesStore = useFilesStore()
 const { t } = useI18n()
 
 const props = defineProps<{
   workspaceSessionId?: string | null
+  workspaceRoomId?: string | null
   workspace?: string | null
 }>()
 
@@ -64,24 +65,26 @@ function handleRename(entry: FileEntry) {
 }
 
 watch(
-  () => [props.workspaceSessionId, props.workspace] as const,
-  ([workspaceSessionId, workspace]) => {
-    if (workspaceSessionId && workspace) {
-      if (!filesStore.currentWorkspaceSessionId) lastStandardPath.value = filesStore.currentPath
-      void filesStore.fetchEntries('', { workspaceSessionId })
+  () => [props.workspaceSessionId, props.workspaceRoomId, props.workspace] as const,
+  ([workspaceSessionId, workspaceRoomId, workspace]) => {
+    if ((workspaceSessionId || workspaceRoomId) && workspace) {
+      if (!filesStore.currentWorkspaceSessionId && !filesStore.currentWorkspaceRoomId) lastStandardPath.value = filesStore.currentPath
+      void filesStore.fetchEntries('', { workspaceSessionId, workspaceRoomId })
       return
     }
-    if (filesStore.currentWorkspaceSessionId) {
-      void filesStore.fetchEntries(lastStandardPath.value, { profile: null, workspaceSessionId: null })
+    if (filesStore.currentWorkspaceSessionId || filesStore.currentWorkspaceRoomId) {
+      void filesStore.fetchEntries(lastStandardPath.value, { profile: null, workspaceSessionId: null, workspaceRoomId: null })
     }
   },
 )
 
 onMounted(() => {
-  if (props.workspaceSessionId && props.workspace) {
-    void filesStore.fetchEntries('', { workspaceSessionId: props.workspaceSessionId })
+  if ((props.workspaceSessionId || props.workspaceRoomId) && props.workspace) {
+    void filesStore.fetchEntries('', { workspaceSessionId: props.workspaceSessionId, workspaceRoomId: props.workspaceRoomId })
+  } else if (filesStore.currentWorkspaceSessionId || filesStore.currentWorkspaceRoomId) {
+    void filesStore.fetchEntries(lastStandardPath.value, { profile: null, workspaceSessionId: null, workspaceRoomId: null })
   } else if (!filesStore.entries.length && !filesStore.loading) {
-    void filesStore.fetchEntries('', { profile: null, workspaceSessionId: null })
+    void filesStore.fetchEntries('', { profile: null, workspaceSessionId: null, workspaceRoomId: null })
   }
 })
 </script>
@@ -128,7 +131,6 @@ onMounted(() => {
       <FileBreadcrumb />
       <div class="files-content">
         <FileEditor v-if="filesStore.editingFile" />
-        <FilePreview v-else-if="filesStore.previewFile" />
         <FileList v-else @contextmenu-entry="handleContextMenu" />
       </div>
     </div>

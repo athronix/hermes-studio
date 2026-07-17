@@ -2117,6 +2117,15 @@ export default {
   },
 
   // 更新履歴
+  files: {
+    previewMode: 'プレビュー', sourceMode: 'ソース', tableMode: '表', worksheet: 'ワークシート',
+    htmlPreviewTitle: '分離された HTML プレビュー', previewLoading: 'プレビューを読み込み中...', previewFailed: 'プレビューできません',
+    previewMimeMismatch: 'ファイル形式がプレビュー形式と一致しません。', downloadInstead: '代わりにダウンロード',
+    previousPage: '前へ', nextPage: '次へ', pageStatus: '{page} / {total} ページ', zoom: 'ズーム',
+    pdfPageLimit: '先頭の {count} ページのみ表示します。',
+    tableTruncated: 'プレビューを制限しています。すべての行と列を見るにはファイルをダウンロードしてください。',
+  },
+
   changelog: {
     new_0_6_30_1: '本リリースは 0.6.29 以降にマージされた 21 件の PR を収録し、Workflow オーケストレーション、MoA セッション、リアルタイム音声、永続メモリ、Provider の信頼性、MCU 設定、Windows 改善を含みます',
     new_0_6_30_2: 'Workflow Orchestration v2 に成功・失敗・常時実行の条件ルート、実際のスキップ、all/any 結合、回数制限付きフィードバックループ、実行証跡、期限、移植可能なインポートを追加しました（#2073）',

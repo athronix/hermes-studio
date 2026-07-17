@@ -2118,6 +2118,15 @@ jobTriggered: 'Job declenche',
   },
 
   // Journal des modifications
+  files: {
+    previewMode: 'Aperçu', sourceMode: 'Source', tableMode: 'Tableau', worksheet: 'Feuille',
+    htmlPreviewTitle: 'Aperçu HTML isolé', previewLoading: 'Chargement de l’aperçu...', previewFailed: 'Aperçu indisponible',
+    previewMimeMismatch: 'Le type du fichier ne correspond pas au format d’aperçu.', downloadInstead: 'Télécharger à la place',
+    previousPage: 'Précédente', nextPage: 'Suivante', pageStatus: 'Page {page} sur {total}', zoom: 'Zoom',
+    pdfPageLimit: 'Seules les {count} premières pages sont affichées.',
+    tableTruncated: 'L’aperçu a été limité. Téléchargez le fichier pour voir toutes les lignes et colonnes.',
+  },
+
   changelog: {
     new_0_6_30_1: 'Cette version couvre les 21 PR fusionnées après la 0.6.29 : orchestration Workflow, sessions MoA, voix temps réel, mémoire durable, fiabilité des providers, configuration MCU et finitions Windows',
     new_0_6_30_2: 'Workflow Orchestration v2 ajoute des routes conditionnelles de réussite, échec et exécution systématique, de vrais sauts, des jonctions all/any, des boucles de retour bornées, des preuves, des échéances et des imports portables (#2073)',

@@ -2117,6 +2117,15 @@ export default {
   },
 
   // 변경 이력
+  files: {
+    previewMode: '미리보기', sourceMode: '소스', tableMode: '표', worksheet: '워크시트',
+    htmlPreviewTitle: '격리된 HTML 미리보기', previewLoading: '미리보기 불러오는 중...', previewFailed: '미리보기를 사용할 수 없음',
+    previewMimeMismatch: '파일 형식이 미리보기 형식과 일치하지 않습니다.', downloadInstead: '대신 다운로드',
+    previousPage: '이전', nextPage: '다음', pageStatus: '{total}페이지 중 {page}페이지', zoom: '확대/축소',
+    pdfPageLimit: '처음 {count}페이지만 표시합니다.',
+    tableTruncated: '미리보기가 제한되었습니다. 모든 행과 열을 보려면 파일을 다운로드하세요.',
+  },
+
   changelog: {
     new_0_6_30_1: '이번 릴리스는 0.6.29 이후 병합된 21개 PR을 모두 포함하며 Workflow 오케스트레이션, MoA 세션, 실시간 음성, 영구 메모리, Provider 안정성, MCU 설정, Windows 개선을 다룹니다',
     new_0_6_30_2: 'Workflow Orchestration v2에 성공, 실패, 항상 실행 조건 경로, 실제 건너뛰기, all/any 조인, 제한된 피드백 루프, 실행 증거, 기한, 이동 가능한 가져오기를 추가했습니다 (#2073)',

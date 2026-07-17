@@ -22,6 +22,7 @@ sessionRoutes.get('/api/hermes/sessions/:id/workspace-run-changes', ctrl.listWor
 sessionRoutes.get('/api/hermes/sessions/:id/workspace-run-changes/:changeId/files/:fileId', ctrl.getWorkspaceRunChangeFile)
 sessionRoutes.get('/api/hermes/sessions/:id/workspace-files/list', ctrl.listWorkspaceFiles)
 sessionRoutes.get('/api/hermes/sessions/:id/workspace-file/read', ctrl.readWorkspaceFile)
+sessionRoutes.get('/api/hermes/sessions/:id/workspace-file/content', ctrl.readWorkspaceFileContent)
 sessionRoutes.put('/api/hermes/sessions/:id/workspace-file/write', ctrl.writeWorkspaceFile)
 sessionRoutes.post('/api/hermes/sessions/:id/workspace-file/mkdir', ctrl.mkdirWorkspaceFile)
 sessionRoutes.delete('/api/hermes/sessions/:id/workspace-file/delete', ctrl.deleteWorkspaceFile)

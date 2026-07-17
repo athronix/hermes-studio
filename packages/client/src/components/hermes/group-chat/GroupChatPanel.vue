@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useMessage, NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, NModal, type DropdownOption } from 'naive-ui'
@@ -15,12 +15,20 @@ import SettingsCircuitBadge from '@/components/layout/SettingsCircuitBadge.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Attachment } from '@/stores/hermes/chat'
 import type { RoomAgent, RoomInfo } from '@/api/hermes/group-chat'
+import { useFilesStore } from '@/stores/hermes/files'
+import { useToolPanelStore } from '@/stores/hermes/tool-panel'
+
+const FilesPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/FilesPanel.vue')).default)
+const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default)
+const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default)
 
 const { t } = useI18n()
 const router = useRouter()
 const message = useMessage()
 const store = useGroupChatStore()
 const profilesStore = useProfilesStore()
+const filesStore = useFilesStore()
+const toolPanelStore = useToolPanelStore()
 
 const showSidebar = ref(window.innerWidth > 768)
 const showCreateModal = ref(false)
@@ -42,6 +50,17 @@ const roomContextMenuY = ref(0)
 const groupChatInputRef = ref<(InstanceType<typeof GroupChatInput> & { addFiles?: (files: File[]) => void }) | null>(null)
 const chatDropCounter = ref(0)
 const isChatDropActive = ref(false)
+const groupChatContentWrapperRef = ref<HTMLElement | null>(null)
+const showWorkspacePanel = ref(false)
+const workspacePanelMobile = ref(window.innerWidth <= 768)
+const WORKSPACE_PANEL_MIN_WIDTH = 360
+const WORKSPACE_PANEL_DEFAULT_WIDTH = 560
+const WORKSPACE_PANEL_STORAGE_KEY = 'hermes.groupChat.workspacePanelWidth'
+const workspacePanelWidth = ref(loadWorkspacePanelWidth())
+const workspaceResizeStart = ref<{ x: number; width: number } | null>(null)
+const workspacePanelStyle = computed(() => ({
+    width: workspacePanelMobile.value ? '100%' : `${workspacePanelWidth.value}px`,
+}))
 
 const profileOptions = computed(() =>
     profilesStore.profiles.map(p => ({ label: p.name, value: p.name }))
@@ -95,6 +114,102 @@ function workspaceBasename(path: string): string {
 
 function toggleSidebar() {
     showSidebar.value = !showSidebar.value
+}
+
+function loadWorkspacePanelWidth(): number {
+    const saved = Number.parseInt(window.localStorage.getItem(WORKSPACE_PANEL_STORAGE_KEY) || '', 10)
+    return Number.isFinite(saved) ? saved : WORKSPACE_PANEL_DEFAULT_WIDTH
+}
+
+function workspacePanelMaxWidth(): number {
+    if (workspacePanelMobile.value) return window.innerWidth
+    const available = groupChatContentWrapperRef.value?.clientWidth || window.innerWidth
+    return Math.max(320, Math.min(Math.floor(available * 0.88), available - 120))
+}
+
+function clampWorkspacePanelWidth(width: number): number {
+    const maxWidth = workspacePanelMaxWidth()
+    return Math.min(maxWidth, Math.max(Math.min(WORKSPACE_PANEL_MIN_WIDTH, maxWidth), Math.round(width)))
+}
+
+function handleWorkspacePanelResize(): void {
+    workspacePanelMobile.value = window.innerWidth <= 768
+    if (!workspacePanelMobile.value) workspacePanelWidth.value = clampWorkspacePanelWidth(workspacePanelWidth.value)
+}
+
+function handleWorkspaceResizeMove(event: PointerEvent): void {
+    if (!workspaceResizeStart.value) return
+    workspacePanelWidth.value = clampWorkspacePanelWidth(
+        workspaceResizeStart.value.width + workspaceResizeStart.value.x - event.clientX,
+    )
+}
+
+function stopWorkspaceResize(): void {
+    if (!workspaceResizeStart.value) return
+    workspaceResizeStart.value = null
+    window.removeEventListener('pointermove', handleWorkspaceResizeMove)
+    window.removeEventListener('pointerup', stopWorkspaceResize)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    if (!workspacePanelMobile.value) {
+        window.localStorage.setItem(WORKSPACE_PANEL_STORAGE_KEY, String(workspacePanelWidth.value))
+    }
+}
+
+function startWorkspaceResize(event: PointerEvent): void {
+    if (workspacePanelMobile.value) return
+    event.preventDefault()
+    workspaceResizeStart.value = { x: event.clientX, width: workspacePanelWidth.value }
+    window.addEventListener('pointermove', handleWorkspaceResizeMove)
+    window.addEventListener('pointerup', stopWorkspaceResize)
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+}
+
+function closeWorkspacePanel(): void {
+    if (toolPanelStore.workspaceDiff?.editable && filesStore.hasUnsavedChanges) {
+        message.warning(t('files.unsavedChanges'))
+        return
+    }
+    if (toolPanelStore.workspaceDiff?.editable && filesStore.editingFile) filesStore.closeEditor()
+    filesStore.closePreview()
+    toolPanelStore.closeWorkspaceDiff()
+    showWorkspacePanel.value = false
+}
+
+function toggleWorkspacePanel(): void {
+    if (!currentRoom.value?.workspace) return
+    if (showWorkspacePanel.value) closeWorkspacePanel()
+    else showWorkspacePanel.value = true
+}
+
+function groupWorkspacePreviewPath(filePath: string): string | null {
+    const workspace = currentRoom.value?.workspace?.replace(/\\/g, '/').replace(/\/+$/, '')
+    let decodedPath = filePath
+    try { decodedPath = decodeURIComponent(filePath) } catch { /* server validates malformed input */ }
+    const normalizedPath = decodedPath.replace(/\\/g, '/').replace(/\/+$/, '')
+    if (!normalizedPath) return null
+    if (!(normalizedPath.startsWith('/') || /^[a-zA-Z]:\//.test(normalizedPath))) return normalizedPath
+    if (!workspace) return normalizedPath
+    const ignoreCase = /^[a-zA-Z]:\//.test(workspace)
+    const comparableWorkspace = ignoreCase ? workspace.toLowerCase() : workspace
+    const comparablePath = ignoreCase ? normalizedPath.toLowerCase() : normalizedPath
+    if (comparablePath.startsWith(`${comparableWorkspace}/`)) return normalizedPath.slice(workspace.length + 1)
+    return normalizedPath
+}
+
+function handleWorkspaceFilePreviewRequest(event: Event): void {
+    const customEvent = event as CustomEvent<{ path?: string; fileName?: string }>
+    const roomId = store.currentRoomId
+    const path = groupWorkspacePreviewPath(typeof customEvent.detail?.path === 'string' ? customEvent.detail.path : '')
+    if (!roomId || !path || !currentRoomCanManage.value) return
+    customEvent.preventDefault()
+    const fileName = customEvent.detail?.fileName || path.split('/').pop() || path
+    toolPanelStore.closeWorkspaceDiff()
+    filesStore.closePreview()
+    void filesStore.openGroupWorkspacePreview(roomId, path, fileName).catch(error => {
+        message.error(error instanceof Error ? error.message : t('files.previewFailed'))
+    })
 }
 
 function openPageSidebar() {
@@ -318,6 +433,9 @@ async function handleAddAgent() {
 
 onMounted(() => {
     window.addEventListener('hermes:open-page-sidebar', openPageSidebar)
+    window.addEventListener('hermes:preview-workspace-file', handleWorkspaceFilePreviewRequest)
+    window.addEventListener('resize', handleWorkspacePanelResize)
+    handleWorkspacePanelResize()
     if (profilesStore.profiles.length === 0) {
         void profilesStore.fetchProfiles()
     }
@@ -325,6 +443,29 @@ onMounted(() => {
 
 onUnmounted(() => {
     window.removeEventListener('hermes:open-page-sidebar', openPageSidebar)
+    window.removeEventListener('hermes:preview-workspace-file', handleWorkspaceFilePreviewRequest)
+    window.removeEventListener('resize', handleWorkspacePanelResize)
+    stopWorkspaceResize()
+    if (showWorkspacePanel.value) closeWorkspacePanel()
+    else toolPanelStore.closeWorkspaceDiff()
+})
+
+watch(() => store.currentRoomId, (roomId, previousRoomId) => {
+    if (roomId !== previousRoomId && (filesStore.previewFile || toolPanelStore.workspaceDiff || showWorkspacePanel.value)) closeWorkspacePanel()
+})
+
+watch(() => filesStore.previewFile, previewFile => {
+    if (previewFile?.workspaceRoomId === store.currentRoomId) showWorkspacePanel.value = true
+})
+
+watch(() => toolPanelStore.workspaceDiff, workspaceDiff => {
+    if (workspaceDiff) showWorkspacePanel.value = true
+})
+
+watch(showWorkspacePanel, async visible => {
+    if (!visible || workspacePanelMobile.value) return
+    await nextTick()
+    handleWorkspacePanelResize()
 })
 
 async function confirmAddAgent() {
@@ -545,7 +686,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         class="workspace-badge"
                         type="button"
                         :title="currentRoom.workspace"
-                        @click="() => handleOpenWorkspacePicker()"
+                        @click="toggleWorkspacePanel"
                     >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -603,7 +744,21 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     <button v-if="currentRoomCanManage" class="icon-btn" :title="t('groupChat.addAgent')" @click="handleAddAgent">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     </button>
-                    <button v-if="currentRoomCanManage" class="icon-btn" :title="t('groupChat.compressionConfig')" @click="handleOpenCompressionConfig">
+                    <button
+                        v-if="currentRoom?.workspace && currentRoomCanManage"
+                        class="icon-btn workspace-panel-toggle"
+                        :class="{ active: showWorkspacePanel }"
+                        :title="t('chat.workspace')"
+                        :aria-label="t('chat.workspace')"
+                        :aria-pressed="showWorkspacePanel"
+                        @click="toggleWorkspacePanel"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="3" y="3" width="18" height="18" rx="2" />
+                            <line x1="15" y1="3" x2="15" y2="21" />
+                        </svg>
+                    </button>
+                    <button v-if="currentRoomCanManage" class="icon-btn compression-settings-button" :title="t('groupChat.compressionConfig')" @click="handleOpenCompressionConfig">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 4.6a1.65 1.65 0 0 0 1.51 1V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1z"/></svg>
                     </button>
                     <NPopconfirm v-if="currentRoomCanManage" @positive-click="handleClearRoomContext">
@@ -625,6 +780,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
 
             <div
                 v-if="hasRoom"
+                ref="groupChatContentWrapperRef"
                 class="group-chat-content-wrapper"
                 :class="{ 'chat-main--drop-active': isChatDropActive }"
             >
@@ -696,6 +852,40 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     </div>
                     <GroupChatInput ref="groupChatInputRef" @send="handleSendMessage" />
                 </div>
+                <aside
+                    v-if="showWorkspacePanel && (toolPanelStore.workspaceDiff || currentRoom?.workspace || filesStore.previewFile?.workspaceRoomId === store.currentRoomId)"
+                    class="group-workspace-panel"
+                    :style="workspacePanelStyle"
+                >
+                    <div class="group-workspace-resize-handle" @pointerdown="startWorkspaceResize" />
+                    <div class="group-workspace-panel-inner">
+                        <WorkspaceDiffPreview
+                            v-if="toolPanelStore.workspaceDiff"
+                            :custom-close="closeWorkspacePanel"
+                        />
+                        <FilePreview
+                            v-else-if="filesStore.previewFile?.workspaceRoomId === store.currentRoomId"
+                            :custom-close="closeWorkspacePanel"
+                        />
+                        <template v-else-if="currentRoom?.workspace">
+                            <div class="group-workspace-panel-header">
+                                <span>{{ t('drawer.files') }}</span>
+                                <button type="button" :title="t('files.closePreview')" @click="closeWorkspacePanel">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="18" y1="6" x2="6" y2="18" />
+                                        <line x1="6" y1="6" x2="18" y2="18" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="group-workspace-panel-content">
+                                <FilesPanel
+                                    :workspace-room-id="store.currentRoomId"
+                                    :workspace="currentRoom.workspace"
+                                />
+                            </div>
+                        </template>
+                    </div>
+                </aside>
             </div>
 
             <div v-else class="no-room">
@@ -1158,6 +1348,7 @@ export default defineComponent({ components: { CreateRoomForm } })
         background: rgba(var(--accent-primary-rgb), 0.06);
         color: $text-primary;
     }
+
 }
 
 .conversation-switch {
@@ -1368,6 +1559,139 @@ export default defineComponent({ components: { CreateRoomForm } })
     flex-direction: column;
     background-color: $bg-main-surface;
     animation: group-chat-surface-fade-in 1.5s ease both;
+}
+
+.workspace-panel-toggle.active {
+    color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+}
+
+.group-workspace-panel {
+    position: relative;
+    flex: 0 0 auto;
+    min-width: 320px;
+    max-width: 100%;
+    min-height: 0;
+    overflow: visible;
+    display: flex;
+    background: $bg-card;
+    border-left: 1px solid $border-color;
+}
+
+.group-workspace-resize-handle {
+    position: absolute;
+    left: -7px;
+    top: 0;
+    bottom: 0;
+    width: 14px;
+    cursor: col-resize;
+    z-index: 20;
+
+    &::after {
+        content: '';
+        position: absolute;
+        left: 6px;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background:
+            linear-gradient($border-color, $border-color) top / 1px calc(50% - 26px) no-repeat,
+            linear-gradient($border-color, $border-color) bottom / 1px calc(50% - 26px) no-repeat;
+    }
+
+    &::before {
+        content: '';
+        position: absolute;
+        left: 1px;
+        top: 50%;
+        width: 12px;
+        height: 38px;
+        transform: translateY(-50%);
+        border-radius: 6px;
+        border: 1px solid $border-color;
+        background:
+            linear-gradient($text-muted, $text-muted) center 12px / 6px 1px no-repeat,
+            linear-gradient($text-muted, $text-muted) center 19px / 6px 1px no-repeat,
+            linear-gradient($text-muted, $text-muted) center 26px / 6px 1px no-repeat,
+            $bg-card;
+    }
+
+    &:hover::before {
+        border-color: var(--accent-primary);
+        background:
+            linear-gradient(var(--accent-primary), var(--accent-primary)) center 12px / 6px 1px no-repeat,
+            linear-gradient(var(--accent-primary), var(--accent-primary)) center 19px / 6px 1px no-repeat,
+            linear-gradient(var(--accent-primary), var(--accent-primary)) center 26px / 6px 1px no-repeat,
+            $bg-card;
+    }
+}
+
+.group-workspace-panel-inner {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.group-workspace-panel-header {
+    height: 47px;
+    padding: 8px 12px;
+    border-bottom: 1px solid $border-color;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-sizing: border-box;
+    color: $text-primary;
+    font-size: 13px;
+    font-weight: 500;
+
+    button {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: $radius-sm;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: $text-secondary;
+        background: transparent;
+        cursor: pointer;
+
+        &:hover {
+            color: $text-primary;
+            background: rgba(var(--accent-primary-rgb), 0.08);
+        }
+    }
+}
+
+.group-workspace-panel-content {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+
+    > * {
+        height: 100%;
+        min-height: 0;
+    }
+}
+
+@media (max-width: $breakpoint-mobile) {
+    .group-workspace-panel {
+        position: absolute;
+        inset: 0;
+        z-index: 70;
+        width: 100% !important;
+        min-width: 0;
+        border-left: none;
+    }
+
+    .group-workspace-resize-handle {
+        display: none;
+    }
 }
 
 @keyframes group-chat-surface-fade-in {

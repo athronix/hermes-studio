@@ -10,18 +10,19 @@ session's workspace drawer. The current preview path supports images, rendered
 Markdown, and highlighted text only.
 
 HTML and CSV are classified as text, so previewing them shows source content.
-PDF, Word, and Excel files are not classified as previewable. Session workspace
-files also expose only a UTF-8 text read endpoint, which cannot safely transport
-binary document formats.
+PDF, Word, PowerPoint, and Excel files are not classified as previewable.
+Session workspace files also expose only a UTF-8 text read endpoint, which
+cannot safely transport binary document formats.
 
 Users should be able to inspect common generated artifacts without downloading
 each file first.
 
 ## Goals
 
-- Preview HTML, PDF, DOCX, XLSX, and CSV files inside the existing file preview
-  panel.
-- Support both profile-scoped files and chat session workspace files.
+- Preview HTML, PDF, DOCX, PPTX, XLSX, and CSV files inside the existing file
+  preview panel.
+- Support profile-scoped files, chat session artifacts, and managed group-chat
+  workspaces through the same preview UI.
 - Keep source and edit access available for text-based formats such as HTML and
   CSV.
 - Preserve download as a fallback for unsupported, oversized, malformed, or
@@ -36,7 +37,6 @@ each file first.
 - Do not execute macros, embedded scripts, or active document content.
 - Do not provide pixel-perfect Microsoft Office editing.
 - Do not initially preview legacy binary Office formats such as DOC and XLS.
-- Do not initially add PowerPoint preview.
 - Do not allow generated HTML to access Hermes Studio APIs, authentication
   state, the parent page, local files, or unrestricted network resources.
 
@@ -67,6 +67,7 @@ type FilePreviewKind =
   | 'html'
   | 'pdf'
   | 'docx'
+  | 'presentation'
   | 'spreadsheet'
   | 'csv'
 ```
@@ -91,6 +92,10 @@ above the preview limit, and sessions the current user cannot access.
 For profile-scoped files, use a shared authenticated blob-fetch helper over the
 existing file provider/download path. The client should consume preview data as
 a `Blob` or `ArrayBuffer` instead of navigating directly to an attachment URL.
+
+Group-chat reads use room-management authorization and accept only the room
+workspace or a workspace belonging to one of the room's Agent Profiles. Group
+workspace browsing and mutations reuse the same contained file operations.
 
 Keep editing and preview reads separate: the text editor can retain its UTF-8
 contract, while document preview uses the binary contract.
@@ -127,6 +132,18 @@ clean up generated object URLs when the preview closes or changes.
 
 If the document is encrypted, corrupt, unsupported, or above the size limit,
 show a clear preview error with a download action.
+
+### PPTX Preview
+
+Use a browser-side OOXML renderer in single-slide mode. Fetch the presentation
+through the same authenticated binary path, lazy-load slide and media data, and
+apply bounded ZIP parsing limits before rendering untrusted decks. Provide
+previous/next navigation and zoom without loading the entire deck into the chat
+timeline.
+
+Remove active links, embedded frames, forms, and external media references from
+the rendered slide DOM. Corrupt, encrypted, unsupported, or oversized decks
+fall back to download with an explicit preview error.
 
 ### XLSX And CSV Preview
 
@@ -177,6 +194,7 @@ delimiter and quoting behavior.
 - HTML exposes `Preview / Source`.
 - CSV exposes `Table / Source`.
 - PDF exposes page and zoom controls.
+- PPTX exposes slide navigation and zoom controls.
 - XLSX exposes worksheet tabs.
 - All supported formats expose download.
 - Unsupported or failed previews show a localized explanation and download
@@ -188,6 +206,8 @@ delimiter and quoting behavior.
 
 - Authorized session workspace binary files return exact bytes and expected
   MIME.
+- Managed group-chat files return exact bytes while members without management
+  access and paths outside the room/Agent workspaces are rejected.
 - Cross-user sessions, missing sessions, directories, traversal paths, and
   oversized files are rejected.
 - Profile-scoped binary reads preserve profile access rules.
@@ -195,12 +215,13 @@ delimiter and quoting behavior.
 
 ### Client
 
-- Extension-to-preview-kind mapping covers HTML, PDF, DOCX, XLSX, CSV, and
-  existing formats.
+- Extension-to-preview-kind mapping covers HTML, PDF, DOCX, PPTX, XLSX, CSV,
+  and existing formats.
 - HTML preview uses a restrictive sandbox and does not render into the parent
   DOM.
 - Source/table mode switches preserve the selected file.
-- PDF, DOCX, and XLSX renderers are lazy-loaded.
+- PDF, DOCX, PPTX, and XLSX renderers are lazy-loaded.
+- PPTX parsing uses bounded ZIP limits and cleans up the viewer on close.
 - Spreadsheet cell limits and truncation messages are enforced.
 - Blob URLs and stale requests are cleaned up.
 - Renderer failures expose download fallback.
@@ -222,13 +243,13 @@ delimiter and quoting behavior.
 2. Add sandboxed HTML preview plus source switching.
 3. Add CSV table preview plus source switching.
 4. Add PDF preview with progressive page rendering.
-5. Add DOCX and XLSX preview with lazy dependencies and document limits.
+5. Add DOCX, PPTX, and XLSX preview with lazy dependencies and document limits.
 6. Add full server, client, security, and end-to-end coverage.
 
 ## Acceptance Criteria
 
-- HTML, PDF, DOCX, XLSX, and CSV generated by an Agent can be previewed without
-  first downloading the file.
+- HTML, PDF, DOCX, PPTX, XLSX, and CSV generated by an Agent can be previewed
+  without first downloading the file.
 - The behavior works from both profile files and session workspace files.
 - Text source/edit behavior remains available where appropriate.
 - No preview format can execute active content or access Hermes Studio session

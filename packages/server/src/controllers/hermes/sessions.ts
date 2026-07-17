@@ -33,8 +33,9 @@ import { listUserProfiles } from '../../db/hermes/users-store'
 import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-run-manager'
 import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
-import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
-import { isSensitivePath, MAX_EDIT_SIZE } from '../../services/hermes/file-provider'
+import { defaultHermesWorkspace, ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
+import { isSensitivePath, MAX_DOWNLOAD_SIZE, MAX_EDIT_SIZE, validatePath } from '../../services/hermes/file-provider'
+import { buildFileContentHeaders, getFilePreviewDescriptor } from '../../services/hermes/file-preview'
 import { copyFile, mkdir, readFile, readdir, rename as fsRename, rm as fsRm, stat as fsStat, writeFile } from 'fs/promises'
 import { relative, normalize as pathNormalize, resolve as pathResolve } from 'path'
 
@@ -621,11 +622,11 @@ function workspaceRelativePath(workspace: string, fullPath: string): string {
   return relative(workspace, fullPath).replace(/\\/g, '/')
 }
 
-function resolveSessionWorkspacePath(
+async function resolveSessionWorkspacePath(
   ctx: any,
   relativePathValue: unknown,
   options: { allowEmpty?: boolean } = {},
-): { session: ReturnType<typeof localGetSession>; relativePath: string; fullPath: string; workspace: string } {
+): Promise<{ session: NonNullable<ReturnType<typeof localGetSession>>; relativePath: string; fullPath: string; workspace: string }> {
   const session = localGetSession(ctx.params.id)
   if (!session) throw Object.assign(new Error('Session not found'), { code: 'not_found', status: 404 })
   if (denySessionAccess(ctx, session)) throw Object.assign(new Error('Forbidden'), { code: 'forbidden', status: 403, handled: true })
@@ -633,14 +634,46 @@ function resolveSessionWorkspacePath(
   if (!workspace) throw Object.assign(new Error('Session workspace not found'), { code: 'workspace_not_found', status: 404 })
   const relativePath = normalizeWorkspaceRelativePath(relativePathValue, options)
   const fullPath = pathResolve(workspace, relativePath)
-  if (!isPathWithin(fullPath, workspace)) {
+  if (!isPathWithin(fullPath, workspace) || !await isNearestExistingRealPathWithin(fullPath, workspace)) {
     throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
   }
   return { session, relativePath, fullPath, workspace }
 }
 
-function resolveSessionWorkspaceFile(ctx: any, relativePathValue: unknown) {
+async function resolveSessionWorkspaceFile(ctx: any, relativePathValue: unknown) {
   return resolveSessionWorkspacePath(ctx, relativePathValue)
+}
+
+async function resolveSessionPreviewFile(ctx: any, pathValue: unknown) {
+  const rawPath = typeof pathValue === 'string' ? pathValue.trim() : ''
+  const isAbsolutePath = rawPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(rawPath)
+  if (!isAbsolutePath) return resolveSessionWorkspaceFile(ctx, pathValue)
+
+  const session = localGetSession(ctx.params.id)
+  if (!session) throw Object.assign(new Error('Session not found'), { code: 'not_found', status: 404 })
+  if (denySessionAccess(ctx, session)) throw Object.assign(new Error('Forbidden'), { code: 'forbidden', status: 403, handled: true })
+
+  const fullPath = validatePath(rawPath)
+  const roots = [
+    String(session.workspace || '').trim(),
+    defaultHermesWorkspace(String(session.profile || 'default')),
+  ].filter(Boolean)
+
+  for (const root of roots) {
+    if (isPathWithin(fullPath, root) && await isNearestExistingRealPathWithin(fullPath, root)) {
+      return {
+        session,
+        relativePath: workspaceRelativePath(root, fullPath),
+        fullPath,
+        workspace: root,
+      }
+    }
+  }
+
+  throw Object.assign(new Error('File is outside the session and Hermes workspaces'), {
+    code: 'invalid_path',
+    status: 400,
+  })
 }
 
 function handleWorkspaceFileError(ctx: any, err: any): void {
@@ -652,7 +685,7 @@ function handleWorkspaceFileError(ctx: any, err: any): void {
 
 export async function listWorkspaceFiles(ctx: any) {
   try {
-    const { relativePath, fullPath, workspace } = resolveSessionWorkspacePath(ctx, ctx.query.path, { allowEmpty: true })
+    const { relativePath, fullPath, workspace } = await resolveSessionWorkspacePath(ctx, ctx.query.path, { allowEmpty: true })
     const info = await fsStat(fullPath)
     if (!info.isDirectory()) {
       ctx.status = 400
@@ -684,7 +717,7 @@ export async function listWorkspaceFiles(ctx: any) {
 
 export async function readWorkspaceFile(ctx: any) {
   try {
-    const { relativePath, fullPath } = resolveSessionWorkspaceFile(ctx, ctx.query.path)
+    const { relativePath, fullPath } = await resolveSessionWorkspaceFile(ctx, ctx.query.path)
     const info = await fsStat(fullPath)
     if (!info.isFile()) {
       ctx.status = 400
@@ -703,10 +736,60 @@ export async function readWorkspaceFile(ctx: any) {
   }
 }
 
+export async function readWorkspaceFileContent(ctx: any) {
+  try {
+    const { relativePath, fullPath } = await resolveSessionPreviewFile(ctx, ctx.query.path)
+    const info = await fsStat(fullPath)
+    if (!info.isFile()) {
+      ctx.status = 400
+      ctx.body = { error: 'Not a file', code: 'not_a_file' }
+      return
+    }
+
+    const download = String(ctx.query?.download || '') === '1'
+    const textPreview = String(ctx.query?.text || '') === '1'
+    const descriptor = getFilePreviewDescriptor(relativePath)
+    if (!download && !textPreview && !descriptor) {
+      ctx.status = 415
+      ctx.body = { error: 'File type is not supported for preview', code: 'unsupported_preview' }
+      return
+    }
+    const maxBytes = download ? MAX_DOWNLOAD_SIZE : textPreview ? MAX_EDIT_SIZE : descriptor!.maxBytes
+    if (info.size > maxBytes) {
+      ctx.status = 413
+      ctx.body = {
+        error: download ? 'File too large to download' : 'File too large to preview',
+        code: 'file_too_large',
+      }
+      return
+    }
+
+    const data = await readFile(fullPath)
+    if (data.length > maxBytes) {
+      ctx.status = 413
+      ctx.body = {
+        error: download ? 'File too large to download' : 'File too large to preview',
+        code: 'file_too_large',
+      }
+      return
+    }
+    const headers = buildFileContentHeaders({
+      fileName: relativePath,
+      mime: textPreview ? 'text/plain; charset=utf-8' : descriptor?.mime || 'application/octet-stream',
+      size: data.length,
+      download,
+    })
+    for (const [name, value] of Object.entries(headers)) ctx.set(name, value)
+    ctx.body = data
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
+}
+
 export async function writeWorkspaceFile(ctx: any) {
   const body = ctx.request.body as { path?: unknown; content?: unknown }
   try {
-    const { relativePath, fullPath } = resolveSessionWorkspaceFile(ctx, body?.path)
+    const { relativePath, fullPath } = await resolveSessionWorkspaceFile(ctx, body?.path)
     if (isSensitivePath(relativePath)) {
       ctx.status = 403
       ctx.body = { error: 'Cannot modify sensitive file', code: 'permission_denied' }
@@ -729,7 +812,7 @@ export async function writeWorkspaceFile(ctx: any) {
 export async function mkdirWorkspaceFile(ctx: any) {
   const body = ctx.request.body as { path?: unknown }
   try {
-    const { fullPath } = resolveSessionWorkspaceFile(ctx, body?.path)
+    const { fullPath } = await resolveSessionWorkspaceFile(ctx, body?.path)
     await mkdir(fullPath, { recursive: true })
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -740,7 +823,7 @@ export async function mkdirWorkspaceFile(ctx: any) {
 export async function deleteWorkspaceFile(ctx: any) {
   const body = ctx.request.body as { path?: unknown; recursive?: unknown }
   try {
-    const { relativePath, fullPath } = resolveSessionWorkspaceFile(ctx, body?.path)
+    const { relativePath, fullPath } = await resolveSessionWorkspaceFile(ctx, body?.path)
     if (isSensitivePath(relativePath)) {
       ctx.status = 403
       ctx.body = { error: 'Cannot delete sensitive file', code: 'permission_denied' }
@@ -761,8 +844,8 @@ export async function deleteWorkspaceFile(ctx: any) {
 export async function renameWorkspaceFile(ctx: any) {
   const body = ctx.request.body as { oldPath?: unknown; newPath?: unknown }
   try {
-    const oldTarget = resolveSessionWorkspaceFile(ctx, body?.oldPath)
-    const newTarget = resolveSessionWorkspaceFile(ctx, body?.newPath)
+    const oldTarget = await resolveSessionWorkspaceFile(ctx, body?.oldPath)
+    const newTarget = await resolveSessionWorkspaceFile(ctx, body?.newPath)
     if (isSensitivePath(oldTarget.relativePath) || isSensitivePath(newTarget.relativePath)) {
       ctx.status = 403
       ctx.body = { error: 'Cannot rename sensitive file', code: 'permission_denied' }
@@ -778,8 +861,8 @@ export async function renameWorkspaceFile(ctx: any) {
 export async function copyWorkspaceFile(ctx: any) {
   const body = ctx.request.body as { srcPath?: unknown; destPath?: unknown }
   try {
-    const srcTarget = resolveSessionWorkspaceFile(ctx, body?.srcPath)
-    const destTarget = resolveSessionWorkspaceFile(ctx, body?.destPath)
+    const srcTarget = await resolveSessionWorkspaceFile(ctx, body?.srcPath)
+    const destTarget = await resolveSessionWorkspaceFile(ctx, body?.destPath)
     if (isSensitivePath(destTarget.relativePath)) {
       ctx.status = 403
       ctx.body = { error: 'Cannot overwrite sensitive file', code: 'permission_denied' }

@@ -2118,6 +2118,15 @@ jobTriggered: 'Job ausgelost',
   },
 
   // Anderungsprotokoll
+  files: {
+    previewMode: 'Vorschau', sourceMode: 'Quelltext', tableMode: 'Tabelle', worksheet: 'Arbeitsblatt',
+    htmlPreviewTitle: 'Isolierte HTML-Vorschau', previewLoading: 'Vorschau wird geladen...', previewFailed: 'Vorschau nicht verfügbar',
+    previewMimeMismatch: 'Der Dateityp stimmt nicht mit dem Vorschauformat überein.', downloadInstead: 'Stattdessen herunterladen',
+    previousPage: 'Zurück', nextPage: 'Weiter', pageStatus: 'Seite {page} von {total}', zoom: 'Zoom',
+    pdfPageLimit: 'Nur die ersten {count} Seiten werden angezeigt.',
+    tableTruncated: 'Die Vorschau wurde begrenzt. Laden Sie die Datei herunter, um alle Zeilen und Spalten zu sehen.',
+  },
+
   changelog: {
     new_0_6_30_1: 'Diese Version umfasst alle 21 nach 0.6.29 zusammengeführten PRs: Workflow-Orchestrierung, MoA-Sitzungen, Echtzeit-Sprache, dauerhaften Speicher, Provider-Stabilität, MCU-Einrichtung und Windows-Optimierungen',
     new_0_6_30_2: 'Workflow-Orchestrierung v2 ergänzt bedingte Routen für Erfolg, Fehler und Immer, echtes Überspringen, All/Any-Verknüpfungen, begrenzte Rückkopplungsschleifen, Ausführungsnachweise, Fristen und portable Importe (#2073)',

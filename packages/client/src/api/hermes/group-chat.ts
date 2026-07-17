@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client'
 import { request, getApiKey } from '../client'
+import { fetchAuthenticatedBlob, saveBlob } from './binary-content'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -247,5 +248,75 @@ export async function updateRoomWorkspace(roomId: string, workspace: string): Pr
 export async function forceCompress(roomId: string): Promise<{ success: boolean; summary: string }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/compress`, {
         method: 'POST',
+    })
+}
+
+export async function listGroupWorkspaceFiles(roomId: string, path = ''): Promise<{
+    entries: Array<{ name: string; path: string; absolutePath?: string; isDir: boolean; size: number; modTime: string }>
+    path: string
+    absolutePath?: string
+}> {
+    const params = new URLSearchParams()
+    if (path) params.set('path', path)
+    const query = params.toString()
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-files/list${query ? `?${query}` : ''}`)
+}
+
+export async function readGroupWorkspaceFile(roomId: string, path: string): Promise<{ content: string; path: string; size: number }> {
+    const params = new URLSearchParams({ path })
+    return request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/read?${params}`)
+}
+
+export async function fetchGroupWorkspaceFileBlob(roomId: string, path: string, signal?: AbortSignal): Promise<Blob> {
+    const params = new URLSearchParams({ path })
+    return fetchAuthenticatedBlob(
+        `/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/content?${params}`,
+        { signal },
+    )
+}
+
+export async function fetchGroupWorkspaceFileText(roomId: string, path: string): Promise<{ content: string; size: number }> {
+    const params = new URLSearchParams({ path, text: '1' })
+    const blob = await fetchAuthenticatedBlob(
+        `/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/content?${params}`,
+    )
+    return { content: await blob.text(), size: blob.size }
+}
+
+export async function downloadGroupWorkspaceFile(roomId: string, path: string, fileName: string): Promise<void> {
+    const params = new URLSearchParams({ path, download: '1' })
+    const blob = await fetchAuthenticatedBlob(
+        `/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/content?${params}`,
+    )
+    saveBlob(blob, fileName)
+}
+
+export async function writeGroupWorkspaceFile(roomId: string, path: string, content: string): Promise<void> {
+    await request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/write`, {
+        method: 'PUT', body: JSON.stringify({ path, content }),
+    })
+}
+
+export async function mkdirGroupWorkspaceFile(roomId: string, path: string): Promise<void> {
+    await request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/mkdir`, {
+        method: 'POST', body: JSON.stringify({ path }),
+    })
+}
+
+export async function deleteGroupWorkspaceFile(roomId: string, path: string, recursive = false): Promise<void> {
+    await request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/delete`, {
+        method: 'DELETE', body: JSON.stringify({ path, recursive }),
+    })
+}
+
+export async function renameGroupWorkspaceFile(roomId: string, oldPath: string, newPath: string): Promise<void> {
+    await request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/rename`, {
+        method: 'POST', body: JSON.stringify({ oldPath, newPath }),
+    })
+}
+
+export async function copyGroupWorkspaceFile(roomId: string, srcPath: string, destPath: string): Promise<void> {
+    await request(`/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/copy`, {
+        method: 'POST', body: JSON.stringify({ srcPath, destPath }),
     })
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm, symlink } from 'fs/promises'
+import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -235,6 +235,111 @@ describe('session conversations controller', () => {
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 5)
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
     expect(ctx.body.sessions[0]).toMatchObject({ id: 'local-conversation', source: 'cli', title: 'Local' })
+  })
+
+  it('serves bounded workspace preview bytes and blocks traversal, escaped links, and unauthorized profiles', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'hermes-workspace-preview-'))
+    const outside = await mkdtemp(join(tmpdir(), 'hermes-workspace-preview-outside-'))
+    const hermesArtifactWorkspace = '/tmp/hermes-test/research/workspace'
+    try {
+      const pdfBytes = Buffer.from('%PDF-1.7\npreview')
+      await writeFile(join(workspace, 'report.pdf'), pdfBytes)
+      await writeFile(join(outside, 'secret.pdf'), Buffer.from('%PDF secret'))
+      await symlink(join(outside, 'secret.pdf'), join(workspace, 'escaped.pdf'))
+      await writeFile(join(workspace, 'large.pdf'), Buffer.alloc(0))
+      await truncate(join(workspace, 'large.pdf'), 50 * 1024 * 1024 + 1)
+      await mkdir(hermesArtifactWorkspace, { recursive: true })
+      const artifactPath = join(hermesArtifactWorkspace, 'generated.py')
+      await writeFile(artifactPath, 'print("generated")\n')
+      getSessionMock.mockReturnValue({
+        id: 'session-preview',
+        workspace,
+        profile: 'research',
+      })
+
+      const headers: Record<string, string> = {}
+      const successCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'report.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        set: (name: string, value: string) => { headers[name] = value },
+        body: null,
+      }
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      await mod.readWorkspaceFileContent(successCtx)
+
+      expect(successCtx.body).toEqual(pdfBytes)
+      expect(headers).toMatchObject({
+        'Content-Type': 'application/pdf',
+        'Content-Length': String(pdfBytes.length),
+        'Cache-Control': 'no-store, max-age=0',
+        'X-Content-Type-Options': 'nosniff',
+      })
+      expect(headers['Content-Disposition']).toContain('inline;')
+
+      const artifactHeaders: Record<string, string> = {}
+      const artifactCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: artifactPath, text: '1' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        set: (name: string, value: string) => { artifactHeaders[name] = value },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(artifactCtx)
+      expect(artifactCtx.body.toString('utf8')).toBe('print("generated")\n')
+      expect(artifactHeaders['Content-Type']).toBe('text/plain; charset=utf-8')
+
+      const absoluteOutsideCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: join(outside, 'secret.pdf') },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(absoluteOutsideCtx)
+      expect(absoluteOutsideCtx).toMatchObject({ status: 400, body: { code: 'invalid_path' } })
+
+      const traversalCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: '../secret.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(traversalCtx)
+      expect(traversalCtx).toMatchObject({ status: 400, body: { code: 'invalid_path' } })
+
+      const escapedCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'escaped.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(escapedCtx)
+      expect(escapedCtx).toMatchObject({ status: 400, body: { code: 'invalid_path' } })
+
+      const oversizedCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'large.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(oversizedCtx)
+      expect(oversizedCtx).toMatchObject({ status: 413, body: { code: 'file_too_large' } })
+
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'travel' }])
+      const forbiddenCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'report.pdf' },
+        state: { user: { id: 2, role: 'admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(forbiddenCtx)
+      expect(forbiddenCtx.status).toBe(403)
+      expect(forbiddenCtx.body.error).toContain('research')
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+      await rm(hermesArtifactWorkspace, { recursive: true, force: true })
+    }
   })
 
   it('lists Windows drive roots for the workspace folder picker', async () => {

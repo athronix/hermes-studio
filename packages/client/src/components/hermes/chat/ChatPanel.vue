@@ -5,6 +5,8 @@ import { fetchCodingAgentsStatus, inferCodingAgentApiMode, normalizeCodingAgentA
 import { useChatStore, type Session } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
 import { useProfilesStore } from "@/stores/hermes/profiles";
+import { useFilesStore } from "@/stores/hermes/files";
+import { useToolPanelStore } from "@/stores/hermes/tool-panel";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
 import {
   NButton,
@@ -22,7 +24,7 @@ import {
   useMessage,
   type DropdownOption,
 } from "naive-ui";
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
@@ -33,7 +35,6 @@ import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
 import OutlinePanel from "./OutlinePanel.vue";
-import FilesPanel from "./FilesPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import SettingsCircuitBadge from "@/components/layout/SettingsCircuitBadge.vue";
@@ -41,9 +42,15 @@ import { isStoredSuperAdmin } from "@/api/client";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
 import { canScopedCodingAgentUseProvider, usesServerManagedProviderAuth } from "@/utils/codingAgentProviders";
 
+const FilesPanel = defineAsyncComponent(async () => (await import('./FilesPanel.vue')).default);
+const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default);
+const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default);
+
 const chatStore = useChatStore();
 const appStore = useAppStore();
 const profilesStore = useProfilesStore();
+const filesStore = useFilesStore();
+const toolPanelStore = useToolPanelStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const router = useRouter();
 const message = useMessage();
@@ -62,6 +69,7 @@ const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
 const activeToolPanel = ref<"files" | "terminal">("files");
 const activeWorkspaceSessionId = computed(() => chatStore.activeSession?.workspace && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.id : null);
+const activePreviewSessionId = computed(() => chatStore.activeSession?.id && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.id : null);
 const activeWorkspacePath = computed(() => chatStore.activeSession?.workspace && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.workspace : null);
 const TOOL_PANEL_MIN_WIDTH = 360;
 const TOOL_PANEL_DEFAULT_WIDTH = 560;
@@ -178,6 +186,26 @@ function startToolResize(event: PointerEvent) {
   document.body.style.cursor = "col-resize";
 }
 
+function closeToolPanelOverlay(): boolean {
+  if (toolPanelStore.workspaceDiff && filesStore.hasUnsavedChanges) {
+    message.warning(t("files.unsavedChanges"));
+    return false;
+  }
+  if (toolPanelStore.workspaceDiff && filesStore.editingFile) filesStore.closeEditor();
+  filesStore.closePreview();
+  toolPanelStore.closeWorkspaceDiff();
+  showToolPanel.value = false;
+  return true;
+}
+
+function toggleToolPanel() {
+  if (showToolPanel.value) {
+    closeToolPanelOverlay();
+    return;
+  }
+  showToolPanel.value = true;
+}
+
 function hasDraggedFiles(event: DragEvent) {
   return Array.from(event.dataTransfer?.types || []).includes("Files");
 }
@@ -239,11 +267,46 @@ function openPageSidebar() {
   showSessions.value = true;
 }
 
+function workspacePreviewPath(filePath: string): string | null {
+  const workspace = activeWorkspacePath.value?.replace(/\\/g, "/").replace(/\/+$/, "");
+  let decodedPath = filePath;
+  try {
+    decodedPath = decodeURIComponent(filePath);
+  } catch {
+    // Keep malformed percent sequences unchanged so the server can reject them.
+  }
+  const normalizedPath = decodedPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalizedPath || !(normalizedPath.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedPath))) return null;
+  if (!workspace) return normalizedPath;
+  const ignoreCase = /^[a-zA-Z]:\//.test(workspace);
+  const comparableWorkspace = ignoreCase ? workspace.toLowerCase() : workspace;
+  const comparablePath = ignoreCase ? normalizedPath.toLowerCase() : normalizedPath;
+  if (!comparablePath.startsWith(`${comparableWorkspace}/`)) return normalizedPath;
+  return normalizedPath.slice(workspace.length + 1);
+}
+
+function handleWorkspaceFilePreviewRequest(event: Event) {
+  const customEvent = event as CustomEvent<{ path?: string; fileName?: string }>;
+  const sessionId = activePreviewSessionId.value;
+  const filePath = typeof customEvent.detail?.path === "string" ? customEvent.detail.path : "";
+  const previewPath = workspacePreviewPath(filePath);
+  if (!sessionId || !previewPath) return;
+
+  customEvent.preventDefault();
+  const fileName = customEvent.detail?.fileName || previewPath.split("/").pop() || previewPath;
+  filesStore.closePreview();
+  toolPanelStore.closeWorkspaceDiff();
+  void filesStore.openSessionWorkspacePreview(sessionId, previewPath, fileName).catch((error) => {
+    message.error(error instanceof Error ? error.message : t("files.previewFailed"));
+  });
+}
+
 onMounted(() => {
   mobileQuery = window.matchMedia("(max-width: 768px)");
   handleMobileChange(mobileQuery);
   mobileQuery.addEventListener("change", handleMobileChange);
   window.addEventListener("hermes:open-page-sidebar", openPageSidebar);
+  window.addEventListener("hermes:preview-workspace-file", handleWorkspaceFilePreviewRequest);
   window.addEventListener("resize", handleToolPanelViewportResize);
   handleToolPanelViewportResize();
   if (profilesStore.profiles.length === 0) {
@@ -255,6 +318,10 @@ watch(
   () => chatStore.activeSessionId,
   async (sessionId, previousSessionId) => {
     if (!sessionId || !previousSessionId || sessionId === previousSessionId) return;
+
+    if (filesStore.previewFile || toolPanelStore.workspaceDiff) {
+      closeToolPanelOverlay();
+    }
 
     await nextTick();
     const surface = chatMainContentRef.value;
@@ -278,9 +345,12 @@ watch(
 onUnmounted(() => {
   mobileQuery?.removeEventListener("change", handleMobileChange);
   window.removeEventListener("hermes:open-page-sidebar", openPageSidebar);
+  window.removeEventListener("hermes:preview-workspace-file", handleWorkspaceFilePreviewRequest);
   window.removeEventListener("resize", handleToolPanelViewportResize);
   stopToolResize();
   sessionFadeAnimation?.cancel();
+  if (filesStore.previewFile?.workspaceSessionId) filesStore.closePreview();
+  toolPanelStore.closeWorkspaceDiff();
   sessionFadeAnimation = null;
 });
 watch(showToolPanel, async (visible) => {
@@ -288,6 +358,20 @@ watch(showToolPanel, async (visible) => {
   await nextTick();
   handleToolPanelViewportResize();
 });
+
+watch(
+  () => toolPanelStore.workspaceDiff,
+  (workspaceDiff) => {
+    if (workspaceDiff) showToolPanel.value = true;
+  },
+);
+
+watch(
+  () => filesStore.previewFile,
+  (previewFile) => {
+    if (previewFile) showToolPanel.value = true;
+  },
+);
 
 const showRenameModal = ref(false);
 const renameValue = ref("");
@@ -2054,7 +2138,7 @@ async function handleSessionModelCustomSubmit() {
                   :class="{ active: showToolPanel }"
                   quaternary
                   size="small"
-                  @click="showToolPanel = !showToolPanel"
+                  @click="toggleToolPanel"
                   circle
                 >
                   <template #icon>
@@ -2167,39 +2251,49 @@ async function handleSessionModelCustomSubmit() {
               @pointerdown="startToolResize"
             />
             <div class="chat-tool-panel-inner">
-              <div class="chat-tool-tabs" role="tablist">
-                <button
-                  class="chat-tool-tab"
-                  :class="{ active: activeToolPanel === 'files' }"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeToolPanel === 'files'"
-                  @click="activeToolPanel = 'files'"
-                >
-                  {{ t("drawer.files") }}
-                </button>
-                <button
-                  class="chat-tool-tab"
-                  :class="{ active: activeToolPanel === 'terminal' }"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeToolPanel === 'terminal'"
-                  @click="activeToolPanel = 'terminal'"
-                >
-                  {{ t("drawer.terminal") }}
-                </button>
-              </div>
-              <div class="chat-tool-content">
-                <FilesPanel
-                  v-show="activeToolPanel === 'files'"
-                  :workspace-session-id="activeWorkspaceSessionId"
-                  :workspace="activeWorkspacePath"
-                />
-                <TerminalPanel
-                  v-show="activeToolPanel === 'terminal'"
-                  :visible="showToolPanel && activeToolPanel === 'terminal'"
-                />
-              </div>
+              <WorkspaceDiffPreview
+                v-if="toolPanelStore.workspaceDiff"
+                :custom-close="closeToolPanelOverlay"
+              />
+              <FilePreview
+                v-else-if="filesStore.previewFile"
+                :custom-close="closeToolPanelOverlay"
+              />
+              <template v-else>
+                <div class="chat-tool-tabs" role="tablist">
+                  <button
+                    class="chat-tool-tab"
+                    :class="{ active: activeToolPanel === 'files' }"
+                    type="button"
+                    role="tab"
+                    :aria-selected="activeToolPanel === 'files'"
+                    @click="activeToolPanel = 'files'"
+                  >
+                    {{ t("drawer.files") }}
+                  </button>
+                  <button
+                    class="chat-tool-tab"
+                    :class="{ active: activeToolPanel === 'terminal' }"
+                    type="button"
+                    role="tab"
+                    :aria-selected="activeToolPanel === 'terminal'"
+                    @click="activeToolPanel = 'terminal'"
+                  >
+                    {{ t("drawer.terminal") }}
+                  </button>
+                </div>
+                <div class="chat-tool-content">
+                  <FilesPanel
+                    v-show="activeToolPanel === 'files'"
+                    :workspace-session-id="activeWorkspaceSessionId"
+                    :workspace="activeWorkspacePath"
+                  />
+                  <TerminalPanel
+                    v-show="activeToolPanel === 'terminal'"
+                    :visible="showToolPanel && activeToolPanel === 'terminal'"
+                  />
+                </div>
+              </template>
             </div>
           </aside>
         </div>
