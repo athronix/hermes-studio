@@ -34,6 +34,7 @@ let petWindowLoadPromise: Promise<void> | null = null
 let serverUrl: string | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let appShutdownPromise: Promise<void> | null = null
 let isBootstrapping = false
 let isResettingLogin = false
 let windowFadeTimer: NodeJS.Timeout | null = null
@@ -92,6 +93,18 @@ function showMainWindow() {
 function quitApp() {
   isQuitting = true
   app.quit()
+}
+
+async function prepareAppShutdown(): Promise<void> {
+  isQuitting = true
+  if (!appShutdownPromise) {
+    appShutdownPromise = (async () => {
+      cancelWindowFade()
+      await showShutdownSplash()
+      await stopWebUiServer().catch(() => undefined)
+    })()
+  }
+  await appShutdownPromise
 }
 
 function defaultPetWindowBounds(): DesktopWindowBounds {
@@ -871,11 +884,7 @@ function runDesktopApp() {
     createTray()
     createWindow()
     bootstrap()
-    initAutoUpdater({
-      beforeQuitAndInstall: () => {
-        isQuitting = true
-      },
-    })
+    initAutoUpdater({ beforeQuitAndInstall: prepareAppShutdown })
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow()
@@ -897,9 +906,7 @@ function runDesktopApp() {
       return
     }
     e.preventDefault()
-    cancelWindowFade()
-    await showShutdownSplash()
-    await stopWebUiServer().catch(() => undefined)
+    await prepareAppShutdown()
     app.exit(0)
   })
 }
