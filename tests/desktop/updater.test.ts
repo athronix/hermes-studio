@@ -67,6 +67,7 @@ describe('desktop updater helpers', () => {
     expect(updaterSource).toContain('Repair-HermesStudioStartupEntry')
     expect(updaterSource).toContain("Set-ItemProperty -Path $runPath -Name $_.Name -Value")
     expect(updaterSource).not.toContain('Stop-Process -Id')
+    expect(updaterSource).not.toContain('StartsWith($dir')
 
     expect(installerSource).toContain('AddSeconds(20)')
     expect(installerSource).toContain("& $$taskkill '/PID' $$processId '/T' '/F'")
@@ -78,5 +79,6 @@ describe('desktop updater helpers', () => {
     expect(installerSource).toContain("Uninstall Hermes Studio.exe")
     expect(installerSource).toContain("HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*")
     expect(installerSource).not.toContain('Stop-Process -Id')
+    expect(installerSource).not.toContain('StartsWith($$dir')
   })
 })

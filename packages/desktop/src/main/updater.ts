@@ -103,7 +103,6 @@ $ErrorActionPreference = 'SilentlyContinue'
 $target = [System.IO.Path]::GetFullPath($env:HERMES_STUDIO_UPDATE_EXE)
 $current = [int]$env:HERMES_STUDIO_UPDATE_PID
 $targets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-$targetDirs = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 function Add-HermesStudioPath {
   param([string]$Path)
   if ([string]::IsNullOrWhiteSpace($Path)) { return }
@@ -117,8 +116,6 @@ function Add-HermesStudioPath {
   }
   if ($name -ine 'Hermes Studio.exe') { return }
   $null = $targets.Add($full)
-  $dir = [System.IO.Path]::GetDirectoryName($full)
-  if ($dir) { $null = $targetDirs.Add($dir.TrimEnd('\\')) }
 }
 function Resolve-HermesStudioPathFromCommand {
   param([string]$Command)
@@ -162,16 +159,12 @@ function Repair-HermesStudioStartupEntry {
   }
 }
 function Get-HermesStudioProcess {
-  $dirs = @($targetDirs)
   $exeTargets = @($targets)
   Get-CimInstance Win32_Process | Where-Object {
     try {
       if ($_.ProcessId -eq $current -or -not $_.ExecutablePath) { return $false }
       $full = [System.IO.Path]::GetFullPath($_.ExecutablePath)
       if ($exeTargets -icontains $full) { return $true }
-      foreach ($dir in $dirs) {
-        if ($full.StartsWith($dir + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
-      }
       return $false
     } catch {
       $false
