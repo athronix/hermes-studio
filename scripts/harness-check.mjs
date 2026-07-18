@@ -467,6 +467,10 @@ for (const phrase of [
 for (const phrase of [
   'HERMES_STUDIO_EXE',
   'Get-CimInstance Win32_Process',
+  'Add-HermesStudioRegistryPaths',
+  'Repair-HermesStudioStartupEntry',
+  'Uninstall Hermes Studio.exe',
+  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
   'CloseMainWindow()',
   '$$processIds -notcontains [int]$$_.ParentProcessId',
   "& $$taskkill '/PID' $$processId '/T' '/F'",

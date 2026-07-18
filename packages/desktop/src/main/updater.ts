@@ -102,15 +102,85 @@ export async function stopOtherWindowsAppInstances(execPath = process.execPath, 
 $ErrorActionPreference = 'SilentlyContinue'
 $target = [System.IO.Path]::GetFullPath($env:HERMES_STUDIO_UPDATE_EXE)
 $current = [int]$env:HERMES_STUDIO_UPDATE_PID
+$targets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+$targetDirs = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+function Add-HermesStudioPath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return }
+  $candidate = $Path.Trim().Trim('"')
+  if (-not $candidate) { return }
+  try { $full = [System.IO.Path]::GetFullPath($candidate) } catch { $full = $candidate }
+  $name = [System.IO.Path]::GetFileName($full)
+  if ($name -ieq 'Uninstall Hermes Studio.exe') {
+    $full = Join-Path ([System.IO.Path]::GetDirectoryName($full)) 'Hermes Studio.exe'
+    $name = 'Hermes Studio.exe'
+  }
+  if ($name -ine 'Hermes Studio.exe') { return }
+  $null = $targets.Add($full)
+  $dir = [System.IO.Path]::GetDirectoryName($full)
+  if ($dir) { $null = $targetDirs.Add($dir.TrimEnd('\\')) }
+}
+function Resolve-HermesStudioPathFromCommand {
+  param([string]$Command)
+  if ([string]::IsNullOrWhiteSpace($Command)) { return $null }
+  $trimmed = $Command.Trim()
+  if ($trimmed.StartsWith('"')) {
+    $end = $trimmed.IndexOf('"', 1)
+    if ($end -gt 1) { return $trimmed.Substring(1, $end - 1) }
+  }
+  foreach ($marker in @('Hermes Studio.exe', 'Uninstall Hermes Studio.exe')) {
+    $index = $trimmed.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
+    if ($index -ge 0) { return $trimmed.Substring(0, $index + $marker.Length).Trim().Trim('"') }
+  }
+  return $null
+}
+function Add-HermesStudioCommandPath {
+  param([string]$Command)
+  Add-HermesStudioPath (Resolve-HermesStudioPathFromCommand $Command)
+}
+function Add-HermesStudioRegistryPaths {
+  $uninstallRoots = @(
+    'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+    'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+    'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
+  )
+  Get-ItemProperty $uninstallRoots -ErrorAction SilentlyContinue | Where-Object {
+    [string]$_.DisplayName -like '*Hermes Studio*' -or [string]$_.DisplayIcon -like '*Hermes Studio*' -or [string]$_.UninstallString -like '*Hermes Studio*'
+  } | ForEach-Object {
+    Add-HermesStudioCommandPath ([string]$_.DisplayIcon)
+    Add-HermesStudioCommandPath ([string]$_.UninstallString)
+    Add-HermesStudioCommandPath ([string]$_.QuietUninstallString)
+  }
+}
+function Repair-HermesStudioStartupEntry {
+  $runPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+  $entry = Get-ItemProperty -Path $runPath -ErrorAction SilentlyContinue
+  if (-not $entry) { return }
+  $entry.PSObject.Properties | Where-Object { $_.Name -like '*Hermes Studio*' -or [string]$_.Value -like '*Hermes Studio.exe*' } | ForEach-Object {
+    Add-HermesStudioCommandPath ([string]$_.Value)
+    Set-ItemProperty -Path $runPath -Name $_.Name -Value ('"{0}" --hidden' -f $target) -ErrorAction SilentlyContinue
+  }
+}
 function Get-HermesStudioProcess {
+  $dirs = @($targetDirs)
+  $exeTargets = @($targets)
   Get-CimInstance Win32_Process | Where-Object {
     try {
-      $_.ProcessId -ne $current -and $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target)
+      if ($_.ProcessId -eq $current -or -not $_.ExecutablePath) { return $false }
+      $full = [System.IO.Path]::GetFullPath($_.ExecutablePath)
+      if ($exeTargets -icontains $full) { return $true }
+      foreach ($dir in $dirs) {
+        if ($full.StartsWith($dir + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+      }
+      return $false
     } catch {
       $false
     }
   }
 }
+Add-HermesStudioPath $target
+Add-HermesStudioRegistryPaths
+Repair-HermesStudioStartupEntry
 Get-HermesStudioProcess | ForEach-Object {
   try {
     $process = Get-Process -Id $_.ProcessId
