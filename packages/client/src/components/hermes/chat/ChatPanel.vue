@@ -387,7 +387,7 @@ const profileFilterOptions = computed(() => [
 ]);
 
 async function handleProfileFilterChange(value: string) {
-  chatStore.sessionProfileFilter = value === "__all__" ? null : value;
+  chatStore.setSessionProfileFilter(value === "__all__" ? null : value);
   await chatStore.loadSessions(chatStore.sessionProfileFilter);
 }
 

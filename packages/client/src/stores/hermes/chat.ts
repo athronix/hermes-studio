@@ -631,6 +631,7 @@ const STORAGE_KEY_PREFIX = 'hermes_active_session_'
 type ChatRuntimeMode = 'default' | 'global_agent'
 let activeRuntimeMode: ChatRuntimeMode = 'default'
 const LEGACY_STORAGE_KEY = 'hermes_active_session'
+const SESSION_PROFILE_FILTER_STORAGE_KEY = 'hermes_session_profile_filter_v1'
 
 // 获取当前 profile 名称，用于隔离缓存。
 // 从 profiles store 的 activeProfileName（同步 localStorage）读取，
@@ -748,7 +749,12 @@ export const useChatStore = defineStore('chat', () => {
   const pendingForkCommands = ref<Set<string>>(new Set())
   /** Sessions that completed while the user was viewing another session. */
   const completedUnreadSessions = ref<Set<string>>(new Set())
-  const sessionProfileFilter = ref<string | null>(null)
+  const storedSessionProfileFilter = getItemBestEffort(SESSION_PROFILE_FILTER_STORAGE_KEY)?.trim()
+  const sessionProfileFilter = ref<string | null>(
+    storedSessionProfileFilter && storedSessionProfileFilter !== '__all__'
+      ? storedSessionProfileFilter
+      : null,
+  )
   /** sessionId → queued message count */
   const queueLengths = ref<Map<string, number>>(new Map())
   /** sessionId → queued user messages not yet visible in the transcript */
@@ -772,6 +778,22 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value
     return sid ? pendingClarifies.value.get(sid) || null : null
   })
+
+  function setSessionProfileFilter(profile: string | null) {
+    const normalized = profile?.trim()
+    sessionProfileFilter.value = normalized && normalized !== '__all__' ? normalized : null
+    if (sessionProfileFilter.value) {
+      setItemBestEffort(SESSION_PROFILE_FILTER_STORAGE_KEY, sessionProfileFilter.value)
+    } else {
+      removeItem(SESSION_PROFILE_FILTER_STORAGE_KEY)
+    }
+  }
+
+  function validateSessionProfileFilter(profileNames: string[]) {
+    const current = sessionProfileFilter.value
+    if (!current || profileNames.length === 0 || profileNames.includes(current)) return
+    setSessionProfileFilter(null)
+  }
 
   // 自动播放语音开关
   const autoPlaySpeechEnabled = ref(false)
@@ -4083,6 +4105,8 @@ export const useChatStore = defineStore('chat', () => {
     isSessionCompletedUnread,
     clearSessionCompletedUnread,
     sessionProfileFilter,
+    setSessionProfileFilter,
+    validateSessionProfileFilter,
     compressionState,
     abortState,
     isAborting,
