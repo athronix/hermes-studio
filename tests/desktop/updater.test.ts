@@ -34,4 +34,21 @@ describe('desktop updater helpers', () => {
     expect(updaterSource).toContain('if (response === 0) {\n    await autoUpdater.downloadUpdate()')
     expect(updaterSource).not.toContain('setInterval(')
   })
+
+  it('gracefully stops the current app before starting a downloaded update', () => {
+    const updaterSource = readFileSync(resolve('packages/desktop/src/main/updater.ts'), 'utf-8')
+    const mainSource = readFileSync(resolve('packages/desktop/src/main/index.ts'), 'utf-8')
+
+    expect(mainSource).toContain('async function prepareAppShutdown(): Promise<void>')
+    expect(mainSource).toContain('await stopWebUiServer().catch(() => undefined)')
+    expect(mainSource).toContain('initAutoUpdater({ beforeQuitAndInstall: prepareAppShutdown })')
+    expect(mainSource).toContain('await prepareAppShutdown()\n    app.exit(0)')
+
+    const prepareCurrentInstance = updaterSource.indexOf('await options.beforeQuitAndInstall?.()')
+    const stopOtherInstances = updaterSource.indexOf('await stopOtherWindowsAppInstances()', prepareCurrentInstance)
+    const startInstaller = updaterSource.indexOf('autoUpdater.quitAndInstall()', stopOtherInstances)
+    expect(prepareCurrentInstance).toBeGreaterThan(-1)
+    expect(stopOtherInstances).toBeGreaterThan(prepareCurrentInstance)
+    expect(startInstaller).toBeGreaterThan(stopOtherInstances)
+  })
 })
