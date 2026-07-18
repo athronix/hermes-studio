@@ -118,10 +118,26 @@
   hermesStudioStopDone:
 !macroend
 
+!macro bypassLegacyHermesStudioUninstaller
+  DetailPrint "Bypassing legacy Hermes Studio uninstaller during upgrade..."
+  DeleteRegKey SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}"
+  !ifdef UNINSTALL_REGISTRY_KEY_2
+    DeleteRegKey SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY_2}"
+  !endif
+  ${if} $installMode == "all"
+    DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY}"
+    !ifdef UNINSTALL_REGISTRY_KEY_2
+      DeleteRegKey HKCU "${UNINSTALL_REGISTRY_KEY_2}"
+    !endif
+  ${endIf}
+  ClearErrors
+!macroend
+
 !macro customInit
   !insertmacro stopHermesStudioProcesses
 !macroend
 
 !macro customCheckAppRunning
   !insertmacro stopHermesStudioProcesses
+  !insertmacro bypassLegacyHermesStudioUninstaller
 !macroend
