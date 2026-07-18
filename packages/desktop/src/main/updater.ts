@@ -118,9 +118,23 @@ Get-HermesStudioProcess | ForEach-Object {
   } catch {}
 }
 Start-Sleep -Milliseconds 750
-Get-HermesStudioProcess | ForEach-Object {
-  try { Stop-Process -Id $_.ProcessId -Force } catch {}
+$processes = @(Get-HermesStudioProcess)
+$processIds = @($processes | ForEach-Object { [int]$_.ProcessId })
+$roots = @($processes | Where-Object { $processIds -notcontains [int]$_.ParentProcessId })
+if ($roots.Count -eq 0) { $roots = $processes }
+$taskkill = Join-Path ([Environment]::SystemDirectory) 'taskkill.exe'
+$roots | ForEach-Object {
+  try {
+    $processId = [string]$_.ProcessId
+    & $taskkill '/PID' $processId '/T' '/F' | Out-Null
+  } catch {}
 }
+$deadline = (Get-Date).AddSeconds(10)
+while ((Get-Date) -lt $deadline) {
+  if (@(Get-HermesStudioProcess).Count -eq 0) { exit 0 }
+  Start-Sleep -Milliseconds 250
+}
+exit 1
 `.trim()
   try {
     await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {

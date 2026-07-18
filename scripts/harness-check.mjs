@@ -468,7 +468,10 @@ for (const phrase of [
   'HERMES_STUDIO_EXE',
   'Get-CimInstance Win32_Process',
   'CloseMainWindow()',
-  'Stop-Process -Id',
+  '$$processIds -notcontains [int]$$_.ParentProcessId',
+  "& $$taskkill '/PID' $$processId '/T' '/F'",
+  'if (@(Get-HermesStudioProcess).Count -eq 0) { exit 0 }',
+  'exit 1',
 ]) {
   if (!desktopInstallerScript.includes(phrase)) {
     fail(`desktop installer must close stale Hermes Studio processes by installed executable path: ${phrase}`)

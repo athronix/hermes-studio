@@ -34,4 +34,33 @@ describe('desktop updater helpers', () => {
     expect(updaterSource).toContain('if (response === 0) {\n    await autoUpdater.downloadUpdate()')
     expect(updaterSource).not.toContain('setInterval(')
   })
+
+  it('stops the Windows desktop server before launching the update installer', () => {
+    const updaterSource = readFileSync(resolve('packages/desktop/src/main/updater.ts'), 'utf-8')
+    const mainSource = readFileSync(resolve('packages/desktop/src/main/index.ts'), 'utf-8')
+
+    expect(mainSource).toContain('beforeQuitAndInstall: prepareWindowsUpdateShutdown')
+    expect(mainSource).toContain("if (process.platform !== 'win32') return")
+    expect(mainSource).toContain('await stopWebUiServer()')
+    expect(updaterSource.indexOf('await options.beforeQuitAndInstall?.()'))
+      .toBeLessThan(updaterSource.indexOf('await stopOtherWindowsAppInstances()'))
+    expect(updaterSource.indexOf('await stopOtherWindowsAppInstances()'))
+      .toBeLessThan(updaterSource.indexOf('autoUpdater.quitAndInstall()'))
+  })
+
+  it('uses verified process-tree termination for Windows updater cleanup', () => {
+    const updaterSource = readFileSync(resolve('packages/desktop/src/main/updater.ts'), 'utf-8')
+    const installerSource = readFileSync(resolve('packages/desktop/build/installer.nsh'), 'utf-8')
+
+    expect(updaterSource).toContain("& $taskkill '/PID' $processId '/T' '/F'")
+    expect(updaterSource).toContain("$processIds -notcontains [int]$_.ParentProcessId")
+    expect(updaterSource).toContain('if (@(Get-HermesStudioProcess).Count -eq 0) { exit 0 }')
+    expect(updaterSource).not.toContain('Stop-Process -Id')
+
+    expect(installerSource).toContain('AddSeconds(20)')
+    expect(installerSource).toContain("& $$taskkill '/PID' $$processId '/T' '/F'")
+    expect(installerSource).toContain('StrCmp $0 "0" hermesStudioStopDone')
+    expect(installerSource).toContain('$(appCannotBeClosed)')
+    expect(installerSource).not.toContain('Stop-Process -Id')
+  })
 })

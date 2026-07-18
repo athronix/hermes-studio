@@ -37,6 +37,7 @@ let isQuitting = false
 let isBootstrapping = false
 let isResettingLogin = false
 let windowFadeTimer: NodeJS.Timeout | null = null
+let windowsUpdateShutdownPromise: Promise<void> | null = null
 const activeNotifications = new Set<Notification>()
 
 if (process.platform === 'win32') {
@@ -539,6 +540,18 @@ async function showShutdownSplash() {
   }
 }
 
+async function prepareWindowsUpdateShutdown(): Promise<void> {
+  isQuitting = true
+  if (process.platform !== 'win32') return
+
+  windowsUpdateShutdownPromise ??= (async () => {
+    cancelWindowFade()
+    await showShutdownSplash()
+    await stopWebUiServer()
+  })()
+  await windowsUpdateShutdownPromise
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({
     '&': '&amp;',
@@ -872,9 +885,7 @@ function runDesktopApp() {
     createWindow()
     bootstrap()
     initAutoUpdater({
-      beforeQuitAndInstall: () => {
-        isQuitting = true
-      },
+      beforeQuitAndInstall: prepareWindowsUpdateShutdown,
     })
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -897,9 +908,13 @@ function runDesktopApp() {
       return
     }
     e.preventDefault()
-    cancelWindowFade()
-    await showShutdownSplash()
-    await stopWebUiServer().catch(() => undefined)
+    if (process.platform === 'win32' && windowsUpdateShutdownPromise) {
+      await windowsUpdateShutdownPromise.catch(() => undefined)
+    } else {
+      cancelWindowFade()
+      await showShutdownSplash()
+      await stopWebUiServer().catch(() => undefined)
+    }
     app.exit(0)
   })
 }
