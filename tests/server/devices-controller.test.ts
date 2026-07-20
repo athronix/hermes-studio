@@ -16,8 +16,8 @@ const device: LanDeviceInfo = {
   computer_name: 'paired-device',
   endpoint_kind: 'web',
   ip: '192.168.1.20',
-  http_port: 8648,
-  url: 'http://192.168.1.20:8648',
+  http_port: 56278,
+  url: 'http://192.168.1.20:56278',
   os: {
     type: 'Linux',
     platform: 'linux',
@@ -91,7 +91,7 @@ describe('devices controller', () => {
         ip: '192.168.1.99',
         body: {
           ...device,
-          http_port: 8648,
+          http_port: 56278,
           url: 'javascript:alert(1)',
           timestamp,
           nonce,
@@ -106,7 +106,7 @@ describe('devices controller', () => {
 
     expect(ctx.status).toBeUndefined()
     expect(ctx.body).toEqual({ status: 'pending' })
-    expect(getDeviceRelation(device.id)?.url).toBe('http://192.168.1.99:8648')
+    expect(getDeviceRelation(device.id)?.url).toBe('http://192.168.1.99:56278')
   })
 
   it('requires the startup pairing code before public requests enter the approval list', async () => {
@@ -119,7 +119,7 @@ describe('devices controller', () => {
         ip: '8.8.8.8',
         body: {
           ...device,
-          http_port: 8648,
+          http_port: 56278,
           timestamp,
           nonce,
           signature,
@@ -156,7 +156,7 @@ describe('devices controller', () => {
         ip: '8.8.8.8',
         body: {
           ...device,
-          http_port: 8648,
+          http_port: 56278,
           timestamp,
           nonce,
           signature,
@@ -185,7 +185,7 @@ describe('devices controller', () => {
         ip: '127.0.0.1',
         body: {
           ...device,
-          http_port: 8648,
+          http_port: 56278,
           timestamp,
           nonce,
           signature,
@@ -216,7 +216,7 @@ describe('devices controller', () => {
         ip: '8.8.4.4',
         body: {
           ...device,
-          http_port: 8648,
+          http_port: 56278,
           pairing_code: 'pair-secret',
           timestamp,
           nonce,
@@ -232,7 +232,7 @@ describe('devices controller', () => {
     expect(ctx.status).toBeUndefined()
     expect(ctx.body).toEqual({ status: 'pending' })
     expect(getDeviceRelation(device.id)?.inbound_status).toBe('pending')
-    expect(getDeviceRelation(device.id)?.url).toBe('http://8.8.4.4:8648')
+    expect(getDeviceRelation(device.id)?.url).toBe('http://8.8.4.4:56278')
   })
 
   it('prefers public request hosts when building copyable pairing links', async () => {
@@ -275,7 +275,7 @@ describe('devices controller', () => {
     const { getDevicePairingLink } = await import('../../packages/server/src/controllers/devices')
     const ctx: any = {
       protocol: 'http',
-      host: 'localhost:8648',
+      host: 'localhost:56278',
       get: () => '',
     }
 
@@ -283,7 +283,7 @@ describe('devices controller', () => {
 
     expect(ctx.body).toEqual({
       code: 'pair-secret',
-      link: 'http://192.168.1.88:8648/#/hermes/devices?pairing_code=pair-secret',
+      link: 'http://192.168.1.88:56278/#/hermes/devices?pairing_code=pair-secret',
     })
   })
 
@@ -371,7 +371,7 @@ describe('devices controller', () => {
     expect(relation?.outbound_status).toBe('pending')
     expect(relation?.outbound_requested_at).toBeGreaterThan(0)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://192.168.1.20:8648/api/devices/link-request',
+      'http://192.168.1.20:56278/api/devices/link-request',
       expect.objectContaining({ method: 'POST' }),
     )
   })

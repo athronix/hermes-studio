@@ -265,7 +265,7 @@ npm install -g hermes-web-ui
 hermes-web-ui start
 ```
 
-打开 **http://localhost:8648**
+打开 **http://localhost:56278**
 
 ### Docker Compose
 
@@ -303,7 +303,7 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `PORT` | `8648` | Web UI 监听端口。 |
+| `PORT` | `56278` | Web UI 监听端口。 |
 | `BIND_HOST` | `0.0.0.0` | Web UI 绑定地址。如需 IPv6，可显式设置为 `::`。 |
 | `HERMES_WEB_UI_HOME` | `~/.hermes-web-ui` | Web UI 数据目录，用于认证 token、登录凭据、日志、数据库和默认上传目录。兼容支持 `HERMES_WEBUI_STATE_DIR` 作为别名。 |
 | `HERMES_WEBUI_STATE_DIR` | 未设置 | `HERMES_WEB_UI_HOME` 的兼容别名。 |
@@ -352,8 +352,8 @@ Web UI 启动后端聊天能力时，会优先使用包含 `run_agent.py` 的源
 | `HERMES_WEB_UI_PREVIEW_REPO` | package repository | Version Preview 使用的 GitHub 仓库。 |
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_TRANSPORT` | 平台默认值 | Version Preview broker transport。设为 `tcp` 可让预览环境在 macOS/Linux 上也使用 loopback TCP；未设置时会跟随 `HERMES_AGENT_BRIDGE_WORKER_TRANSPORT=tcp`。 |
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT` | 隔离的预览 endpoint | 直接覆盖 Version Preview 的 broker endpoint。 |
-| `HERMES_WEB_UI_BACKEND_PORT` | `8648` | Vite dev proxy 使用的后端端口。 |
-| `HERMES_WEB_UI_FRONTEND_PORT` | `8649` | 前端 Vite dev server 端口。 |
+| `HERMES_WEB_UI_BACKEND_PORT` | `56278` | Vite dev proxy 使用的后端端口。 |
+| `HERMES_WEB_UI_FRONTEND_PORT` | `56279` | 前端 Vite dev server 端口。 |
 
 ### CLI 命令
 
@@ -392,8 +392,8 @@ npm install
 npm run dev
 ```
 
-- 前端：http://localhost:8649
-- BFF 服务器：http://localhost:8647
+- 前端：http://localhost:56279
+- BFF 服务器：http://localhost:56277
 
 ```bash
 npm run build   # 构建输出到 dist/
@@ -404,7 +404,7 @@ npm run build   # 构建输出到 dist/
 ## 架构
 
 ```
-浏览器 → BFF (Koa, :8648) → Socket.IO /chat-run
+浏览器 → BFF (Koa, :56278) → Socket.IO /chat-run
                 ↓
         Hermes agent bridge → Hermes Agent runtime
                 ↓

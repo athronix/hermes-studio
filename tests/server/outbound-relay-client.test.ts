@@ -178,7 +178,7 @@ describe('outbound relay client', () => {
       relayUrl: 'http://device.local:8787/',
       relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
@@ -237,7 +237,7 @@ describe('outbound relay client', () => {
         relayProtocol: 'mcu-socket.io',
         userToken: 'user-jwt',
         deviceCode: 'device-code-1',
-        localBaseUrl: 'http://127.0.0.1:8648',
+        localBaseUrl: 'http://127.0.0.1:56278',
         fetchImpl: vi.fn() as any,
       })
 
@@ -268,7 +268,7 @@ describe('outbound relay client', () => {
         relayUrl: 'http://relay.example.com',
         relayProtocol: 'mcu-socket.io',
         deviceCode: 'device-code-1',
-        localBaseUrl: 'http://127.0.0.1:8648',
+        localBaseUrl: 'http://127.0.0.1:56278',
         fetchImpl: vi.fn() as any,
       })
 
@@ -292,13 +292,13 @@ describe('outbound relay client', () => {
       userToken: 'user-jwt',
       instanceId: 'mcu-1',
       deviceCode: 'device-code-1',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
     const remoteSocket = connectRemoteSocket()
     const localGlobalAgentSocket = sockets.at(-1)
-    expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/global-agent', expect.objectContaining({
+    expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:56278/global-agent', expect.objectContaining({
       auth: expect.objectContaining({
         token: 'user-jwt',
         role: 'hermes-studio',
@@ -404,7 +404,7 @@ describe('outbound relay client', () => {
           userToken: 'user-jwt',
           instanceId: 'mcu-1',
           deviceCode: 'device-code-1',
-          localBaseUrl: 'http://127.0.0.1:8648',
+          localBaseUrl: 'http://127.0.0.1:56278',
           fetchImpl: fetchImpl as any,
         })
       })
@@ -491,7 +491,7 @@ describe('outbound relay client', () => {
       relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
       deviceCode: 'device-code-1',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
@@ -515,9 +515,9 @@ describe('outbound relay client', () => {
     })
 
     await vi.waitFor(() => {
-      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
+      expect(socketForUrl('http://127.0.0.1:56278/chat-run')).toBeTruthy()
     })
-    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
+    const localSocket = socketForUrl('http://127.0.0.1:56278/chat-run')
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
     localSocket.__handlers.get('run.completed')?.({})
@@ -559,7 +559,7 @@ describe('outbound relay client', () => {
       relayUrl: 'http://device.local:8787/',
       relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
@@ -576,9 +576,9 @@ describe('outbound relay client', () => {
     })
 
     await vi.waitFor(() => {
-      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
+      expect(socketForUrl('http://127.0.0.1:56278/chat-run')).toBeTruthy()
     })
-    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
+    const localSocket = socketForUrl('http://127.0.0.1:56278/chat-run')
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '你好' })
     localSocket.__handlers.get('run.completed')?.({})
@@ -631,7 +631,7 @@ describe('outbound relay client', () => {
       relayUrl: 'http://device.local:8787/',
       relayProtocol: 'mcu-socket.io',
       userToken: 'user-jwt',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
@@ -648,9 +648,9 @@ describe('outbound relay client', () => {
     })
 
     await vi.waitFor(() => {
-      expect(socketForUrl('http://127.0.0.1:8648/chat-run')).toBeTruthy()
+      expect(socketForUrl('http://127.0.0.1:56278/chat-run')).toBeTruthy()
     })
-    const localSocket = socketForUrl('http://127.0.0.1:8648/chat-run')
+    const localSocket = socketForUrl('http://127.0.0.1:56278/chat-run')
     localSocket.__handlers.get('connect')?.()
     localSocket.__handlers.get('message.delta')?.({ delta: '这段正在合成。\n' })
 
@@ -686,7 +686,7 @@ describe('outbound relay client', () => {
       relayUrl: 'https://relay.example.com',
       relayToken: '',
       instanceId: '',
-      localBaseUrl: 'http://127.0.0.1:8648/',
+      localBaseUrl: 'http://127.0.0.1:56278/',
       fetchImpl: fetchImpl as any,
     })
 
@@ -704,7 +704,7 @@ describe('outbound relay client', () => {
       body: { message: 'hello' },
     })
 
-    expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:8648/api/hermes/sessions?profile=default', expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:56278/api/hermes/sessions?profile=default', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ message: 'hello' }),
     }))
@@ -736,7 +736,7 @@ describe('outbound relay client', () => {
       relayUrl: 'https://relay.example.com',
       relayToken: '',
       instanceId: '',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
@@ -746,7 +746,7 @@ describe('outbound relay client', () => {
       path: '/api/auth/users',
     })
 
-    expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:8648/api/auth/users', expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:56278/api/auth/users', expect.objectContaining({
       method: 'GET',
     }))
     expect(response).toEqual({
@@ -767,7 +767,7 @@ describe('outbound relay client', () => {
       relayUrl: 'https://relay.example.com',
       relayToken: '',
       instanceId: '',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
 
@@ -792,7 +792,7 @@ describe('outbound relay client', () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
     const client = startOutboundRelayClient({
       relayUrl: 'https://relay.example.com',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: vi.fn() as any,
     })
     expect(client).not.toBeNull()
@@ -806,7 +806,7 @@ describe('outbound relay client', () => {
     }, openAck)
 
     const localSocket = sockets[1]
-    expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.objectContaining({
+    expect(mockIo).toHaveBeenCalledWith('http://127.0.0.1:56278/chat-run', expect.objectContaining({
       auth: { token: 'user-jwt' },
       query: { profile: 'default' },
       transports: ['websocket', 'polling'],
@@ -835,7 +835,7 @@ describe('outbound relay client', () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
     startOutboundRelayClient({
       relayUrl: 'https://relay.example.com',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: vi.fn() as any,
     })
 
@@ -881,7 +881,7 @@ describe('outbound relay client', () => {
     const { startOutboundRelayClient } = await import('../../packages/server/src/services/global-agent/outbound-relay-client')
     startOutboundRelayClient({
       relayUrl: 'https://relay.example.com',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: vi.fn() as any,
     })
 
@@ -919,19 +919,19 @@ describe('outbound relay client', () => {
     const first = startOutboundRelayClient({
       connectionId: 'primary',
       relayUrl: 'https://relay.example.com',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: vi.fn() as any,
     })
     const second = startOutboundRelayClient({
       connectionId: 'backup',
       relayUrl: 'https://other-relay.example.com',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: vi.fn() as any,
     })
     const duplicate = startOutboundRelayClient({
       connectionId: 'primary',
       relayUrl: 'https://duplicate.example.com',
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: vi.fn() as any,
     })
 

@@ -23,7 +23,7 @@ import {
   pythonDir,
 } from './paths'
 
-const DEFAULT_PORT = 8748
+const DEFAULT_PORT = 56282
 const DEFAULT_READY_TIMEOUT_MS = 120_000
 const DEFAULT_FULL_STARTUP_WAIT_MS = 0
 const DEFAULT_STOP_TIMEOUT_MS = 20_000

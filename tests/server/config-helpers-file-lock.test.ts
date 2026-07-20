@@ -41,14 +41,14 @@ describe('config-helpers locked file updates', () => {
       }),
       updateConfigYaml((cfg) => {
         cfg.platforms = cfg.platforms || {}
-        cfg.platforms.api_server = { extra: { port: 8648 } }
+        cfg.platforms.api_server = { extra: { port: 56278 } }
         return cfg
       }),
     ])
 
     const config = YAML.load(await readFile(join(hermesHome, 'config.yaml'), 'utf-8')) as any
     expect(config.model.default).toBe('glm-5.1')
-    expect(config.platforms.api_server.extra.port).toBe(8648)
+    expect(config.platforms.api_server.extra.port).toBe(56278)
     await expect(readFile(join(hermesHome, 'config.yaml.bak'), 'utf-8')).resolves.toContain('model:')
   })
 

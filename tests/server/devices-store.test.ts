@@ -11,8 +11,8 @@ describe('devices store', () => {
     computer_name: 'device-a',
     endpoint_kind: 'web',
     ip: '192.168.1.20',
-    http_port: 8648,
-    url: 'http://192.168.1.20:8648',
+    http_port: 56278,
+    url: 'http://192.168.1.20:56278',
     os: {
       type: 'Linux',
       platform: 'linux',

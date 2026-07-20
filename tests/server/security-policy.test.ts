@@ -29,23 +29,23 @@ describe('server security policy', () => {
   it('allows same-host browser origins without enabling wildcard CORS', async () => {
     const resolveOrigin = createCorsOriginResolver('')
 
-    await expect(resolveOrigin(fakeCtx('http://127.0.0.1:8648', '127.0.0.1:8648'))).resolves.toBe('http://127.0.0.1:8648')
-    await expect(resolveOrigin(fakeCtx('https://evil.example', '127.0.0.1:8648'))).resolves.toBe('')
+    await expect(resolveOrigin(fakeCtx('http://127.0.0.1:56278', '127.0.0.1:56278'))).resolves.toBe('http://127.0.0.1:56278')
+    await expect(resolveOrigin(fakeCtx('https://evil.example', '127.0.0.1:56278'))).resolves.toBe('')
   })
 
   it('allows configured origins and explicit wildcard opt-in only', () => {
-    expect(isOriginAllowed('https://app.example', '127.0.0.1:8648', 'https://app.example')).toBe(true)
-    expect(isOriginAllowed('https://evil.example', '127.0.0.1:8648', 'https://app.example')).toBe(false)
-    expect(isOriginAllowed('null', '127.0.0.1:8648', '')).toBe(false)
-    expect(isOriginAllowed('null', '127.0.0.1:8648', '*')).toBe(true)
-    expect(isOriginAllowed('https://evil.example', '127.0.0.1:8648', '*')).toBe(true)
+    expect(isOriginAllowed('https://app.example', '127.0.0.1:56278', 'https://app.example')).toBe(true)
+    expect(isOriginAllowed('https://evil.example', '127.0.0.1:56278', 'https://app.example')).toBe(false)
+    expect(isOriginAllowed('null', '127.0.0.1:56278', '')).toBe(false)
+    expect(isOriginAllowed('null', '127.0.0.1:56278', '*')).toBe(true)
+    expect(isOriginAllowed('https://evil.example', '127.0.0.1:56278', '*')).toBe(true)
   })
 
   it('rejects disallowed browser websocket upgrade origins', () => {
-    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'https://evil.example', host: '127.0.0.1:8648' } } as any, '')).toBe(true)
-    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'null', host: '127.0.0.1:8648' } } as any, '')).toBe(true)
-    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'http://127.0.0.1:8648', host: '127.0.0.1:8648' } } as any, '')).toBe(false)
-    expect(shouldRejectUpgradeOrigin({ headers: { host: '127.0.0.1:8648' } } as any, '')).toBe(false)
+    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'https://evil.example', host: '127.0.0.1:56278' } } as any, '')).toBe(true)
+    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'null', host: '127.0.0.1:56278' } } as any, '')).toBe(true)
+    expect(shouldRejectUpgradeOrigin({ headers: { origin: 'http://127.0.0.1:56278', host: '127.0.0.1:56278' } } as any, '')).toBe(false)
+    expect(shouldRejectUpgradeOrigin({ headers: { host: '127.0.0.1:56278' } } as any, '')).toBe(false)
   })
 
   it('adds baseline browser security headers', async () => {

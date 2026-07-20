@@ -108,7 +108,7 @@ export default {
     wecom: '企业微信',
   },
   screenshots: {
-    localUrl: 'http://localhost:8648',
+    localUrl: 'http://localhost:56278',
     tourLabel: '产品导览',
     previous: '上一张截图',
     next: '下一张截图',
@@ -231,7 +231,7 @@ export default {
       envVars: {
         title: '环境变量',
         rows: [
-          ['PORT', '服务器监听端口（默认：8648）'],
+          ['PORT', '服务器监听端口（默认：56278）'],
           ['BIND_HOST', '服务器绑定地址（默认：0.0.0.0）。如需 IPv6，请显式设置为 ::。'],
           ['HERMES_WEB_UI_HOME', 'Hermes Studio 数据目录，用于认证 token、登录凭据、日志、数据库和默认上传目录'],
           ['HERMES_WEBUI_STATE_DIR', 'HERMES_WEB_UI_HOME 的兼容别名'],

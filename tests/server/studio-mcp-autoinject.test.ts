@@ -56,7 +56,7 @@ function createStableLauncherAlias(targetLauncher: string): string {
 }
 
 const configMock = vi.hoisted(() => ({
-  port: 8648,
+  port: 56278,
   appHome: '/Users/test/.hermes-web-ui',
 }))
 
@@ -91,7 +91,7 @@ describe('studio MCP autoinject', () => {
     delete process.env.HERMES_WEB_UI_MCP_BIN
     stableLauncher = createLauncherFixture(process.cwd(), 'directory')
     process.env.HERMES_WEB_UI_MCP_BIN = stableLauncher
-    configMock.port = 8648
+    configMock.port = 56278
     configMock.appHome = '/Users/test/.hermes-web-ui'
     listProfileNamesFromDiskMock.mockReturnValue(['default', 'work'])
     updateConfigYamlForProfileMock.mockImplementation(async (_profile: string, updater: any) => {
@@ -117,7 +117,7 @@ describe('studio MCP autoinject', () => {
       command: process.execPath,
       args: [stableLauncher, 'api'],
       env: {
-        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
         HERMES_WEB_UI_HOME: '/Users/test/.hermes-web-ui',
         HERMES_WEBUI_STATE_DIR: '/Users/test/.hermes-web-ui',
         HERMES_WEB_UI_PROFILE: 'default',
@@ -244,7 +244,7 @@ describe('studio MCP autoinject', () => {
           command: process.execPath,
           args: [stableLauncher, 'api'],
           env: {
-            HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+            HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
             HERMES_WEB_UI_HOME: '/Users/test/.hermes-web-ui',
             HERMES_WEBUI_STATE_DIR: '/Users/test/.hermes-web-ui',
             HERMES_WEB_UI_PROFILE: 'default',
@@ -302,7 +302,7 @@ describe('studio MCP autoinject', () => {
         'hermes-studio': {
           command: 'hermes-web-ui-mcp',
           env: {
-            HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+            HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
             HERMES_WEB_UI_HOME: '/tmp/hermes-web-ui-home',
             HERMES_WEBUI_STATE_DIR: '/tmp/hermes-web-ui-home',
             HERMES_WEB_UI_PROFILE: 'default',
@@ -359,7 +359,7 @@ describe('studio MCP autoinject', () => {
           command: 'hermes-web-ui-mcp',
           args: ['api'],
           env: {
-            HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+            HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
             HERMES_WEB_UI_HOME: '/tmp/hermes-web-ui-home',
             HERMES_WEBUI_STATE_DIR: '/tmp/hermes-web-ui-home',
             HERMES_WEB_UI_PROFILE: 'default',

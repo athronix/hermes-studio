@@ -226,7 +226,7 @@ export function createShimContent(
 export function createMcpShimContent(
   nodePath: string,
   scriptPath: string,
-  webUiUrl = 'http://127.0.0.1:8748',
+  webUiUrl = 'http://127.0.0.1:56282',
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (platform === 'win32') {
@@ -458,7 +458,7 @@ export async function installHermesStudioMcpShim(options: McpShimInstallOptions 
   const shimPath = mcpShimPathForPlatform(binDir, platform)
   const nodePath = options.nodePath || process.execPath
   const scriptPath = options.scriptPath || resolve(process.cwd(), 'bin', 'hermes-studio-mcp.mjs')
-  const webUiUrl = options.webUiUrl || 'http://127.0.0.1:8748'
+  const webUiUrl = options.webUiUrl || 'http://127.0.0.1:56282'
 
   mkdirSync(binDir, { recursive: true })
   const status = writeShim(shimPath, createMcpShimContent(nodePath, scriptPath, webUiUrl, platform), platform, MCP_SHIM_MARKER)

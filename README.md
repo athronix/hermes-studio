@@ -259,7 +259,7 @@ npm install -g hermes-web-ui
 hermes-web-ui start
 ```
 
-Open **http://localhost:8648**
+Open **http://localhost:56278**
 
 ### Docker Compose
 
@@ -298,7 +298,7 @@ These variables configure Hermes Web UI, its local Hermes runtime integration, a
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `PORT` | `8648` | Web UI listen port. |
+| `PORT` | `56278` | Web UI listen port. |
 | `BIND_HOST` | `0.0.0.0` | Web UI bind host. Set `::` explicitly for IPv6. |
 | `HERMES_WEB_UI_HOME` | `~/.hermes-web-ui` | Web UI data home for auth token, credentials, logs, DB, and default uploads. `HERMES_WEBUI_STATE_DIR` is also supported as a compatibility alias. |
 | `HERMES_WEBUI_STATE_DIR` | unset | Compatibility alias for `HERMES_WEB_UI_HOME`. |
@@ -349,8 +349,8 @@ These variables configure Hermes Web UI, its local Hermes runtime integration, a
 | `HERMES_WEB_UI_PREVIEW_REPO` | package repository | GitHub repository used by Version Preview. |
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_TRANSPORT` | platform default | Version Preview broker transport. Set `tcp` to use loopback TCP for Preview on macOS/Linux; when unset, Preview follows `HERMES_AGENT_BRIDGE_WORKER_TRANSPORT=tcp`. |
 | `HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT` | isolated preview endpoint | Directly overrides the Version Preview broker endpoint. |
-| `HERMES_WEB_UI_BACKEND_PORT` | `8648` | Backend port used by the Vite dev proxy. |
-| `HERMES_WEB_UI_FRONTEND_PORT` | `8649` | Frontend Vite dev server port. |
+| `HERMES_WEB_UI_BACKEND_PORT` | `56278` | Backend port used by the Vite dev proxy. |
+| `HERMES_WEB_UI_FRONTEND_PORT` | `56279` | Frontend Vite dev server port. |
 
 ### CLI Commands
 
@@ -389,8 +389,8 @@ npm install
 npm run dev
 ```
 
-- Frontend: http://localhost:8649
-- BFF Server: http://localhost:8647
+- Frontend: http://localhost:56279
+- BFF Server: http://localhost:56277
 
 ```bash
 npm run build   # outputs to dist/
@@ -401,7 +401,7 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for project development guidelines.
 ## Architecture
 
 ```
-Browser → BFF (Koa, :8648) → Socket.IO /chat-run
+Browser → BFF (Koa, :56278) → Socket.IO /chat-run
                 ↓
         Hermes agent bridge → Hermes Agent runtime
                 ↓

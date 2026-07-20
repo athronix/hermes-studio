@@ -63,7 +63,7 @@ describe('CLI port detection', () => {
     })
     const { getListeningPids, mocks } = await loadCli({ execFileSync })
 
-    expect(getListeningPids(8648)).toEqual([1234])
+    expect(getListeningPids(56278)).toEqual([1234])
     expect(mocks.execFileSync).not.toHaveBeenCalledWith(
       'ss',
       expect.any(Array),
@@ -71,7 +71,7 @@ describe('CLI port detection', () => {
     )
     expect(mocks.execFileSync).toHaveBeenCalledWith(
       'lsof',
-      ['-tiTCP:8648', '-sTCP:LISTEN'],
+      ['-tiTCP:56278', '-sTCP:LISTEN'],
       expect.objectContaining({ encoding: 'utf-8' }),
     )
   })
@@ -84,13 +84,13 @@ describe('CLI port detection', () => {
         return ''
       }
       if (command === 'ss') {
-        return 'LISTEN 0 511 0.0.0.0:8648 0.0.0.0:* users:(("node",pid=4321,fd=20))\n'
+        return 'LISTEN 0 511 0.0.0.0:56278 0.0.0.0:* users:(("node",pid=4321,fd=20))\n'
       }
       throw new Error(`unexpected command: ${command}`)
     })
     const { getListeningPids } = await loadCli({ execFileSync })
 
-    expect(getListeningPids(8648)).toEqual([4321])
+    expect(getListeningPids(56278)).toEqual([4321])
   })
 
   it('parses Linux netstat listener output as a final fallback', async () => {
@@ -98,10 +98,10 @@ describe('CLI port detection', () => {
 
     expect(parseUnixNetstatListeningPids(
       [
-        'tcp        0      0 0.0.0.0:8648            0.0.0.0:*               LISTEN      2468/node',
+        'tcp        0      0 0.0.0.0:56278            0.0.0.0:*               LISTEN      2468/node',
         'tcp        0      0 0.0.0.0:5173            0.0.0.0:*               LISTEN      1357/node',
       ].join('\n'),
-      8648,
+      56278,
     )).toEqual([2468])
   })
 

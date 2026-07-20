@@ -44,8 +44,11 @@ describe('LAN discovery', () => {
 
   it('maps HTTP ports to UDP discovery ports', () => {
     expect(HERMES_DISCOVERY_PORT).toBe(48640)
-    expect(discoveryPortForHttpPort(8648)).toBe(48648)
-    expect(discoveryPortForHttpPort(8748)).toBe(48748)
+    expect(discoveryPortForHttpPort(56282)).toBe(48748)
+    // 56278 + 40000 > 65535, should throw
+    expect(() => discoveryPortForHttpPort(56278)).toThrow()
+    // 56282 + 40000 > 65535, should throw
+    expect(() => discoveryPortForHttpPort(56282)).toThrow()
   })
 
   it('starts a fixed-port discovery responder for HTTP ports without a UDP mapping', async () => {
@@ -59,8 +62,8 @@ describe('LAN discovery', () => {
   })
 
   it('classifies well-known LAN endpoints', () => {
-    expect(getLanEndpointKind(8648)).toBe('web')
-    expect(getLanEndpointKind(8748)).toBe('desktop')
+    expect(getLanEndpointKind(56278)).toBe('web')
+    expect(getLanEndpointKind(56282)).toBe('desktop')
     expect(getLanEndpointKind(19001)).toBe('custom')
   })
 
@@ -73,9 +76,9 @@ describe('LAN discovery', () => {
   })
 
   it('uses configured scan ports plus the active server port', () => {
-    process.env.HERMES_LAN_DISCOVERY_HTTP_PORTS = '8648, 8748'
+    process.env.HERMES_LAN_DISCOVERY_HTTP_PORTS = '56278, 56282'
 
-    expect(getDiscoveryHttpPorts(9999)).toEqual([8648, 8748, 9999])
+    expect(getDiscoveryHttpPorts(9999)).toEqual([56278, 56282, 9999])
   })
 
   it('discovers a local responder over UDP', async () => {

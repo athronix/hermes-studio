@@ -16,7 +16,7 @@ import {
   type RuntimeProgress,
 } from './runtime-manager'
 
-const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
+const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 56282
 const START_HIDDEN = process.argv.includes('--hidden')
 const QUIT_EXISTING = process.argv.includes('--quit')
 const APP_USER_MODEL_ID = 'com.hermeswebui.studio'

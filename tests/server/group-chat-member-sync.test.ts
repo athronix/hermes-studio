@@ -55,7 +55,7 @@ describe('Group Chat member/agent identity sync', () => {
 
     expect(client.agentId).toBe('agent-stable-1')
     expect(mockIo).toHaveBeenCalledWith(
-      'http://127.0.0.1:8648/group-chat',
+      'http://127.0.0.1:56278/group-chat',
       expect.objectContaining({
         auth: expect.objectContaining({
           token: 'test-token',

@@ -312,7 +312,7 @@ describe('GlobalAgentServer', () => {
     const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
 
     const server = new GlobalAgentServer(io as any, {
-      localBaseUrl: 'http://127.0.0.1:8648',
+      localBaseUrl: 'http://127.0.0.1:56278',
       fetchImpl: fetchImpl as any,
     })
     server.init()
@@ -343,7 +343,7 @@ describe('GlobalAgentServer', () => {
     }, httpAck)
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:8648/api/hermes/sessions', expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:56278/api/hermes/sessions', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ title: 'hello' }),
     }))
@@ -364,7 +364,7 @@ describe('GlobalAgentServer', () => {
       namespace: '/chat-run',
     }, openAck)
 
-    expect(clientSocketMocks.clientIo).toHaveBeenCalledWith('http://127.0.0.1:8648/chat-run', expect.objectContaining({
+    expect(clientSocketMocks.clientIo).toHaveBeenCalledWith('http://127.0.0.1:56278/chat-run', expect.objectContaining({
       auth: { token: 'user-jwt' },
       query: { profile: 'research' },
       transports: ['websocket', 'polling'],
@@ -402,7 +402,7 @@ describe('GlobalAgentServer', () => {
     const io = { of: vi.fn(() => nsp) }
     const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
 
-    const server = new GlobalAgentServer(io as any, { localBaseUrl: 'http://127.0.0.1:8648' })
+    const server = new GlobalAgentServer(io as any, { localBaseUrl: 'http://127.0.0.1:56278' })
     server.init()
 
     const first = createMockSocket('agent-old', {
@@ -542,7 +542,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -595,7 +595,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -664,7 +664,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -729,7 +729,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -800,7 +800,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -824,7 +824,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -864,7 +864,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -907,7 +907,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -941,7 +941,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -1043,7 +1043,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -1129,7 +1129,7 @@ describe('GlobalAgentServer', () => {
 
     const server = new GlobalAgentServer(io as any, {
       fetchImpl: fetchImpl as any,
-      localBaseUrl: 'http://127.0.0.1:8647',
+      localBaseUrl: 'http://127.0.0.1:56277',
     })
     server.init()
 
@@ -1177,7 +1177,7 @@ describe('GlobalAgentServer', () => {
     const io = { of: vi.fn(() => nsp) }
     const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
 
-    const server = new GlobalAgentServer(io as any, { localBaseUrl: 'http://127.0.0.1:8647' })
+    const server = new GlobalAgentServer(io as any, { localBaseUrl: 'http://127.0.0.1:56277' })
     server.init()
 
     const agentSocket = createMockSocket('jwt-agent-socket', {

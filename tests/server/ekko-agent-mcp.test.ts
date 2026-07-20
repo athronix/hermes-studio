@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const configMock = vi.hoisted(() => ({
-  port: 8648,
+  port: 56278,
   appHome: '/Users/test/.hermes-web-ui',
 }))
 
@@ -18,7 +18,7 @@ describe('Ekko MCP server context', () => {
     delete process.env.HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT
     delete process.env.HERMES_WEB_UI_ALLOW_TRANSIENT_MCP_AUTOINJECT
     delete process.env.HERMES_WEB_UI_MCP_BIN
-    configMock.port = 8648
+    configMock.port = 56278
     configMock.appHome = '/Users/test/.hermes-web-ui'
   })
 
@@ -31,7 +31,7 @@ describe('Ekko MCP server context', () => {
       command: process.execPath,
       args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'api'],
       env: {
-        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
         HERMES_WEB_UI_HOME: '/Users/test/.hermes-web-ui',
         HERMES_WEBUI_STATE_DIR: '/Users/test/.hermes-web-ui',
         HERMES_WEB_UI_PROFILE: 'work',
@@ -44,7 +44,7 @@ describe('Ekko MCP server context', () => {
     expect(servers['hermes-studio-devices']).toMatchObject({
       args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'devices'],
       env: {
-        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
         HERMES_WEB_UI_PROFILE: 'work',
         HERMES_MCP_TOOLSET: 'devices',
       },
@@ -52,7 +52,7 @@ describe('Ekko MCP server context', () => {
     expect(servers['hermes-studio-use']).toMatchObject({
       args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'use'],
       env: {
-        HERMES_WEB_UI_URL: 'http://127.0.0.1:8648',
+        HERMES_WEB_UI_URL: 'http://127.0.0.1:56278',
         HERMES_WEB_UI_PROFILE: 'work',
         HERMES_MCP_TOOLSET: 'use',
       },

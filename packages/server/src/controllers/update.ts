@@ -11,8 +11,8 @@ const DOCKER_ENVIRONMENT_CODE = 'docker_environment'
 
 const PREVIEW_DIR_NAME = 'hermes-web-ui-pereview'
 const PREVIEW_HOME_DIR_NAME = 'hermes-web-ui-pereview-home'
-const PREVIEW_BACKEND_PORT = 8650
-const PREVIEW_FRONTEND_PORT = 8651
+const PREVIEW_BACKEND_PORT = 56280
+const PREVIEW_FRONTEND_PORT = 56281
 const PREVIEW_AGENT_BRIDGE_PORT = 18650
 const PREVIEW_AGENT_BRIDGE_WORKER_PORT_BASE = 19650
 const PREVIEW_AGENT_BRIDGE_ENDPOINT_ENV = 'HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT'
@@ -1096,7 +1096,7 @@ export async function handleUpdate(ctx: any) {
     setTimeout(() => {
       let restart
       try {
-        restart = spawnRestart(process.env.PORT || '8648')
+        restart = spawnRestart(process.env.PORT || '56278')
       } catch (err) {
         updateInProgress = false
         console.error('[update] failed to spawn restart:', err)

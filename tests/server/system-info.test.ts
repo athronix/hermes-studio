@@ -21,7 +21,7 @@ async function loadSystemInfoWithInjectedVersion(version?: string) {
   vi.doMock('../../packages/server/src/config', () => ({
     config: {
       appHome,
-      port: 8648,
+      port: 56278,
       host: '0.0.0.0',
       uploadDir: join(appHome, 'upload'),
       dataDir: join(appHome, 'data'),

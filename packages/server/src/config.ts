@@ -5,7 +5,7 @@ import { homedir } from 'os'
  * Web UI environment variables.
  *
  * Server/listen:
- * - PORT: Web UI listen port. Default: 8648.
+ * - PORT: Web UI listen port. Default: 56278.
  * - BIND_HOST: Web UI bind host. Default: 0.0.0.0.
  * - CORS_ORIGINS: Comma/space-separated cross-origin allowlist. Default: same host only.
  *
@@ -31,7 +31,7 @@ import { homedir } from 'os'
  * - HERMES_WEB_UI_DISABLE_MCP_AUTOINJECT: Disable Hermes Studio MCP config injection.
  * - HERMES_WEB_UI_ALLOW_TRANSIENT_MCP_AUTOINJECT: Allow MCP injection when HERMES_WEB_UI_HOME is under a temp dir.
  * - HERMES_LAN_DISCOVERY_ENABLED: Set false/0/off to disable UDP LAN discovery responder.
- * - HERMES_LAN_DISCOVERY_HTTP_PORTS: HTTP ports to probe during UDP discovery scans. Default: 8648,8748 plus current PORT.
+ * - HERMES_LAN_DISCOVERY_HTTP_PORTS: HTTP ports to probe during UDP discovery scans. Default: 56278,56282 plus current PORT.
  *   Discovery probes are sent to the fixed UDP port 48640 plus legacy mapped ports for compatibility.
  * - WORKSPACE_BASE: Base directory for workspace browsing. Default: current user's home directory.
  *
@@ -66,7 +66,7 @@ const remoteRelay = {
 }
 
 export const config = {
-  port: parseInt(process.env.PORT || '8648', 10),
+  port: parseInt(process.env.PORT || '56278', 10),
   // Default to IPv4 for stable WSL/Windows browser access. Use BIND_HOST=:: explicitly for IPv6.
   host: getListenHost(),
   appHome,
